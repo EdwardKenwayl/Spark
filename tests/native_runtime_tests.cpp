@@ -31,7 +31,8 @@ AppConfig Configuration(const std::string& root, const std::string& url) {
 void TestApprovalScope(const fs::path& root) {
     Server server([](Server::Connection& connection, size_t attempt) {
         nlohmann::json delta;
-        const bool tool = attempt == 0 || attempt == 1 || attempt == 3 || attempt == 4 || attempt == 6;
+        // A denied tool is still followed by a model response (attempt 4).
+        const bool tool = attempt == 0 || attempt == 1 || attempt == 3 || attempt == 5 || attempt == 7;
         if (tool) {
             const nlohmann::json arguments = {{"path", "approval-" + std::to_string(attempt) + ".txt"},
                                                {"content", "approved"}};
@@ -77,8 +78,8 @@ void TestApprovalScope(const fs::path& root) {
     Check(fs::exists(root / "approval-0.txt") && fs::exists(root / "approval-1.txt"),
           "explicit allow-turn permits both writes in its turn");
     Check(!fs::exists(root / "approval-3.txt"), "a new turn cannot inherit the previous turn's approval");
-    Check(fs::exists(root / "approval-4.txt"), "allow-once permits its approved write in another session");
-    Check(!fs::exists(root / "approval-6.txt"), "a cancelled run cannot reuse a turn approval");
+    Check(fs::exists(root / "approval-5.txt"), "allow-once permits its approved write in another session");
+    Check(!fs::exists(root / "approval-7.txt"), "a cancelled run cannot reuse a turn approval");
     runtime.Stop();
 }
 }  // namespace

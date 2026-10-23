@@ -68,7 +68,7 @@ jobs:
       - name: Install wxWidgets 3.2
         run: brew install wxwidgets@3.2
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSPARK_BUILD_TESTS=ON -DwxWidgets_CONFIG_EXECUTABLE="$(brew --prefix wxwidgets@3.2)/bin/wx-config"
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSPARK_BUILD_TESTS=ON -DwxWidgets_CONFIG_EXECUTABLE="$(brew --prefix wxwidgets@3.2)/bin/wx-config-3.2"
       - name: Build
         run: cmake --build build --parallel 2
       - name: Run runtime tests
