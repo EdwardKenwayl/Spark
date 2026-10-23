@@ -1,0 +1,15 @@
+build/
+build-*/
+dist/
+config.json
+data/
+*.log
+workspace/
+.vs/
+CMakeUserPresets.json
+*.user
+*.obj
+*.pdb
+*.dmp
+.env
+.env.*

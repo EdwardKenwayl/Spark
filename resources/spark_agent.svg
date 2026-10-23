@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#30363d"/>
+      <stop offset="0.52" stop-color="#1d2227"/>
+      <stop offset="1" stop-color="#101316"/>
+    </linearGradient>
+    <linearGradient id="star" x1="0.15" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#b9fff3"/>
+      <stop offset="0.42" stop-color="#6ee7d0"/>
+      <stop offset="1" stop-color="#4f9df7"/>
+    </linearGradient>
+    <linearGradient id="core" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffe5a0"/>
+      <stop offset="1" stop-color="#f2a93b"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.46" r="0.52">
+      <stop offset="0" stop-color="#66d9ff" stop-opacity="0.15"/>
+      <stop offset="1" stop-color="#66d9ff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="72" y="72" width="880" height="880" rx="218" fill="url(#tile)"/>
+  <rect x="82" y="82" width="860" height="860" rx="208" fill="none" stroke="#59646f" stroke-width="20" stroke-opacity="0.82"/>
+  <rect x="112" y="112" width="800" height="800" rx="178" fill="url(#glow)"/>
+
+  <g fill="url(#star)">
+    <path d="M512 146 C489 303 462 387 512 512 C562 387 535 303 512 146 Z"/>
+    <path d="M512 878 C489 721 462 637 512 512 C562 637 535 721 512 878 Z"/>
+    <path d="M146 512 C303 489 387 462 512 512 C387 562 303 535 146 512 Z"/>
+    <path d="M878 512 C721 489 637 462 512 512 C637 562 721 535 878 512 Z"/>
+    <path d="M270 270 C356 365 409 428 512 512 C428 409 365 356 270 270 Z" opacity="0.82"/>
+    <path d="M754 754 C668 659 615 596 512 512 C596 615 659 668 754 754 Z" opacity="0.82"/>
+    <path d="M754 270 C659 356 596 409 512 512 C615 428 668 365 754 270 Z" opacity="0.82"/>
+    <path d="M270 754 C365 668 428 615 512 512 C409 596 356 659 270 754 Z" opacity="0.82"/>
+  </g>
+
+  <circle cx="512" cy="512" r="82" fill="#161a1e" stroke="#8ef0dd" stroke-width="16"/>
+  <circle cx="512" cy="512" r="42" fill="url(#core)"/>
+  <circle cx="493" cy="491" r="12" fill="#fff8d9" fill-opacity="0.92"/>
+</svg>

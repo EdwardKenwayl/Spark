@@ -1,0 +1,59 @@
+{
+  // Common settings; see CONFIGURATION.md for advanced options and defaults.
+  "schema_version": 2,
+
+  // Current default selection; switch provider, model and reasoning effort in the composer.
+  "active": { "provider": "provider-a", "model": "YOUR_MODEL_ID", "reasoning_effort": "" },
+
+  // Duplicate provider-a to add providers, or add them from Settings.
+  "providers": {
+    "provider-a": {
+      "label": "Provider A",
+      // Supports openai_responses / responses, openai_chat_completions / chat_completions, and anthropic_messages.
+      "protocol": "openai_responses",
+      // API root; the application adds the protocol endpoint path as needed.
+      "base_url": "https://api.openai.com/v1",
+      // Enter your API key, or use ${ENV:VARIABLE_NAME}.
+      "api_key": "",
+      "models": [
+        {
+          // Actual model ID; it must be supported by the provider.
+          "id": "YOUR_MODEL_ID",
+          "display_name": "Your Model",
+          "capabilities": {
+            // Use the provider's documented model window; this is an example, not a model specification.
+            // Streaming, tool calls, images and reasoning default to true and can be omitted.
+            "context_window": 272000,
+            // Optional per-model override of the global compaction percentage below.
+            "auto_compact_threshold_percent": 90
+          }
+        }
+      ]
+    }
+  },
+
+  // Automatic compaction is always on; it uses a percentage of the model window and reserves output headroom.
+  "context": {
+    "auto_compact_threshold_percent": 90
+  },
+
+  // ask: request approval; approve_for_me: auto-approve within the workspace; full_access: unrestricted access.
+  "permissions": { "default_mode": "ask" },
+
+  // Output root for no-project conversations; ${DOCUMENTS} is the current user's Documents folder.
+  "workspace": { "path": "${DOCUMENTS}/Spark" },
+
+  // Extra skill roots; <workspace>/.spark/skills and ${APPDATA}/Spark/skills are also scanned.
+  "skills": { "roots": ["./skills"] },
+
+  // Optional MCP servers; see CONFIGURATION.md for stdio and streamable_http examples.
+  "mcp_servers": {},
+
+  // Session data directory; relative paths resolve against the directory containing config.json.
+  "storage": { "data_dir": "./data" },
+
+  // Interface language: system (follow the OS), zh-CN, en-US, zh-TW,
+  // ja-JP, ko-KR, de-DE, fr-FR, es-ES, pt-BR, ru-RU.
+  // Omitted shell uses cmd.exe on Windows or /bin/sh on Linux/macOS.
+  "ui": { "language": "system", "theme": "dark", "send_key": "enter" }
+}

@@ -1,0 +1,170 @@
+#include "gui/localization.h"
+#include "core/common.h"
+#include "core/config.h"
+#include "nlohmann/json.hpp"
+
+#include <algorithm>
+#include "platform/filesystem.h"
+#include <fstream>
+#include <iostream>
+#include <map>
+#include <regex>
+#include <set>
+
+namespace {
+int failures = 0;
+
+void Check(bool condition, const char* message) {
+    if (!condition) {
+        ++failures;
+        std::cerr << "FAIL: " << message << '\n';
+    }
+}
+
+std::set<std::wstring> Placeholders(const std::wstring& text) {
+    std::set<std::wstring> names;
+    size_t offset = 0;
+    while ((offset = text.find(L'{', offset)) != std::wstring::npos) {
+        const size_t closing = text.find(L'}', offset + 1);
+        if (closing == std::wstring::npos) break;
+        names.insert(text.substr(offset + 1, closing - offset - 1));
+        offset = closing + 1;
+    }
+    return names;
+}
+
+void TestCatalogCoverage() {
+    using namespace spark;
+    std::map<std::string, nlohmann::json> messages;
+    for (int id : {301, 302, 303, 304}) {
+        const HMODULE module = GetModuleHandleW(nullptr);
+        const HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(id), RT_RCDATA);
+        Check(resource != nullptr, "all translation catalogs are embedded in executables");
+        if (!resource) continue;
+        const char* bytes = static_cast<const char*>(LockResource(LoadResource(module, resource)));
+        const auto document = nlohmann::json::parse(bytes, bytes + SizeofResource(module, resource),
+                                                   nullptr, false);
+        Check(document.is_object(), "translation resources are valid JSON catalogs");
+        if (!document.is_object()) continue;
+        for (auto entry = document.begin(); entry != document.end(); ++entry) {
+            Check(entry.value().is_object(), "translation entries are keyed by locale");
+            if (!entry.value().is_object()) continue;
+            Check(messages.emplace(entry.key(), entry.value()).second, "each message has one canonical catalog entry");
+            const auto expected = Placeholders(Utf8ToWide(entry.key()));
+            Check(entry.value().value("en-US", std::string{}) == entry.key(), "English text matches its message key");
+            for (const auto& locale : i18n::SupportedLocales()) {
+                const auto translation = entry.value().find(locale.code);
+                if (translation == entry.value().end() || !translation->is_string() ||
+                    translation->get<std::string>().empty()) {
+                    ++failures;
+                    std::cerr << "Missing translation: " << entry.key() << " / " << locale.code << '\n';
+                    continue;
+                }
+                const auto text = Utf8ToWide(translation->get<std::string>());
+                if (Placeholders(text) != expected) {
+                    ++failures;
+                    std::cerr << "Placeholder mismatch: " << entry.key() << " / " << locale.code << '\n';
+                }
+                i18n::SetLocale(locale.code);
+                Check(std::wstring(i18n::Text(Utf8ToWide(entry.key()))) == text,
+                      "all translated entries are reachable through the runtime lookup");
+            }
+        }
+    }
+    const std::regex reference(R"ref((?:\bText|\bFormat)\(\s*L"((?:[^"\\]|\\.)*)")ref",
+                               std::regex::ECMAScript);
+    const std::regex adjacent(R"ref(L"((?:[^"\\]|\\.)*)")ref");
+    const std::regex wide_literal(R"ref(L"((?:[^"\\]|\\.)*)")ref");
+    const auto directory = spark::fs::path(SPARK_TEST_SOURCE_DIR) / "src";
+    for (const auto& entry : spark::fs::recursive_directory_iterator(directory)) {
+        if (entry.path().extension() != ".cpp" && entry.path().extension() != ".h") continue;
+        if (entry.path().filename() == "localization.cpp") continue;
+        spark::fs_ifstream file(entry.path(), std::ios::binary);
+        const std::string source((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>{});
+        if (entry.path().parent_path().filename() == "gui") {
+            for (auto literal = std::sregex_iterator(source.begin(), source.end(), wide_literal);
+                 literal != std::sregex_iterator(); ++literal) {
+                const auto value = Utf8ToWide((*literal)[1].str());
+                const bool han = std::any_of(value.begin(), value.end(), [](wchar_t character) {
+                    return character >= 0x3400 && character <= 0x9fff;
+                });
+                if (han) {
+                    ++failures;
+                    std::cerr << "Hardcoded GUI translation: " << entry.path().filename().string() << ": "
+                              << (*literal)[1].str() << '\n';
+                }
+            }
+        }
+        for (auto match = std::sregex_iterator(source.begin(), source.end(), reference);
+             match != std::sregex_iterator(); ++match) {
+            std::string encoded = (*match)[1].str();
+            size_t offset = static_cast<size_t>(match->position() + match->length());
+            for (;;) {
+                offset = source.find_first_not_of(" \t\r\n", offset);
+                if (offset == std::string::npos) break;
+                std::smatch next;
+                const auto first = source.begin() + static_cast<std::ptrdiff_t>(offset);
+                if (!std::regex_search(first, source.end(), next, adjacent,
+                                       std::regex_constants::match_continuous)) break;
+                encoded += next[1].str();
+                offset += static_cast<size_t>(next.length());
+            }
+            const std::string key = nlohmann::json::parse("\"" + encoded + "\"").get<std::string>();
+            if (messages.find(key) == messages.end()) {
+                ++failures;
+                std::cerr << "UI text missing from catalogs: " << entry.path().filename().string() << ": " << key << '\n';
+            }
+        }
+    }
+    std::cout << "Checked " << messages.size() << " messages in " << i18n::SupportedLocales().size() << " locales.\n";
+}
+}  // namespace
+
+int main() {
+    using namespace spark::i18n;
+    TestCatalogCoverage();
+    const auto default_config =
+        spark::ConfigFromJson(spark::ParseConfigJson(spark::DefaultConfigExampleJson()), "test-config.json");
+    Check(default_config.ui.language == "system" &&
+              spark::ConfigToJson(default_config)["ui"]["language"] == "system",
+          "new configurations default to automatic system language and preserve that preference");
+    const std::string detected_locale = DetectedSystemLocale();
+    SetLocale(detected_locale);
+    const std::string expected_system_locale = CurrentLocale();
+    SetLocale("system");
+    Check(CurrentLocale() == expected_system_locale,
+          "automatic language selection resolves the current Windows UI language");
+    SetLocale("zh-CN");
+    Check(std::wstring(Text(L"Automatic")) == L"自动检测",
+          "automatic language selection uses a concise localized label");
+    SetLocale("en");
+    Check(CurrentLocale() == "en-US" && std::wstring(Text(L"New chat")) == L"New chat",
+          "English locale resolves catalog text");
+    const wchar_t* previous = Text(L"New chat");
+    SetLocale("zh-CN");
+    Check(std::wstring(Text(L"New chat")) == L"新对话", "Chinese locale resolves catalog text");
+    Check(std::wstring(previous) == L"New chat", "language switching preserves existing text pointers");
+    SetLocale("zh_Hant");
+    Check(CurrentLocale() == "zh-TW", "script alias selects Traditional Chinese");
+    SetLocale("fr-CA");
+    Check(CurrentLocale() == "fr-FR", "regional fallback selects the supported French catalog");
+    SetLocale("unknown");
+    Check(CurrentLocale() == "en-US", "unknown locales fall back to English");
+    Check(std::wstring(Text(std::wstring(L"Unknown test message"))) == L"Unknown test message",
+          "missing translations own their English fallback");
+    for (const auto& locale : SupportedLocales()) {
+        SetLocale(locale.code);
+        Check(CurrentLocale() == locale.code && !std::wstring(Text(L"New chat")).empty(),
+              "all selectable languages resolve catalog text");
+        const auto formatted = Format(L"What would you like to do in {project}?",
+                                      {{L"project", L"Sample {other} project"}});
+        Check(formatted.find(L"Sample {other} project") != std::wstring::npos &&
+                  formatted.find(L"{project}") == std::wstring::npos,
+              "placeholder substitution preserves user content without recursively interpreting it");
+    }
+    SetLocale("en-US");
+    Check(Format(L"{first} {second}", {{L"first", L"{second}"}, {L"second", L"done"}}) == L"{second} done",
+          "replacements are not interpreted as template text");
+    Check(Format(L"Missing {value}", {}) == L"Missing {value}", "unknown placeholders remain visible");
+    return failures == 0 ? 0 : 1;
+}

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Spark
+Comment=Desktop AI coding agent
+Exec=Spark
+Icon=spark
+Terminal=false
+Categories=Development;
+StartupNotify=true
