@@ -1,5 +1,6 @@
 #include "gui/native/startup_dpi.h"
 #include "gui/native/controls.h"
+#include "core/common.h"
 
 #include <wx/app.h>
 #include <wx/panel.h>
@@ -8,6 +9,7 @@
 #include <wx/utils.h>
 
 #include <cmath>
+#include <chrono>
 #include <iostream>
 #include <string>
 
@@ -17,6 +19,13 @@ public:
 };
 wxIMPLEMENT_APP_NO_MAIN(DpiTestApplication);
 
+class SyntheticScaleFrame : public wxFrame {
+public:
+    using wxFrame::wxFrame;
+    double backing_scale = 1;
+    double GetContentScaleFactor() const override { return backing_scale; }
+};
+
 namespace {
 int failures = 0;
 void Check(bool condition, const char* message) {
@@ -24,6 +33,9 @@ void Check(bool condition, const char* message) {
 }
 void Events() {
     for (int index = 0; index < 5; ++index) { wxYield(); wxMilliSleep(20); }
+}
+void WaitFor(const std::function<bool()>& ready) {
+    for (int index = 0; index < 40 && !ready(); ++index) { wxYield(); wxMilliSleep(25); }
 }
 
 void CheckGeometry(wxFrame& frame) {
@@ -40,7 +52,8 @@ void CheckGeometry(wxFrame& frame) {
     const auto rect = [&](int x, int y, int width, int height) {
         return wxRect(frame.FromDIP(wxPoint(x, y)), frame.FromDIP(wxSize(width, height)));
     };
-    check(rect(0, 0, 1920, 1080), rect(280, 150, 1360, 780), frame.FromDIP(wxSize(760, 520)));
+    check(rect(0, 0, 2560, 1440), rect(205, 144, 2150, 1152), frame.FromDIP(wxSize(760, 520)));
+    check(rect(0, 0, 1920, 1080), rect(154, 108, 1612, 864), frame.FromDIP(wxSize(760, 520)));
     check(rect(-1280, 24, 1280, 800), rect(-1178, 104, 1075, 640), frame.FromDIP(wxSize(760, 520)));
     check(rect(1920, -540, 960, 540), rect(1926, -534, 948, 528), frame.FromDIP(wxSize(760, 520)));
     check(rect(-400, -240, 400, 240), rect(-394, -234, 388, 228), frame.FromDIP(wxSize(388, 228)));
@@ -59,6 +72,67 @@ void CheckFonts() {
               spark::NativeStartupFont(wxFont{}).GetFractionalPointSize() == 10,
           "small or unavailable desktop fonts retain the Windows ten-point baseline");
 }
+
+void CheckRestart() {
+    using namespace spark;
+    const auto directory = fs::temp_directory_path() /
+        NativePath("spark-dpi-restart-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto path = PathToUtf8(directory);
+    auto* first = new wxFrame(nullptr, wxID_ANY, "Synthetic size persistence");
+    ApplyNativeStartupDpi(*first);
+    BindNativeWindowGeometry(*first, path, std::nullopt, [first](wxCloseEvent&) { first->Destroy(); });
+    first->Show();
+    const auto work = wxDisplay(first).GetClientArea();
+    const auto requested = FitWindowSize({900, 650}, {work.width, work.height}, {760, 520}, 12);
+    first->SetSize(wxSize(requested.width, requested.height));
+    Events();
+    const auto normal_size = first->GetSize();
+    const auto scale = first->GetContentScaleFactor();
+    bool maximize = wxGetEnv("SPARK_TEST_WINDOW_MANAGER", nullptr);
+#ifdef __WXOSX__
+    maximize = true;
+#endif
+    if (maximize) {
+        first->Maximize();
+        WaitFor([first] { return first->IsMaximized(); });
+        Check(first->IsMaximized(), "the real window manager maximizes the persistence fixture");
+        first->Iconize();
+        WaitFor([first] { return first->IsIconized(); });
+        Check(first->IsIconized(), "the fixture is minimized before exiting");
+    }
+    first->Close();
+    Events();
+    const auto saved = LoadWindowGeometry(path);
+    Check(saved && saved->width == normal_size.x && saved->height == normal_size.y &&
+              saved->backing_scale == scale && saved->maximized == maximize,
+          "closing a resized or minimized frame preserves normal size, scale and maximization");
+    auto* second = new wxFrame(nullptr, wxID_ANY, "Synthetic reopened frame");
+    ApplyNativeStartupDpi(*second, saved);
+    Check(second->GetSize() == normal_size,
+          "a reopened native frame retains the user's size instead of recalculating the default");
+    if (maximize) {
+        BindNativeWindowGeometry(*second, path, saved, [second](wxCloseEvent&) { second->Destroy(); });
+        second->Show();
+        WaitFor([second] { return second->IsMaximized(); });
+        Check(second->IsMaximized(), "reopening restores the previous maximized state");
+    }
+    second->Destroy();
+    Events();
+    auto* density = new SyntheticScaleFrame(nullptr, wxID_ANY, "Synthetic backing-only transition");
+    density->SetSize(wxSize(900, 650));
+    Events();
+    BindNativeWindowGeometry(*density, path, std::nullopt,
+                             [density](wxCloseEvent&) { density->Destroy(); });
+    density->backing_scale = 1.5;
+    density->Close();
+    Events();
+    const auto changed_scale = LoadWindowGeometry(path);
+    Check(changed_scale && changed_scale->width == 900 && changed_scale->height == 650 &&
+              changed_scale->backing_scale == 1.5,
+          "closing after a backing-only transition records current scale without needing a resize");
+    std::error_code error;
+    fs::remove_all(directory, error);
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -76,6 +150,7 @@ int main(int argc, char** argv) {
     spark::ApplyNativeStartupDpi(*frame);
     CheckGeometry(*frame);
     CheckFonts();
+    CheckRestart();
     const auto font = spark::NativeStartupFont(wxSystemSettings::GetFont(wxSYS_DEFAULT_GUI_FONT));
     auto* panel = new wxPanel(frame);
     auto* button = new spark::NativeButton(panel, "Synthetic action");

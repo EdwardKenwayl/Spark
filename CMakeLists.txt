@@ -32,6 +32,7 @@ find_package(Threads REQUIRED)
 
 add_library(spark_foundation STATIC
     src/core/common.cpp
+    src/gui/window_geometry.cpp
     src/platform/user_directories.cpp
     src/core/agent_instructions.cpp
     src/core/agent_types.cpp
@@ -73,6 +74,13 @@ if(MSVC)
 endif()
 if(SPARK_BUILD_TESTS)
     enable_testing()
+    add_executable(spark_window_geometry_tests tests/window_geometry_tests.cpp)
+    target_link_libraries(spark_window_geometry_tests PRIVATE spark_foundation)
+    if(WIN32)
+        target_link_libraries(spark_window_geometry_tests PRIVATE user32)
+    endif()
+    add_test(NAME spark_window_geometry_tests COMMAND spark_window_geometry_tests)
+    set_tests_properties(spark_window_geometry_tests PROPERTIES TIMEOUT 15)
     add_executable(spark_platform_tests tests/platform_tests.cpp)
     target_link_libraries(spark_platform_tests PRIVATE spark_foundation)
     add_test(NAME spark_platform_tests COMMAND spark_platform_tests)

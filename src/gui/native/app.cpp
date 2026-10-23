@@ -57,7 +57,8 @@ private:
 NativeFrame::NativeFrame(AppConfig config)
     : wxFrame(nullptr, wxID_ANY, "Spark"),
       config_(std::move(config)), timer_(this) {
-    ApplyNativeStartupDpi(*this);
+    const auto saved_geometry = LoadWindowGeometry(config_.storage.data_dir);
+    ApplyNativeStartupDpi(*this, saved_geometry);
     for (const auto* relative : {"../share/spark/spark_agent.ico", "../Resources/spark_agent.ico"}) {
         const auto path = JoinPath(GetExecutableDirectory(), relative);
         wxIcon icon;
@@ -82,7 +83,8 @@ NativeFrame::NativeFrame(AppConfig config)
             RefreshSummary();
         }
     });
-    Bind(wxEVT_CLOSE_WINDOW, &NativeFrame::OnClose, this);
+    BindNativeWindowGeometry(*this, config_.storage.data_dir, saved_geometry,
+                             [this](wxCloseEvent& event) { OnClose(event); });
     Bind(wxEVT_ACTIVATE, [this](wxActivateEvent& event) {
         const auto windows = SnapshotWindows();
         snapshot_target_id_ = windows.empty() ? 0 : windows.front().id;

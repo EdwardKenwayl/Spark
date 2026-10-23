@@ -3,6 +3,7 @@
 #include "gui/localization.h"
 #include "gui/model_picker.h"
 #include "gui/theme.h"
+#include "gui/window_geometry_windows.h"
 
 #include "core/context_compactor.h"
 #include "core/external_agents.h"
@@ -1332,20 +1333,17 @@ int AppWindow::Run(HINSTANCE instance, int show_command) {
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work_area, 0);
     const int work_width = static_cast<int>(work_area.right - work_area.left);
     const int work_height = static_cast<int>(work_area.bottom - work_area.top);
-    // Size from the actual work area first, then constrain with DPI-scaled limits so the
-    // window stays Codex-sized instead of assuming a fixed physical resolution.
     const int margin = ScaleForSystemDpi(12);
-    int width = work_width * 84 / 100;
-    int height = work_height * 80 / 100;
-    width = std::clamp(width, ScaleForSystemDpi(980), ScaleForSystemDpi(1360));
-    height = std::clamp(height, ScaleForSystemDpi(640), ScaleForSystemDpi(780));
-    width = std::max(ScaleForSystemDpi(720), std::min(work_width - margin, width));
-    height = std::max(ScaleForSystemDpi(480), std::min(work_height - margin, height));
+    const auto size = InitialWindowSize({work_width, work_height},
+        {ScaleForSystemDpi(980), ScaleForSystemDpi(640)}, margin);
+    const int width = size.width, height = size.height;
     const int x = static_cast<int>(work_area.left) + std::max(0, (work_width - width) / 2);
     const int y = static_cast<int>(work_area.top) + std::max(0, (work_height - height) / 2);
     window_ = CreateWindowExW(0, kAppWindowClass, L"Spark", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y,
                               width, height, nullptr, nullptr, instance, this);
     if (window_ == nullptr) return 1;
+    show_command = RestoreWindowsWindowGeometry(window_, DataDirectory(), show_command,
+        {Dpi(760), Dpi(520)}, margin);
     snapshot_shortcut_.Start(window_, kSnapshotMessage);
     ApplyDarkTitleBar(window_);
     ShowWindow(window_, show_command);
@@ -5682,12 +5680,11 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             return 0;
         case WM_GETMINMAXINFO: {
             auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
-            RECT work{};
-            SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
-            const int work_width = std::max(1, static_cast<int>(work.right - work.left));
-            const int work_height = std::max(1, static_cast<int>(work.bottom - work.top));
-            info->ptMinTrackSize.x = std::max(720, work_width * 38 / 100);
-            info->ptMinTrackSize.y = std::max(520, work_height * 52 / 100);
+            const auto work = WindowsWindowWorkArea(window_);
+            const auto minimum = FitWindowSize({Dpi(760), Dpi(520)},
+                {work.right - work.left, work.bottom - work.top}, {1, 1}, Dpi(12));
+            info->ptMinTrackSize.x = minimum.width;
+            info->ptMinTrackSize.y = minimum.height;
             return 0;
         }
         case WM_SIZE:
@@ -6704,6 +6701,7 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             }
             break;
         case WM_CLOSE:
+            SaveWindowsWindowGeometry(window_, DataDirectory());
             if (exiting_) {
                 RequestExit();
                 return 0;
@@ -6713,6 +6711,7 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             ShowWindow(window_, SW_HIDE);
             return 0;
         case WM_DESTROY:
+            SaveWindowsWindowGeometry(window_, DataDirectory());
             session_loader_.Stop();
             session_replay_step_ = {};
             KillTimer(window_, kSessionLoadTimer);

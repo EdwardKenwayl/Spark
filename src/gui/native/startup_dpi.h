@@ -1,10 +1,14 @@
 #pragma once
 
+#include "gui/window_geometry.h"
+
 #include <wx/display.h>
 #include <wx/frame.h>
 #include <wx/settings.h>
 
 #include <algorithm>
+#include <functional>
+#include <memory>
 
 namespace spark {
 
@@ -13,17 +17,17 @@ struct NativeStartupGeometry {
     wxSize minimum;
 };
 
-inline NativeStartupGeometry NativeStartupGeometryFor(const wxWindow& window, const wxRect& work) {
+inline NativeStartupGeometry NativeStartupGeometryFor(const wxWindow& window, const wxRect& work,
+    const std::optional<SavedWindowGeometry>& saved = std::nullopt) {
     const auto lower = window.FromDIP(wxSize(980, 640));
-    const auto upper = window.FromDIP(wxSize(1360, 780));
     const auto minimum = window.FromDIP(wxSize(760, 520));
     const int margin = window.FromDIP(12);
-    const wxSize available(std::max(1, work.width - margin),
-                           std::max(1, work.height - margin));
-    // Work-area coordinates are already logical pixels, including on Retina.
-    const wxSize size(
-        std::min(available.x, std::clamp(static_cast<int>(work.width * 84LL / 100), lower.x, upper.x)),
-        std::min(available.y, std::clamp(static_cast<int>(work.height * 80LL / 100), lower.y, upper.y)));
+    const WindowSize available{work.width, work.height};
+    const auto measured = saved
+        ? RestoredWindowSize(*saved, window.GetContentScaleFactor(), available,
+                             {minimum.x, minimum.y}, margin)
+        : InitialWindowSize(available, {lower.x, lower.y}, margin);
+    const wxSize size(measured.width, measured.height);
     return {
         wxRect(work.x + (work.width - size.x) / 2, work.y + (work.height - size.y) / 2, size.x, size.y),
         wxSize(std::min(minimum.x, size.x), std::min(minimum.y, size.y))
@@ -38,7 +42,8 @@ inline wxFont NativeStartupFont(wxFont system_font) {
     return system_font;
 }
 
-inline void ApplyNativeStartupDpi(wxFrame& frame) {
+inline void ApplyNativeStartupDpi(wxFrame& frame,
+    const std::optional<SavedWindowGeometry>& saved = std::nullopt) {
     frame.SetFont(NativeStartupFont(wxSystemSettings::GetFont(wxSYS_DEFAULT_GUI_FONT)));
     const wxDisplay display(&frame);
     wxRect work;
@@ -51,9 +56,38 @@ inline void ApplyNativeStartupDpi(wxFrame& frame) {
         frame.SetSize(frame.FromDIP(wxSize(1220, 820)));
         return;
     }
-    const auto geometry = NativeStartupGeometryFor(frame, work);
+    const auto geometry = NativeStartupGeometryFor(frame, work, saved);
     frame.SetMinSize(geometry.minimum);
     frame.SetSize(geometry.bounds);
+}
+
+inline void UpdateNativeWindowGeometry(wxFrame& frame, SavedWindowGeometry& state) {
+    if (frame.IsIconized()) return;
+    state.maximized = frame.IsMaximized();
+    if (!state.maximized && frame.GetSize().x > 0 && frame.GetSize().y > 0) {
+        state.width = frame.GetSize().x;
+        state.height = frame.GetSize().y;
+        state.backing_scale = frame.GetContentScaleFactor();
+    }
+}
+
+inline void BindNativeWindowGeometry(wxFrame& frame, const std::string& data_directory,
+    const std::optional<SavedWindowGeometry>& restored, std::function<void(wxCloseEvent&)> close) {
+    auto state = std::make_shared<SavedWindowGeometry>(SavedWindowGeometry{
+        frame.GetSize().x, frame.GetSize().y, frame.GetContentScaleFactor(),
+        restored && restored->maximized});
+    const auto capture = [&frame, state] { UpdateNativeWindowGeometry(frame, *state); };
+    frame.Bind(wxEVT_SIZE, [capture](wxSizeEvent& event) { capture(); event.Skip(); });
+    frame.Bind(wxEVT_MOVE, [capture](wxMoveEvent& event) { capture(); event.Skip(); });
+    frame.Bind(wxEVT_DPI_CHANGED, [capture](wxDPIChangedEvent& event) {
+        capture(); event.Skip();
+    });
+    frame.Bind(wxEVT_CLOSE_WINDOW, [capture, state, data_directory, close](wxCloseEvent& event) {
+        capture();
+        SaveWindowGeometry(data_directory, *state);
+        close(event);
+    });
+    if (state->maximized) frame.Maximize();
 }
 
 }  // namespace spark
