@@ -1,0 +1,75 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows (${{ matrix.arch }})
+    runs-on: windows-2022
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, Win32]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Configure
+        run: cmake -S . -B build -A ${{ matrix.arch }} -DSPARK_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build --config Release --parallel 2
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure --parallel 1 --timeout 60
+      - name: Check source export privacy and Git preservation
+        shell: pwsh
+        run: ./tests/source_export_tests.ps1
+
+  linux:
+    name: Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install build and headless GUI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ninja-build libcurl4-openssl-dev libwxgtk3.2-dev libxcomposite-dev xvfb xauth
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSPARK_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Run runtime and focused provider GUI tests
+        env:
+          SPARK_PROVIDER_SCREENSHOTS: ${{ runner.temp }}/spark-provider
+        run: ctest --test-dir build --output-on-failure --parallel 1 --timeout 60 -E '^spark_native_gui_tests$'
+
+  macos:
+    name: macOS
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install wxWidgets 3.2
+        run: brew install wxwidgets@3.2
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSPARK_BUILD_TESTS=ON -DwxWidgets_CONFIG_EXECUTABLE="$(brew --prefix wxwidgets@3.2)/bin/wx-config"
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Run runtime tests
+        run: ctest --test-dir build --output-on-failure --parallel 1 --timeout 60

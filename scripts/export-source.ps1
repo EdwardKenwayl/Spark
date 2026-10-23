@@ -36,6 +36,7 @@ if ($sourceIsRepository) {
 }
 
 $files = @(
+    '.github/workflows/ci.yml',
     '.gitignore', 'CMakeLists.txt', 'config.example.json', 'README.md', 'README.zh-CN.md',
     'CONFIGURATION.md', 'THIRD_PARTY_NOTICES.md',
     'resources/spark_agent.ico', 'resources/spark_agent.icns', 'resources/spark_agent.svg', 'resources/spark_agent.png', 'resources/spark.desktop',

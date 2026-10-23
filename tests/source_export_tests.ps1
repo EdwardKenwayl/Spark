@@ -19,7 +19,7 @@ function Invoke-FixtureGit([string[]]$Arguments) {
 
 try {
     New-Item -ItemType Directory -Path $fixture | Out-Null
-    foreach ($entry in @('cmake', 'resources', 'scripts', 'src', 'tests', 'third_party',
+    foreach ($entry in @('.github', 'cmake', 'resources', 'scripts', 'src', 'tests', 'third_party',
         '.gitignore', 'CMakeLists.txt', 'config.example.json', 'CONFIGURATION.md',
         'README.md', 'README.zh-CN.md', 'THIRD_PARTY_NOTICES.md')) {
         Copy-Item -LiteralPath (Join-Path $root $entry) -Destination $fixture -Recurse
