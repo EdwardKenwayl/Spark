@@ -38,6 +38,7 @@ public:
     explicit NativeSummaryPanel(wxWindow* parent, Callbacks callbacks);
     ~NativeSummaryPanel() override;
     void SetDark(bool dark);
+    void Localize();
     // Inspects at most kMaxSources inputs; excludes subagents and deduplicates.
     // Unchanged metadata preserves layout/cache hits and retries cache-only misses.
     void SetSources(const std::vector<SourceReference>& sources);
@@ -103,6 +104,7 @@ private:
     Page page_ = Page::Agents;
     bool dark_ = true, popup_ = false, show_all_ = false, agents_expanded_ = false;
     std::string active_child_;
+    std::string locale_;
     std::vector<Source> sources_;
     std::vector<Agent> agents_;
     std::vector<size_t> agent_order_;

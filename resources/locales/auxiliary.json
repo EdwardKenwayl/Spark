@@ -1,4 +1,166 @@
 {
+  "Send": {
+    "en-US": "Send", "zh-CN": "发送", "zh-TW": "傳送", "ja-JP": "送信", "ko-KR": "보내기",
+    "de-DE": "Senden", "fr-FR": "Envoyer", "es-ES": "Enviar", "pt-BR": "Enviar", "ru-RU": "Отправить"
+  },
+  "Pause": {
+    "en-US": "Pause", "zh-CN": "暂停", "zh-TW": "暫停", "ja-JP": "一時停止", "ko-KR": "일시 중지",
+    "de-DE": "Anhalten", "fr-FR": "Suspendre", "es-ES": "Pausar", "pt-BR": "Pausar", "ru-RU": "Приостановить"
+  },
+  "Resume": {
+    "en-US": "Resume", "zh-CN": "继续", "zh-TW": "繼續", "ja-JP": "再開", "ko-KR": "계속",
+    "de-DE": "Fortsetzen", "fr-FR": "Reprendre", "es-ES": "Reanudar", "pt-BR": "Retomar", "ru-RU": "Продолжить"
+  },
+  "Close": {
+    "en-US": "Close", "zh-CN": "关闭", "zh-TW": "關閉", "ja-JP": "閉じる", "ko-KR": "닫기",
+    "de-DE": "Schließen", "fr-FR": "Fermer", "es-ES": "Cerrar", "pt-BR": "Fechar", "ru-RU": "Закрыть"
+  },
+  "Back": {
+    "en-US": "Back", "zh-CN": "返回", "zh-TW": "返回", "ja-JP": "戻る", "ko-KR": "뒤로",
+    "de-DE": "Zurück", "fr-FR": "Retour", "es-ES": "Volver", "pt-BR": "Voltar", "ru-RU": "Назад"
+  },
+  "Running": {
+    "en-US": "Running", "zh-CN": "运行中", "zh-TW": "執行中", "ja-JP": "実行中", "ko-KR": "실행 중",
+    "de-DE": "Wird ausgeführt", "fr-FR": "En cours", "es-ES": "En ejecución", "pt-BR": "Em execução", "ru-RU": "Выполняется"
+  },
+  "Completed": {
+    "en-US": "Completed", "zh-CN": "已完成", "zh-TW": "已完成", "ja-JP": "完了", "ko-KR": "완료",
+    "de-DE": "Abgeschlossen", "fr-FR": "Terminé", "es-ES": "Completado", "pt-BR": "Concluído", "ru-RU": "Завершено"
+  },
+  "Failed": {
+    "en-US": "Failed", "zh-CN": "失败", "zh-TW": "失敗", "ja-JP": "失敗", "ko-KR": "실패",
+    "de-DE": "Fehlgeschlagen", "fr-FR": "Échec", "es-ES": "Error", "pt-BR": "Falhou", "ru-RU": "Ошибка"
+  },
+  "Stopped": {
+    "en-US": "Stopped", "zh-CN": "已停止", "zh-TW": "已停止", "ja-JP": "停止", "ko-KR": "중지됨",
+    "de-DE": "Angehalten", "fr-FR": "Arrêté", "es-ES": "Detenido", "pt-BR": "Interrompido", "ru-RU": "Остановлено"
+  },
+  "Add project": {
+    "en-US": "Add project", "zh-CN": "添加项目", "zh-TW": "新增專案", "ja-JP": "プロジェクトを追加", "ko-KR": "프로젝트 추가",
+    "de-DE": "Projekt hinzufügen", "fr-FR": "Ajouter un projet", "es-ES": "Añadir proyecto", "pt-BR": "Adicionar projeto", "ru-RU": "Добавить проект"
+  },
+  "Archive chat": {
+    "en-US": "Archive chat", "zh-CN": "归档对话", "zh-TW": "封存聊天", "ja-JP": "チャットをアーカイブ", "ko-KR": "채팅 보관",
+    "de-DE": "Chat archivieren", "fr-FR": "Archiver la discussion", "es-ES": "Archivar chat", "pt-BR": "Arquivar conversa", "ru-RU": "Архивировать чат"
+  },
+  "Back to provider list": {
+    "en-US": "Back to provider list", "zh-CN": "返回供应商列表", "zh-TW": "返回供應商清單", "ja-JP": "プロバイダー一覧に戻る", "ko-KR": "공급자 목록으로 돌아가기",
+    "de-DE": "Zurück zur Anbieterliste", "fr-FR": "Retour à la liste des fournisseurs", "es-ES": "Volver a la lista de proveedores", "pt-BR": "Voltar à lista de provedores", "ru-RU": "Назад к списку провайдеров"
+  },
+  "Show": {
+    "en-US": "Show", "zh-CN": "显示", "zh-TW": "顯示", "ja-JP": "表示", "ko-KR": "표시",
+    "de-DE": "Anzeigen", "fr-FR": "Afficher", "es-ES": "Mostrar", "pt-BR": "Mostrar", "ru-RU": "Показать"
+  },
+  "Loading archived chats...": {
+    "en-US": "Loading archived chats...", "zh-CN": "正在加载归档对话...", "zh-TW": "正在載入封存聊天...", "ja-JP": "アーカイブしたチャットを読み込み中...", "ko-KR": "보관된 채팅을 불러오는 중...",
+    "de-DE": "Archivierte Chats werden geladen...", "fr-FR": "Chargement des discussions archivées...", "es-ES": "Cargando chats archivados...", "pt-BR": "Carregando conversas arquivadas...", "ru-RU": "Загрузка архивных чатов..."
+  },
+  "Leave empty to use the first model.": {
+    "en-US": "Leave empty to use the first model.", "zh-CN": "留空以使用第一个模型。", "zh-TW": "留空以使用第一個模型。",
+    "ja-JP": "空欄の場合は最初のモデルを使用します。", "ko-KR": "비워 두면 첫 번째 모델을 사용합니다.",
+    "de-DE": "Leer lassen, um das erste Modell zu verwenden.", "fr-FR": "Laissez vide pour utiliser le premier modèle.",
+    "es-ES": "Déjelo vacío para usar el primer modelo.", "pt-BR": "Deixe vazio para usar o primeiro modelo.", "ru-RU": "Оставьте пустым, чтобы использовать первую модель."
+  },
+  "Use 0 to inherit the default context window.": {
+    "en-US": "Use 0 to inherit the default context window.", "zh-CN": "填入 0 以使用默认上下文窗口。", "zh-TW": "輸入 0 以使用預設上下文視窗。",
+    "ja-JP": "0 を指定すると既定のコンテキストウィンドウを使用します。", "ko-KR": "기본 컨텍스트 창을 사용하려면 0을 입력하세요.",
+    "de-DE": "Mit 0 wird das Standard-Kontextfenster verwendet.", "fr-FR": "Utilisez 0 pour conserver la fenêtre de contexte par défaut.",
+    "es-ES": "Use 0 para heredar la ventana de contexto predeterminada.", "pt-BR": "Use 0 para herdar a janela de contexto padrão.", "ru-RU": "Укажите 0 для использования окна контекста по умолчанию."
+  },
+  "Provider exceeds editor limits. Edit the config file.": {
+    "en-US": "Provider exceeds editor limits. Edit the config file.", "zh-CN": "供应商超出编辑器限制，请编辑配置文件。", "zh-TW": "供應商超出編輯器限制，請編輯設定檔。",
+    "ja-JP": "プロバイダーがエディターの上限を超えています。設定ファイルを編集してください。", "ko-KR": "공급자가 편집기 제한을 초과합니다. 설정 파일을 편집하세요.",
+    "de-DE": "Der Anbieter überschreitet die Editorgrenzen. Bearbeiten Sie die Konfigurationsdatei.", "fr-FR": "Le fournisseur dépasse les limites de l'éditeur. Modifiez le fichier de configuration.",
+    "es-ES": "El proveedor supera los límites del editor. Edite el archivo de configuración.", "pt-BR": "O provedor excede os limites do editor. Edite o arquivo de configuração.", "ru-RU": "Провайдер превышает ограничения редактора. Измените файл настроек."
+  },
+  "Preview exceeds 1 MiB.": {
+    "en-US": "Preview exceeds 1 MiB.", "zh-CN": "预览超过 1 MiB。", "zh-TW": "預覽超過 1 MiB。", "ja-JP": "プレビューが 1 MiB を超えています。", "ko-KR": "미리 보기가 1 MiB를 초과합니다.",
+    "de-DE": "Die Vorschau überschreitet 1 MiB.", "fr-FR": "L'aperçu dépasse 1 MiB.", "es-ES": "La vista previa supera 1 MiB.", "pt-BR": "A prévia excede 1 MiB.", "ru-RU": "Предпросмотр превышает 1 МиБ."
+  },
+  "Cancelling...": {
+    "en-US": "Cancelling...", "zh-CN": "正在取消...", "zh-TW": "正在取消...", "ja-JP": "キャンセル中...", "ko-KR": "취소 중...",
+    "de-DE": "Abbruch läuft...", "fr-FR": "Annulation en cours...", "es-ES": "Cancelando...", "pt-BR": "Cancelando...", "ru-RU": "Отмена..."
+  },
+  "Previous model request is still cancelling.": {
+    "en-US": "Previous model request is still cancelling.", "zh-CN": "上一个模型请求仍在取消中。", "zh-TW": "上一個模型請求仍在取消中。",
+    "ja-JP": "前のモデルリクエストをまだキャンセル中です。", "ko-KR": "이전 모델 요청을 아직 취소하는 중입니다.",
+    "de-DE": "Die vorherige Modellanfrage wird noch abgebrochen.", "fr-FR": "La demande de modèle précédente est encore en cours d'annulation.",
+    "es-ES": "La solicitud de modelo anterior aún se está cancelando.", "pt-BR": "A solicitação de modelo anterior ainda está sendo cancelada.", "ru-RU": "Предыдущий запрос модели ещё отменяется."
+  },
+  "Could not start model request.": {
+    "en-US": "Could not start model request.", "zh-CN": "无法启动模型请求。", "zh-TW": "無法啟動模型請求。", "ja-JP": "モデルリクエストを開始できませんでした。", "ko-KR": "모델 요청을 시작할 수 없습니다.",
+    "de-DE": "Die Modellanfrage konnte nicht gestartet werden.", "fr-FR": "Impossible de lancer la demande de modèle.", "es-ES": "No se pudo iniciar la solicitud de modelo.", "pt-BR": "Não foi possível iniciar a solicitação de modelo.", "ru-RU": "Не удалось запустить запрос модели."
+  },
+  "Model request cancelled.": {
+    "en-US": "Model request cancelled.", "zh-CN": "模型请求已取消。", "zh-TW": "模型請求已取消。", "ja-JP": "モデルリクエストをキャンセルしました。", "ko-KR": "모델 요청이 취소되었습니다.",
+    "de-DE": "Modellanfrage abgebrochen.", "fr-FR": "Demande de modèle annulée.", "es-ES": "Solicitud de modelo cancelada.", "pt-BR": "Solicitação de modelo cancelada.", "ru-RU": "Запрос модели отменён."
+  },
+  "Enter a name and keep between 1 and 256 models.": {
+    "en-US": "Enter a name and keep between 1 and 256 models.", "zh-CN": "请输入名称，并保留 1 至 256 个模型。", "zh-TW": "請輸入名稱，並保留 1 至 256 個模型。",
+    "ja-JP": "名前を入力し、モデル数を 1～256 にしてください。", "ko-KR": "이름을 입력하고 모델 수를 1~256개로 유지하세요.",
+    "de-DE": "Geben Sie einen Namen ein und behalten Sie 1 bis 256 Modelle.", "fr-FR": "Saisissez un nom et conservez entre 1 et 256 modèles.",
+    "es-ES": "Introduzca un nombre y mantenga entre 1 y 256 modelos.", "pt-BR": "Insira um nome e mantenha entre 1 e 256 modelos.", "ru-RU": "Введите имя и оставьте от 1 до 256 моделей."
+  },
+  "Check model IDs, context windows, and compaction percentages.": {
+    "en-US": "Check model IDs, context windows, and compaction percentages.", "zh-CN": "请检查模型 ID、上下文窗口和压缩百分比。", "zh-TW": "請檢查模型 ID、上下文視窗和壓縮百分比。",
+    "ja-JP": "モデル ID、コンテキストウィンドウ、圧縮率を確認してください。", "ko-KR": "모델 ID, 컨텍스트 창 및 압축 비율을 확인하세요.",
+    "de-DE": "Prüfen Sie Modell-IDs, Kontextfenster und Komprimierungsprozentsätze.", "fr-FR": "Vérifiez les identifiants des modèles, les fenêtres de contexte et les taux de compactage.",
+    "es-ES": "Compruebe los ID de modelo, las ventanas de contexto y los porcentajes de compactación.", "pt-BR": "Verifique os IDs dos modelos, as janelas de contexto e as porcentagens de compactação.", "ru-RU": "Проверьте ID моделей, окна контекста и проценты сжатия."
+  },
+  "Provider save is unavailable.": {
+    "en-US": "Provider save is unavailable.", "zh-CN": "无法保存供应商。", "zh-TW": "無法儲存供應商。", "ja-JP": "プロバイダーを保存できません。", "ko-KR": "공급자를 저장할 수 없습니다.",
+    "de-DE": "Der Anbieter kann nicht gespeichert werden.", "fr-FR": "L'enregistrement du fournisseur est indisponible.", "es-ES": "No se puede guardar el proveedor.", "pt-BR": "Não é possível salvar o provedor.", "ru-RU": "Сохранение провайдера недоступно."
+  },
+  "Could not open the config file.": {
+    "en-US": "Could not open the config file.", "zh-CN": "无法打开配置文件。", "zh-TW": "無法開啟設定檔。", "ja-JP": "設定ファイルを開けませんでした。", "ko-KR": "설정 파일을 열 수 없습니다.",
+    "de-DE": "Die Konfigurationsdatei konnte nicht geöffnet werden.", "fr-FR": "Impossible d'ouvrir le fichier de configuration.", "es-ES": "No se pudo abrir el archivo de configuración.", "pt-BR": "Não foi possível abrir o arquivo de configuração.", "ru-RU": "Не удалось открыть файл настроек."
+  },
+  "Shell and no-project output folder cannot be empty.": {
+    "en-US": "Shell and no-project output folder cannot be empty.", "zh-CN": "终端和无项目输出文件夹不能为空。", "zh-TW": "終端和無專案輸出資料夾不可空白。",
+    "ja-JP": "シェルとプロジェクトなしの出力フォルダーは必須です。", "ko-KR": "셸과 프로젝트 없는 작업의 출력 폴더는 비워 둘 수 없습니다.",
+    "de-DE": "Shell und Ausgabeordner ohne Projekt dürfen nicht leer sein.", "fr-FR": "Le shell et le dossier de sortie sans projet ne peuvent pas être vides.",
+    "es-ES": "El shell y la carpeta de salida sin proyecto no pueden estar vacíos.", "pt-BR": "O shell e a pasta de saída sem projeto não podem estar vazios.", "ru-RU": "Оболочка и папка вывода без проекта не могут быть пустыми."
+  },
+  "The default task folder path is invalid.": {
+    "en-US": "The default task folder path is invalid.", "zh-CN": "默认任务文件夹路径无效。", "zh-TW": "預設任務資料夾路徑無效。", "ja-JP": "既定のタスクフォルダーのパスが無効です。", "ko-KR": "기본 작업 폴더 경로가 잘못되었습니다.",
+    "de-DE": "Der Pfad zum Standard-Aufgabenordner ist ungültig.", "fr-FR": "Le chemin du dossier de tâches par défaut est invalide.", "es-ES": "La ruta de la carpeta de tareas predeterminada no es válida.", "pt-BR": "O caminho da pasta padrão de tarefas é inválido.", "ru-RU": "Недопустимый путь к папке задач по умолчанию."
+  },
+  "No config file path is available.": {
+    "en-US": "No config file path is available.", "zh-CN": "没有可用的配置文件路径。", "zh-TW": "沒有可用的設定檔路徑。", "ja-JP": "設定ファイルのパスがありません。", "ko-KR": "설정 파일 경로가 없습니다.",
+    "de-DE": "Kein Konfigurationsdateipfad verfügbar.", "fr-FR": "Aucun chemin de fichier de configuration n'est disponible.", "es-ES": "No hay una ruta de archivo de configuración disponible.", "pt-BR": "Nenhum caminho de configuração está disponível.", "ru-RU": "Путь к файлу настроек недоступен."
+  },
+  "Provider list is limited to 256 entries.": {
+    "en-US": "Provider list is limited to 256 entries.", "zh-CN": "供应商列表最多显示 256 项。", "zh-TW": "供應商清單最多顯示 256 項。", "ja-JP": "プロバイダー一覧は最大 256 件です。", "ko-KR": "공급자 목록은 최대 256개입니다.",
+    "de-DE": "Die Anbieterliste ist auf 256 Einträge begrenzt.", "fr-FR": "La liste des fournisseurs est limitée à 256 entrées.", "es-ES": "La lista de proveedores está limitada a 256 entradas.", "pt-BR": "A lista de provedores é limitada a 256 entradas.", "ru-RU": "Список провайдеров ограничен 256 записями."
+  },
+  "Cancelling provider test...": {
+    "en-US": "Cancelling provider test...", "zh-CN": "正在取消供应商测试...", "zh-TW": "正在取消供應商測試...", "ja-JP": "プロバイダーテストをキャンセル中...", "ko-KR": "공급자 테스트를 취소하는 중...",
+    "de-DE": "Anbietertest wird abgebrochen...", "fr-FR": "Annulation du test du fournisseur...", "es-ES": "Cancelando la prueba del proveedor...", "pt-BR": "Cancelando o teste do provedor...", "ru-RU": "Отмена теста провайдера..."
+  },
+  "Provider test cancelled.": {
+    "en-US": "Provider test cancelled.", "zh-CN": "供应商测试已取消。", "zh-TW": "供應商測試已取消。", "ja-JP": "プロバイダーテストをキャンセルしました。", "ko-KR": "공급자 테스트가 취소되었습니다.",
+    "de-DE": "Anbietertest abgebrochen.", "fr-FR": "Test du fournisseur annulé.", "es-ES": "Prueba del proveedor cancelada.", "pt-BR": "Teste do provedor cancelado.", "ru-RU": "Тест провайдера отменён."
+  },
+  "Could not start archive scan.": {
+    "en-US": "Could not start archive scan.", "zh-CN": "无法开始扫描归档。", "zh-TW": "無法開始掃描封存。", "ja-JP": "アーカイブの検索を開始できませんでした。", "ko-KR": "보관 기록 검색을 시작할 수 없습니다.",
+    "de-DE": "Die Archivsuche konnte nicht gestartet werden.", "fr-FR": "Impossible de lancer l'analyse des archives.", "es-ES": "No se pudo iniciar la búsqueda de archivos.", "pt-BR": "Não foi possível iniciar a busca nos arquivos.", "ru-RU": "Не удалось начать поиск в архиве."
+  },
+  "Could not start archive action.": {
+    "en-US": "Could not start archive action.", "zh-CN": "无法启动归档操作。", "zh-TW": "無法啟動封存操作。", "ja-JP": "アーカイブ操作を開始できませんでした。", "ko-KR": "보관 기록 작업을 시작할 수 없습니다.",
+    "de-DE": "Der Archivvorgang konnte nicht gestartet werden.", "fr-FR": "Impossible de lancer l'opération sur les archives.", "es-ES": "No se pudo iniciar la operación de archivo.", "pt-BR": "Não foi possível iniciar a operação de arquivo.", "ru-RU": "Не удалось запустить операцию с архивом."
+  },
+  "Restoring chat...": {
+    "en-US": "Restoring chat...", "zh-CN": "正在恢复对话...", "zh-TW": "正在還原聊天...", "ja-JP": "チャットを復元中...", "ko-KR": "채팅을 복원하는 중...",
+    "de-DE": "Chat wird wiederhergestellt...", "fr-FR": "Restauration de la discussion...", "es-ES": "Restaurando chat...", "pt-BR": "Restaurando conversa...", "ru-RU": "Восстановление чата..."
+  },
+  "Deleting archived chat...": {
+    "en-US": "Deleting archived chat...", "zh-CN": "正在删除归档对话...", "zh-TW": "正在刪除封存聊天...", "ja-JP": "アーカイブしたチャットを削除中...", "ko-KR": "보관된 채팅을 삭제하는 중...",
+    "de-DE": "Archivierter Chat wird gelöscht...", "fr-FR": "Suppression de la discussion archivée...", "es-ES": "Eliminando chat archivado...", "pt-BR": "Excluindo conversa arquivada...", "ru-RU": "Удаление архивного чата..."
+  },
+  "Deleting archived chats...": {
+    "en-US": "Deleting archived chats...", "zh-CN": "正在删除归档对话...", "zh-TW": "正在刪除封存聊天...", "ja-JP": "アーカイブしたチャットを削除中...", "ko-KR": "보관된 채팅을 삭제하는 중...",
+    "de-DE": "Archivierte Chats werden gelöscht...", "fr-FR": "Suppression des discussions archivées...", "es-ES": "Eliminando chats archivados...", "pt-BR": "Excluindo conversas arquivadas...", "ru-RU": "Удаление архивных чатов..."
+  },
   "Remove attachment": {
     "en-US": "Remove attachment", "zh-CN": "移除附件", "zh-TW": "移除附件",
     "ja-JP": "添付ファイルを削除", "ko-KR": "첨부 파일 제거", "de-DE": "Anhang entfernen",

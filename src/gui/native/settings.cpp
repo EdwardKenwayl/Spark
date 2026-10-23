@@ -256,8 +256,8 @@ NativeSettings::NativeSettings(wxWindow* parent, const AppConfig& config,
     CreateProviders(providers);
     CreateArchives(archived);
     pages_->AddPage(general_page_, T(L"General"));
-    pages_->AddPage(providers, T(L"Providers"));
-    pages_->AddPage(archived, T(L"Archived"));
+    pages_->AddPage(providers, T(L"Provider configuration"));
+    pages_->AddPage(archived, T(L"Archived chats"));
     status_ = new wxStaticText(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize,
                                wxST_ELLIPSIZE_END | wxST_NO_AUTORESIZE);
     status_->SetName("spark.settings.status");
@@ -360,7 +360,7 @@ void NativeSettings::CreateProviders(wxWindow* page) {
         std::error_code error;
         if (config_.config_path.empty() || !fs::is_regular_file(file, error) ||
             !wxLaunchDefaultApplication(U(PathToUtf8(fs::absolute(file, error)))))
-            Status("Could not open the config file.");
+            Status(S(T(L"Could not open the config file.")));
     });
     add_->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { EditProvider(true); });
     provider_list_->SetActionTooltips(
@@ -594,11 +594,17 @@ void NativeSettings::Localize() {
     section_title_->SetLabel(T(names[pages_->GetSelection()]));
     for (int index = 0; index < 3; ++index) nav_[index]->SetSelected(index == pages_->GetSelection());
     language_->SetString(0, T(L"Automatic"));
+    browse_->SetToolTip(T(L"Choose the default task folder"));
+    add_->SetToolTip(T(L"Add provider"));
+    open_config_->SetToolTip(T(L"Open config"));
+    provider_list_->SetActionTooltips(
+        {T(L"Send hi test"), T(L"Edit provider"), T(L"Duplicate provider"), T(L"Delete provider")},
+        T(L"Reorder providers"));
     for (size_t index = 0; index < 3; ++index)
         theme_->SetString(index, T(index == 0 ? L"Dark" : index == 1 ? L"Light" : L"System"));
     delete_all_archives_->SetLabel(T(L"Delete all"));
     delete_all_archives_->Show(pages_->GetSelection() == 2);
-    archive_list_->SetLabels(T(L"Unarchive"), T(L"Delete archived chat"));
+    archive_list_->SetLabels(T(L"Unarchive"), T(L"Delete chat"));
     RefreshArchiveScopes();
     FilterArchives();
     archive_search_->SetDescriptiveText(T(L"Search archived chats"));
@@ -631,7 +637,6 @@ void NativeSettings::Reload(const AppConfig& config) {
     const auto config_path = AbsolutePath(config_.config_path, GetExecutableDirectory());
     config_path_->SetLabel(U(config_path));
     config_path_->SetToolTip(U(config_path));
-    RefreshProviders();
     syncing_ = false;
     if (data_changed) {
         if (archive_job_) archive_job_->cancellation.Cancel();
@@ -640,6 +645,7 @@ void NativeSettings::Reload(const AppConfig& config) {
         FilterArchives();
     }
     Localize();
+    RefreshProviders();
     ApplyTheme();
     if (pages_->GetSelection() == 2 && archives_dirty_) StartArchiveScan();
 }
@@ -655,14 +661,14 @@ void NativeSettings::SaveGeneral() {
     updated.ui.shell = Trim(S(shell_->GetStringSelection()));
     const std::string workspace_input = Trim(S(output_->GetValue()));
     if (updated.ui.shell.empty() || workspace_input.empty()) {
-        Status("Shell and no-project output folder cannot be empty."); return;
+        Status(S(T(L"Shell and no-project output folder cannot be empty."))); return;
     }
     const std::string config_directory = updated.config_path.empty()
         ? GetExecutableDirectory() : ParentPath(updated.config_path);
     updated.workspace.path = AbsolutePath(ResolveConfigPath(workspace_input, updated.config_path),
                                           config_directory);
     if (updated.workspace.path.empty()) {
-        Status("The default task folder path is invalid."); return;
+        Status(S(T(L"The default task folder path is invalid."))); return;
     }
     if (ConfigToJson(updated) != ConfigToJson(config_)) Commit(std::move(updated), false);
 }
@@ -689,7 +695,7 @@ bool NativeSettings::Commit(AppConfig updated, bool providers) {
             }
         }
     }
-    if (updated.config_path.empty()) { Status("No config file path is available."); return false; }
+    if (updated.config_path.empty()) { Status(S(T(L"No config file path is available."))); return false; }
     const auto result = SaveConfigAtomically(updated);
     if (!result.ok) { Status(result.error); return false; }
     if (probe_) probe_->cancellation.Cancel();
@@ -702,7 +708,7 @@ bool NativeSettings::Commit(AppConfig updated, bool providers) {
     Localize();
     ApplyTheme();
     RefreshProviders();
-    Status("Settings saved.");
+    Status(S(T(L"Settings saved and applied.")));
     // A controller may synchronously call Reload() or replace this page.
     const auto callback = saved_;
     const auto snapshot = config_;
@@ -728,11 +734,12 @@ void NativeSettings::RefreshProviders() {
     provider_empty_->Show(config_.providers.empty());
     add_->Enable(config_.providers.size() < kMaxProviders);
     const auto errors = ValidateConfig(config_, false);
-    const wxString summary = wxString::Format("%zu providers, %zu models; %zu configuration issues.",
-                                              config_.providers.size(), model_count, errors.size());
+    const wxString summary = i18n::Format(L"Loaded providers: {providers}. Models: {models}. Configuration issues: {count}.",
+        {{L"providers", std::to_wstring(config_.providers.size())}, {L"models", std::to_wstring(model_count)},
+         {L"count", std::to_wstring(errors.size())}});
     config_status_->SetLabel(summary);
     config_status_->SetToolTip(errors.empty() ? summary : summary + "\n" + U(TruncateUtf8(errors.front(), 1024)));
-    if (config_.providers.size() > kMaxProviders) Status("Provider list is limited to 256 entries.");
+    if (config_.providers.size() > kMaxProviders) Status(S(T(L"Provider list is limited to 256 entries.")));
 }
 
 void NativeSettings::EditProvider(bool add, size_t index) {
@@ -826,7 +833,7 @@ void NativeSettings::ReorderProvider(size_t source, size_t destination) {
 }
 
 void NativeSettings::StartProbe(size_t index) {
-    if (probe_) { probe_->cancellation.Cancel(); Status("Cancelling provider test..."); return; }
+    if (probe_) { probe_->cancellation.Cancel(); Status(S(T(L"Cancelling provider test..."))); return; }
     if (index >= config_.providers.size()) return;
     const auto provider = config_.providers[index];
     auto state = std::make_shared<Probe>();
@@ -838,10 +845,11 @@ void NativeSettings::StartProbe(size_t index) {
             catch (...) { state->result = Result<ProviderProbeResult>::Failure("Provider test failed."); }
             state->done.store(true, std::memory_order_release);
         });
-    } catch (...) { Status("Could not start provider test."); return; }
+    } catch (...) { Status(S(T(L"Could not start the provider test."))); return; }
     probe_ = std::move(state);
-    Status("Sending hi to " + (provider.label.empty() ? provider.id : provider.label) +
-           " using " + ProviderProbeModelId(provider) + "...");
+    Status(S(i18n::Format(L"Sending hi to {name} using {model}...",
+        {{L"name", Utf8ToWide(provider.label.empty() ? provider.id : provider.label)},
+         {L"model", Utf8ToWide(ProviderProbeModelId(provider))}})));
 }
 
 void NativeSettings::StartArchiveScan() {
@@ -910,7 +918,7 @@ void NativeSettings::StartArchiveScan() {
             } catch (...) { state->ok = false; state->status = "Could not read archived chats."; }
             state->done.store(true, std::memory_order_release);
         });
-    } catch (...) { Status("Could not start archive scan."); return; }
+    } catch (...) { Status(S(T(L"Could not start archive scan."))); return; }
     archive_job_ = std::move(state);
     archives_dirty_ = false;
     archive_list_->Disable(); delete_all_archives_->Disable();
@@ -1034,10 +1042,10 @@ void NativeSettings::ArchiveAction(size_t index, bool restore) {
             } catch (...) { state->ok = false; state->status = "Archive action failed; check the file and storage paths."; }
             state->done.store(true, std::memory_order_release);
         });
-    } catch (...) { Status("Could not start archive action."); return; }
+    } catch (...) { Status(S(T(L"Could not start archive action."))); return; }
     archive_job_ = std::move(state);
     archive_list_->Disable(); delete_all_archives_->Disable();
-    Status(restore ? "Restoring chat..." : "Deleting archived chat...");
+    Status(S(T(restore ? L"Restoring chat..." : L"Deleting archived chat...")));
 }
 
 void NativeSettings::DeleteAllArchives() {
@@ -1078,10 +1086,10 @@ void NativeSettings::DeleteAllArchives() {
             } catch (...) { state->ok = false; state->status = "Could not delete archived chats."; }
             state->done.store(true, std::memory_order_release);
         });
-    } catch (...) { Status("Could not start archive action."); return; }
+    } catch (...) { Status(S(T(L"Could not start archive action."))); return; }
     archive_job_ = std::move(state);
     archive_list_->Disable(); delete_all_archives_->Disable();
-    Status("Deleting archived chats...");
+    Status(S(T(L"Deleting archived chats...")));
 }
 
 void NativeSettings::Poll(wxTimerEvent&) {
@@ -1089,15 +1097,18 @@ void NativeSettings::Poll(wxTimerEvent&) {
         if (probe_worker_.joinable()) probe_worker_.join();
         auto state = std::move(probe_);
         const auto& result = state->result;
-        if (state->cancellation.IsCancelled()) Status("Provider test cancelled.");
+        if (state->cancellation.IsCancelled()) Status(S(T(L"Provider test cancelled.")));
         else {
             const auto& value = result.value;
             const std::string model = value.model_id.empty() ? state->model : value.model_id;
             const std::string http = value.http_status > 0
-                ? "HTTP " + std::to_string(value.http_status) : "No HTTP response";
-            const std::string reply = result.ok ? value.text : "hi test failed: " + result.error;
-            Status(state->provider_name + " / " + model + ": " + http + ", " +
-                   std::to_string(value.elapsed_ms) + " ms\n" + reply);
+                ? "HTTP " + std::to_string(value.http_status) : S(T(L"No HTTP response"));
+            const std::string reply = result.ok ? value.text :
+                S(i18n::Format(L"hi test failed: {error}", {{L"error", Utf8ToWide(result.error)}}));
+            Status(S(i18n::Format(L"{name} / {model}: {status}, {time} ms\n{reply}",
+                {{L"name", Utf8ToWide(state->provider_name)}, {L"model", Utf8ToWide(model)},
+                 {L"status", Utf8ToWide(http)}, {L"time", std::to_wstring(value.elapsed_ms)},
+                 {L"reply", Utf8ToWide(reply)}})));
         }
     }
     if (archive_job_ && archive_job_->done.load(std::memory_order_acquire)) {

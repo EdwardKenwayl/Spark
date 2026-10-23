@@ -218,7 +218,7 @@ void NativeFrame::NewConversation(int project) {
     empty_.Clear();
     chat_->SetTranscript(&empty_, true);
     chat_->SetLoading(0);
-    const auto title = project_name_.empty() ? T(L"What would you like to do today?") :
+    const auto title = project_name_.empty() ? T(L"What do you want to do?") :
         wxString(i18n::Format(L"What would you like to do in {project}?", {{L"project", Utf8ToWide(project_name_)}}));
     chat_->SetEmptyTitle(title);
     title_->SetLabel(T(L"New chat"));

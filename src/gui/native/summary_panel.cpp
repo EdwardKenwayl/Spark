@@ -450,6 +450,8 @@ NativeSummaryPanel::NativeSummaryPanel(wxWindow* parent, Callbacks callbacks)
     };
     agents_tab_ = button(header_, T(L"Subagents"), 106, true);
     sources_tab_ = button(header_, T(L"Sources"), 106, true);
+    agents_tab_->SetName("spark.summary.agents-tab");
+    sources_tab_->SetName("spark.summary.sources-tab");
     agents_tab_->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { ShowAgents(); });
     sources_tab_->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { ShowSources(); });
     header->AddSpacer(FromDIP(10));
@@ -457,6 +459,7 @@ NativeSummaryPanel::NativeSummaryPanel(wxWindow* parent, Callbacks callbacks)
     header->AddSpacer(FromDIP(6)); header->Add(sources_tab_, 0, wxTOP | wxBOTTOM, FromDIP(4));
     header->AddStretchSpacer();
     auto* close = button(header_, wxString(L"\u00d7"), 32, false);
+    close->SetName("spark.summary.close");
     close->SetToolTip(T(L"Close"));
     close->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { Close(); });
     header->Add(close, 0, wxTOP | wxBOTTOM, FromDIP(4));
@@ -472,6 +475,7 @@ NativeSummaryPanel::NativeSummaryPanel(wxWindow* parent, Callbacks callbacks)
     detail_->Bind(wxEVT_PAINT, &NativeSummaryPanel::PaintDetail, this);
     auto* detail = new wxBoxSizer(wxHORIZONTAL);
     auto* back = button(detail_, wxString(L"\u2190"), 32, false);
+    back->SetName("spark.summary.back");
     back->SetToolTip(T(L"Back"));
     back->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { ShowAgents(); });
     detail->AddSpacer(FromDIP(8)); detail->Add(back, 0, wxTOP | wxBOTTOM, FromDIP(4));
@@ -484,6 +488,24 @@ NativeSummaryPanel::~NativeSummaryPanel() = default;
 
 void NativeSummaryPanel::SetDark(bool dark) {
     dark_ = dark; ApplyNativeColors(this, dark); chat_->SetDark(dark);
+    Localize();
+}
+void NativeSummaryPanel::Localize() {
+    if (locale_ == i18n::CurrentLocale()) return;
+    locale_ = i18n::CurrentLocale();
+    agents_tab_->SetLabel(T(L"Subagents"));
+    sources_tab_->SetLabel(T(L"Sources"));
+    if (auto* close = wxWindow::FindWindowByName("spark.summary.close", this)) close->SetToolTip(T(L"Close"));
+    if (auto* back = wxWindow::FindWindowByName("spark.summary.back", this)) back->SetToolTip(T(L"Back"));
+    for (auto& agent : agents_) {
+        switch (agent.state) {
+            case SubAgentState::Running: agent.status = T(L"Running"); break;
+            case SubAgentState::Completed: agent.status = T(L"Completed"); break;
+            case SubAgentState::Failed: agent.status = T(L"Failed"); break;
+            case SubAgentState::Cancelled: agent.status = T(L"Stopped"); break;
+        }
+    }
+    RefreshView();
 }
 int NativeSummaryPanel::RowHeight(const Row& row) const {
     switch (row.kind) {
@@ -570,6 +592,7 @@ wxSize NativeSummaryPanel::PopupSize() const {
     return FromDIP(wxSize(320, height));
 }
 void NativeSummaryPanel::SetSources(const std::vector<SourceReference>& sources) {
+    Localize();
     std::vector<Source> next;
     next.reserve(std::min(sources.size(), kMaxSources));
     std::set<std::pair<std::string, std::string>> seen;
@@ -606,6 +629,7 @@ void NativeSummaryPanel::RefreshThumbnails() {
     if (!popup_ && page_ == Page::Sources && rows_->IsShownOnScreen()) rows_->Refresh(false);
 }
 void NativeSummaryPanel::SetAgents(const std::vector<SubAgentInfo>& agents) {
+    Localize();
     std::vector<Agent> next;
     next.reserve(std::min(agents.size(), kMaxAgents));
     for (size_t i = 0; i < std::min(agents.size(), kMaxAgents); ++i) {

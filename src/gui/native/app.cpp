@@ -1,6 +1,7 @@
 #include "gui/native/app.h"
 #include "core/context_compactor.h"
 #include "gui/localization.h"
+#include "gui/native/startup_dpi.h"
 #include "gui/native/summary_popup.h"
 #include "platform/clock.h"
 #include "platform/desktop_capture.h"
@@ -54,10 +55,9 @@ private:
 };
 
 NativeFrame::NativeFrame(AppConfig config)
-    : wxFrame(nullptr, wxID_ANY, "Spark", wxDefaultPosition, wxSize(1220, 820)),
+    : wxFrame(nullptr, wxID_ANY, "Spark"),
       config_(std::move(config)), timer_(this) {
-    SetMinSize(wxSize(760, 520));
-    SetFont(wxFont(wxFontInfo(10)));
+    ApplyNativeStartupDpi(*this);
     for (const auto* relative : {"../share/spark/spark_agent.ico", "../Resources/spark_agent.ico"}) {
         const auto path = JoinPath(GetExecutableDirectory(), relative);
         wxIcon icon;
@@ -265,7 +265,7 @@ void NativeFrame::ApplyConfig(const AppConfig& config) {
     permissions_->SetSelection(permission);
     if (active_.empty()) {
         title_->SetLabel(T(L"New chat"));
-        chat_->SetEmptyTitle(project_name_.empty() ? T(L"What would you like to do today?") :
+        chat_->SetEmptyTitle(project_name_.empty() ? T(L"What do you want to do?") :
             wxString(i18n::Format(L"What would you like to do in {project}?",
                                  {{L"project", Utf8ToWide(project_name_)}})));
     }
