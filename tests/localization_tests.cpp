@@ -97,6 +97,9 @@ void TestCatalogCoverage() {
         }
         for (auto match = std::sregex_iterator(source.begin(), source.end(), reference);
              match != std::sregex_iterator(); ++match) {
+            const auto call = static_cast<size_t>(match->position());
+            // wxDateTime::Format and other member calls are not translation lookups.
+            if (call > 0 && (source[call - 1] == '.' || source[call - 1] == '>')) continue;
             std::string encoded = (*match)[1].str();
             size_t offset = static_cast<size_t>(match->position() + match->length());
             for (;;) {

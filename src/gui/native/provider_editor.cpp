@@ -2,6 +2,7 @@
 
 #include "core/provider_models.h"
 #include "gui/localization.h"
+#include "gui/reasoning_summary.h"
 #include "gui/native/popup_menu.h"
 #include "gui/native/reasoning_popup.h"
 
@@ -505,6 +506,13 @@ void NativeProviderEditor::AddModel(ModelConfig model) {
         row.model.capabilities.context_window > 0
             ? wxString::Format("%d", row.model.capabilities.context_window) : wxString{});
     row.context->SetToolTip(T(L"Use 0 to inherit the default context window."));
+    row.context->SetHint(wxString::Format("%d", context_.fallback_context_window));
+    row.id->SetToolTip(T(L"Model ID"));
+    const wchar_t* captions[] = {L"Model ID", L"Context window", L"Auto compact (%)"};
+    for (size_t field = 0; field < 3; ++field) {
+        row.labels[field] = new wxStaticText(row.panel, wxID_ANY, T(captions[field]));
+        row.labels[field]->Hide();
+    }
     row.auto_compact = new NativeChoice(row.panel);
     row.auto_compact->Append(i18n::Format(L"Default ({value}%)",
         {{L"value", std::to_wstring(context_.auto_compact_threshold_percent)}}));
@@ -518,13 +526,17 @@ void NativeProviderEditor::AddModel(ModelConfig model) {
                                 row.auto_compact_options.begin());
     row.auto_compact->SetSelection(compact_index);
     row.auto_compact->SetMinSize(FromDIP(wxSize(110, 36)));
+    row.auto_compact->SetToolTip(T(L"Auto compact (%)"));
     row.images = new NativeChoice(row.panel);
     row.images->Append(T(L"Send original images"));
     row.images->Append(T(L"Do not send images"));
     row.images->SetSelection(row.model.capabilities.images ? 0 : 1);
     row.images->SetMinSize(FromDIP(wxSize(110, 36)));
+    row.images->SetToolTip(T(L"Image handling"));
     row.reasoning = new NativeButton(row.panel, T(L"Reasoning"));
     row.reasoning->SetMinSize(FromDIP(wxSize(150, 36)));
+    row.reasoning->SetDisclosure(NativeDisclosure::Collapsed);
+    row.reasoning->SetToolTip(T(L"Configure reasoning levels and default"));
     row.remove = new NativeButton(row.panel, {}, wxART_DELETE);
     row.remove->SetMinSize(FromDIP(wxSize(32, 36)));
     row.remove->SetToolTip(T(L"Remove model"));
@@ -547,10 +559,18 @@ void NativeProviderEditor::AddModel(ModelConfig model) {
     model_rows_data_[index].reasoning->SetName(
         wxString::Format("spark.provider.editor.model.%zu.reasoning", index));
     model_rows_data_[index].remove->SetName(wxString::Format("spark.provider.editor.model.%zu.remove", index));
+    const char* label_names[] = {"id", "context", "auto-compact"};
+    for (size_t field = 0; field < 3; ++field)
+        model_rows_data_[index].labels[field]->SetName(
+            wxString::Format("spark.provider.editor.model.%zu.label.", index) + label_names[field]);
     model_rows_data_[index].sizer_item =
         model_rows_->Add(panel, 0, wxEXPAND | wxBOTTOM, FromDIP(14));
 
-    model_rows_data_[index].id->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { Changed(); });
+    model_rows_data_[index].id->Bind(wxEVT_TEXT, [this, panel](wxCommandEvent&) {
+        const size_t row_index = FindModelRow(panel);
+        if (row_index < model_rows_data_.size()) UpdateModelRow(row_index);
+        Changed();
+    });
     model_rows_data_[index].context->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { Changed(); });
     model_rows_data_[index].auto_compact->Bind(wxEVT_CHOICE, [this, panel](wxCommandEvent&) {
         const size_t row_index = FindModelRow(panel);
@@ -588,6 +608,10 @@ void NativeProviderEditor::RemoveModel(size_t index) {
         row.images->SetName(wxString::Format("spark.provider.editor.model.%zu.images", current));
         row.reasoning->SetName(wxString::Format("spark.provider.editor.model.%zu.reasoning", current));
         row.remove->SetName(wxString::Format("spark.provider.editor.model.%zu.remove", current));
+        const char* label_names[] = {"id", "context", "auto-compact"};
+        for (size_t field = 0; field < 3; ++field)
+            row.labels[field]->SetName(
+                wxString::Format("spark.provider.editor.model.%zu.label.", current) + label_names[field]);
     }
     LayoutModels();
     Changed();
@@ -604,25 +628,33 @@ void NativeProviderEditor::UpdateModelRow(size_t index) {
     if (index >= model_rows_data_.size()) return;
     auto& row = model_rows_data_[index];
     const bool compact = compact_models_;
+    for (auto* label : row.labels) label->Show(compact);
     if (!row.layout_initialized || row.compact_layout != compact) {
         // SetSizer deletes the previous sizer; do not delete it again.
         row.panel->SetSizer(nullptr);
         row.layout = nullptr;
         if (compact) {
             auto* vertical = new wxBoxSizer(wxVERTICAL);
+            const auto labeled = [this, &row](wxWindow* control, size_t field, bool inset) {
+                auto* slot = new wxBoxSizer(wxVERTICAL);
+                slot->Add(row.labels[field], 0, wxBOTTOM, FromDIP(4));
+                auto* input = new wxBoxSizer(wxHORIZONTAL);
+                input->SetMinSize(0, FromDIP(36));
+                if (inset) input->AddSpacer(FromDIP(9));
+                input->Add(control, 1, wxALIGN_CENTER_VERTICAL);
+                if (inset) input->AddSpacer(FromDIP(9));
+                slot->Add(input, 0, wxEXPAND);
+                return slot;
+            };
             auto* top = new wxBoxSizer(wxHORIZONTAL);
-            top->Add(row.id, 1, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, FromDIP(9));
-            top->Add(row.remove, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(10));
+            top->Add(labeled(row.id, 0, true), 1, wxEXPAND);
+            top->Add(row.remove, 0, wxALIGN_BOTTOM | wxLEFT, FromDIP(10));
             vertical->Add(top, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
             auto* second = new wxFlexGridSizer(1, 2, 0, FromDIP(8));
             second->AddGrowableCol(0);
             second->AddGrowableCol(1);
-            auto* context_slot = new wxBoxSizer(wxHORIZONTAL);
-            context_slot->AddSpacer(FromDIP(9));
-            context_slot->Add(row.context, 1, wxALIGN_CENTER_VERTICAL);
-            context_slot->AddSpacer(FromDIP(9));
-            second->Add(context_slot, 1, wxEXPAND);
-            second->Add(row.auto_compact, 1, wxEXPAND);
+            second->Add(labeled(row.context, 1, true), 1, wxEXPAND);
+            second->Add(labeled(row.auto_compact, 2, false), 1, wxEXPAND);
             vertical->Add(second, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
             auto* third = new wxFlexGridSizer(1, 2, 0, FromDIP(8));
             third->AddGrowableCol(0);
@@ -660,11 +692,7 @@ void NativeProviderEditor::UpdateModelRow(size_t index) {
     }
     ModelConfig current = row.model;
     current.id = Trim(S(row.id->GetValue()));
-    const auto effective = current.capabilities.reasoning
-        ? EffectiveDefaultReasoningEffort(current) : std::string{};
-    wxString reasoning = !current.capabilities.reasoning
-        ? T(L"Off")
-        : effective.empty() ? T(L"Auto") : U(effective);
+    wxString reasoning(ReasoningSummary(current));
     if (compact) reasoning = T(L"Reasoning") + ": " + reasoning;
     row.reasoning->SetLabel(reasoning);
     const wxString image_options[] = {
@@ -780,6 +808,7 @@ void NativeProviderEditor::ShowReasoningMenu(size_t index) {
     built_in.capabilities.reasoning = true;
     built_in.capabilities.reasoning_efforts.clear();
     auto available = EffectiveReasoningEfforts(built_in);
+    const bool has_built_in = !available.empty();
     if (available.empty()) available = selected;
     const wxPoint screen = row.reasoning->ClientToScreen(wxPoint(0, row.reasoning->GetSize().y));
     NativeReasoningPopupState state;
@@ -788,12 +817,12 @@ void NativeProviderEditor::ShowReasoningMenu(size_t index) {
     state.selected = selected;
     state.default_effort = row.model.capabilities.default_reasoning_effort;
     ShowNativeReasoningPopup(row.reasoning, screen, std::move(state),
-        [this, index](const NativeReasoningPopupState& next) {
+        [this, index, has_built_in](const NativeReasoningPopupState& next) {
             if (index >= model_rows_data_.size()) return;
             auto& model = model_rows_data_[index].model;
             model.capabilities.reasoning = next.reasoning;
             model.capabilities.reasoning_efforts =
-                next.built_in_defaults || next.selected == next.efforts
+                has_built_in && (next.built_in_defaults || next.selected == next.efforts)
                     ? std::vector<std::string>{} : next.selected;
             model.capabilities.default_reasoning_effort = next.default_effort;
             if (std::find(next.selected.begin(), next.selected.end(),

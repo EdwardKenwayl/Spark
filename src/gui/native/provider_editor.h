@@ -52,6 +52,7 @@ private:
         wxSizerItem* sizer_item = nullptr;
         wxTextCtrl* id = nullptr;
         wxTextCtrl* context = nullptr;
+        wxStaticText* labels[3]{};
         NativeChoice* auto_compact = nullptr;
         NativeChoice* images = nullptr;
         NativeButton* reasoning = nullptr;

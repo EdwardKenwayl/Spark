@@ -7,6 +7,7 @@
 #include <wx/display.h>
 #include <wx/nonownedwnd.h>
 #include <wx/popupwin.h>
+#include <wx/sizer.h>
 #include <wx/utils.h>
 #include <wx/weakref.h>
 
@@ -32,6 +33,9 @@ public:
         canvas_->SetBackgroundColour(colors_.panel);
         canvas_->SetForegroundColour(colors_.text);
         canvas_->SetFont(owner->GetFont());
+        auto* layout = new wxBoxSizer(wxVERTICAL);
+        layout->Add(canvas_, 1, wxEXPAND);
+        SetSizer(layout);
         canvas_->Bind(wxEVT_PAINT, &ReasoningPopup::Paint, this);
         canvas_->Bind(wxEVT_MOTION, &ReasoningPopup::Motion, this);
         canvas_->Bind(wxEVT_LEFT_DOWN, &ReasoningPopup::Press, this);
@@ -73,44 +77,43 @@ private:
     }
 
     void Resize() {
-        const int width = Dip(320);
+        const int width = Dip(296);
         const int padding = Dip(12);
         const int header_height = Dip(42);
-        const int effort_height = Dip(30);
-        const int chip_height = Dip(28);
-        const int section_gap = Dip(10);
-        const int reset_height = Dip(34);
+        const int effort_height = Dip(32);
+        const int chip_height = Dip(32);
+        const int reset_height = Dip(28);
         const int chip_gap = Dip(6);
         const int chip_limit = width - 2 * padding;
 
         effort_rects_.clear();
         for (size_t index = 0; index < state_.efforts.size(); ++index) {
             const int top = header_height + static_cast<int>(index) * effort_height;
-            effort_rects_.push_back({padding, top, width - padding, top + effort_height});
+            effort_rects_.push_back({padding, top, width - 2 * padding, effort_height});
         }
 
         int chip_x = padding;
-        int chip_y = header_height + static_cast<int>(state_.efforts.size()) * effort_height +
-                     section_gap + Dip(22);
+        int chip_y = header_height + static_cast<int>(std::max(size_t{1}, state_.efforts.size())) * effort_height +
+                     Dip(44);
         wxClientDC dc(canvas_);
         dc.SetFont(canvas_->GetFont());
         chip_rects_.clear();
         for (size_t index = 0; index <= state_.efforts.size(); ++index) {
             const wxString label = index == 0 ? T(L"Auto") : U(state_.efforts[index - 1]);
             const int chip_width = std::min(
-                chip_limit, std::max(Dip(44), dc.GetTextExtent(label).x + Dip(22)));
+                chip_limit, std::max(Dip(42), dc.GetTextExtent(label).x + Dip(20)));
             if (chip_x != padding && chip_x + chip_width > width - padding) {
                 chip_x = padding;
                 chip_y += chip_height + chip_gap;
             }
-            chip_rects_.push_back({chip_x, chip_y, chip_x + chip_width, chip_y + chip_height});
+            chip_rects_.push_back({chip_x, chip_y, chip_width, chip_height});
             chip_x += chip_width + chip_gap;
         }
 
-        const int reset_top = chip_y + chip_height + section_gap;
-        reset_rect_ = {padding, reset_top, width - padding, reset_top + reset_height};
-        close_rect_ = {width - Dip(34), Dip(7), width - Dip(7), Dip(34)};
-        const int height = reset_top + reset_height + padding;
+        const int reset_top = chip_y + chip_height + Dip(8);
+        reset_rect_ = {padding, reset_top, width - 2 * padding, reset_height};
+        close_rect_ = {width - Dip(36), Dip(6), Dip(30), Dip(30)};
+        const int height = reset_top + Dip(36);
 
         int monitor = wxDisplay::GetFromPoint(anchor_);
         if (monitor == wxNOT_FOUND) monitor = wxDisplay::GetFromWindow(owner_.get());
@@ -118,11 +121,11 @@ private:
         const wxRect work = wxDisplay(static_cast<unsigned>(monitor)).GetClientArea();
         const int x = std::clamp(anchor_.x, work.x, work.GetRight() + 1 - width);
         const int below = anchor_.y + Dip(6);
-        const int y = below + height <= work.GetBottom() + 1
-            ? below : std::max(work.y, anchor_.y - height - Dip(6));
+        const int y = std::clamp(below + height <= work.GetBottom() + 1
+            ? below : anchor_.y - height - Dip(6),
+            work.y, std::max(work.y, work.GetBottom() + 1 - height));
         SetSize(x, y, width, height);
         ApplyRoundedPopupShape(this, 8);
-        canvas_->SetSize(GetClientRect());
         Layout();
     }
 
@@ -262,8 +265,12 @@ private:
             dc.DrawText(U(state_.efforts[index]), row.x + Dip(30), row.y + Dip(6));
         }
 
-        const int heading_y = effort_rects_.empty()
-            ? Dip(50) : effort_rects_.back().GetBottom() + Dip(8);
+        if (state_.efforts.empty()) {
+            dc.SetTextForeground(colors_.muted);
+            dc.DrawText(T(L"No preset levels"), Dip(14), Dip(48));
+        }
+        const int heading_y = Dip(42) +
+            static_cast<int>(std::max(size_t{1}, state_.efforts.size())) * Dip(32) + Dip(8);
         dc.SetTextForeground(colors_.muted);
         dc.DrawText(T(L"Default level"), Dip(14), heading_y);
         for (size_t index = 0; index < chip_rects_.size(); ++index) {
@@ -295,7 +302,8 @@ private:
         }
         dc.DrawRoundedRectangle(reset_rect_, Dip(4));
         dc.SetTextForeground(colors_.text);
-        dc.DrawText(T(L"Use built-in defaults"), reset_rect_.x + Dip(10), reset_rect_.y + Dip(7));
+        dc.DrawText(T(L"Use built-in defaults"), reset_rect_.x + Dip(10),
+                    reset_rect_.y + (reset_rect_.height - dc.GetCharHeight()) / 2);
     }
 
     void OwnerDestroyed(wxWindowDestroyEvent& event) {

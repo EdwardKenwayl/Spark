@@ -1175,11 +1175,11 @@ int main(int argc, char** argv) {
         if (reasoning_popup && reasoning_canvas) {
             Capture(reasoning_popup, output / "reasoning-popup.png", wxSize(250, 180));
             const int header_height = first_model_reasoning->FromDIP(42);
-            const int effort_height = first_model_reasoning->FromDIP(30);
-            const int chip_height = first_model_reasoning->FromDIP(28);
+            const int effort_height = first_model_reasoning->FromDIP(32);
+            const int chip_height = first_model_reasoning->FromDIP(32);
             const int chip_gap = first_model_reasoning->FromDIP(6);
             const int chip_y = header_height + effort_height * 3 +
-                               first_model_reasoning->FromDIP(10 + 22);
+                               first_model_reasoning->FromDIP(44);
             const int chip_center_y = chip_y + chip_height / 2;
             const auto chip_center_x = [&](int target) {
                 wxClientDC dc(reasoning_canvas);
@@ -1188,8 +1188,8 @@ int main(int argc, char** argv) {
                 const char* labels[] = {"Auto", "low", "medium", "high"};
                 for (int index = 0; index <= target; ++index) {
                     const wxString label = wxString::FromUTF8(labels[index]);
-                    const int width = std::max(first_model_reasoning->FromDIP(44),
-                        dc.GetTextExtent(label).x + first_model_reasoning->FromDIP(22));
+                    const int width = std::max(first_model_reasoning->FromDIP(42),
+                        dc.GetTextExtent(label).x + first_model_reasoning->FromDIP(20));
                     if (index == target) return x + width / 2;
                     x += width + chip_gap;
                 }
@@ -1206,13 +1206,15 @@ int main(int argc, char** argv) {
             click(reasoning_canvas,
                   wxPoint(chip_center_x(3), chip_center_y));
             Events();
-            Check(first_model_reasoning->GetLabel().Find("high") != wxNOT_FOUND,
+            Events();
+            Check(model_editor->GetProvider().models[0].capabilities.default_reasoning_effort == "high",
                   "reasoning default selection updates the model row");
 
             click(reasoning_canvas,
                   wxPoint(chip_center_x(0), chip_center_y));
             Events();
-            Check(first_model_reasoning->GetLabel().Find("Auto") != wxNOT_FOUND,
+            Events();
+            Check(model_editor->GetProvider().models[0].capabilities.default_reasoning_effort.empty(),
                   "reasoning auto selection clears the explicit default");
 
             const wxSize popup_size = reasoning_canvas->GetClientSize();
@@ -1222,8 +1224,8 @@ int main(int argc, char** argv) {
             Events();
             Check(reasoning_popup->IsShownOnScreen(),
                   "reasoning popup remains open after applying built-in defaults");
-            Check(first_model_reasoning->GetLabel().Find("Auto") != wxNOT_FOUND,
-                  "built-in reasoning defaults restore the automatic row label");
+            Check(first_model_reasoning->GetLabel() == L"low \u2192 high",
+                  "built-in reasoning defaults restore the available-level summary");
 
             wxKeyEvent escape(wxEVT_KEY_DOWN);
             escape.m_keyCode = WXK_ESCAPE;
@@ -1287,12 +1289,12 @@ int main(int argc, char** argv) {
         wxWindow::FindWindowByName("spark.provider.editor.model.0.context", editor_host));
     auto* compact_model_auto = dynamic_cast<NativeChoice*>(
         wxWindow::FindWindowByName("spark.provider.editor.model.0.auto-compact", editor_host));
-    Check(first_model_panel && first_model_panel->GetSize().y == editor_host->FromDIP(120),
-          "compact provider model rows use three 36-DIP lines with six-DIP gaps");
+    Check(first_model_panel && first_model_panel->GetSize().y > editor_host->FromDIP(120),
+          "compact provider model rows reserve space for field descriptions");
     Check(first_model_id && compact_model_context && second_model_id &&
               second_model_id->GetScreenRect().y - first_model_id->GetScreenRect().y ==
-                  editor_host->FromDIP(126),
-          "compact provider model rows follow the Windows 126-DIP row interval");
+                  first_model_panel->GetSize().y + editor_host->FromDIP(6),
+          "compact provider model rows keep a six-DIP interval after their descriptions");
     Check(first_model_id && compact_model_context &&
               first_model_id->GetScreenRect().y < compact_model_context->GetScreenRect().y,
           "narrow provider model rows stack fields below the model ID");

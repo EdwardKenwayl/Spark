@@ -148,6 +148,13 @@
     "fr-FR": "Niveaux de raisonnement", "es-ES": "Niveles de razonamiento",
     "pt-BR": "Níveis de raciocínio", "ru-RU": "Уровни рассуждений"
   },
+  "No preset levels": {
+    "en-US": "No preset levels", "zh-CN": "暂无预设等级", "zh-TW": "暫無預設等級",
+    "ja-JP": "プリセットレベルなし", "ko-KR": "사전 설정 단계 없음",
+    "de-DE": "Keine voreingestellten Stufen", "fr-FR": "Aucun niveau prédéfini",
+    "es-ES": "Sin niveles predefinidos", "pt-BR": "Sem níveis predefinidos",
+    "ru-RU": "Нет предустановленных уровней"
+  },
   "Reasoning": {
     "en-US": "Reasoning", "zh-CN": "思考", "zh-TW": "思考",
     "ja-JP": "推論", "ko-KR": "추론", "de-DE": "Denken",

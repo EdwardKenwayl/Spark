@@ -1,4 +1,10 @@
 {
+  "Remove attachment": {
+    "en-US": "Remove attachment", "zh-CN": "移除附件", "zh-TW": "移除附件",
+    "ja-JP": "添付ファイルを削除", "ko-KR": "첨부 파일 제거", "de-DE": "Anhang entfernen",
+    "fr-FR": "Supprimer la pièce jointe", "es-ES": "Eliminar adjunto",
+    "pt-BR": "Remover anexo", "ru-RU": "Удалить вложение"
+  },
   "Add": {
     "zh-CN": "添加",
     "en-US": "Add",
