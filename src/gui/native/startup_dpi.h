@@ -77,10 +77,19 @@ inline void BindNativeWindowGeometry(wxFrame& frame, const std::string& data_dir
         frame.GetSize().x, frame.GetSize().y, frame.GetContentScaleFactor(),
         restored && restored->maximized});
     const auto capture = [&frame, state] { UpdateNativeWindowGeometry(frame, *state); };
-    frame.Bind(wxEVT_SIZE, [capture](wxSizeEvent& event) { capture(); event.Skip(); });
-    frame.Bind(wxEVT_MOVE, [capture](wxMoveEvent& event) { capture(); event.Skip(); });
-    frame.Bind(wxEVT_DPI_CHANGED, [capture](wxDPIChangedEvent& event) {
-        capture(); event.Skip();
+#ifdef __WXOSX__
+    // Cocoa emits intermediate sizes while zooming, before IsMaximized() changes.
+    frame.Bind(wxEVT_SIZING, [capture](wxSizeEvent& event) { capture(); event.Skip(); });
+    const auto observe = [&frame, state] {
+        if (!frame.IsIconized()) state->maximized = frame.IsMaximized();
+    };
+#else
+    const auto observe = capture;
+#endif
+    frame.Bind(wxEVT_SIZE, [observe](wxSizeEvent& event) { observe(); event.Skip(); });
+    frame.Bind(wxEVT_MOVE, [observe](wxMoveEvent& event) { observe(); event.Skip(); });
+    frame.Bind(wxEVT_DPI_CHANGED, [observe](wxDPIChangedEvent& event) {
+        observe(); event.Skip();
     });
     frame.Bind(wxEVT_CLOSE_WINDOW, [capture, state, data_directory, close](wxCloseEvent& event) {
         capture();
