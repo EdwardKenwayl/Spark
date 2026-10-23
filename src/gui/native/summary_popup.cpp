@@ -68,6 +68,13 @@ public:
     bool Closing() const { return closing_; }
     bool WaitingForRelease() const { return waiting_release_; }
     void Open() { Popup(panel_); }
+    void UpdateContent(const std::vector<SubAgentInfo>& agents, const std::vector<SourceReference>& sources) {
+        // The next periodic refresh retries after release without invalidating the pressed row.
+        if (closing_ || panel_->InteractionActive()) return;
+        panel_->SetAgents(agents);
+        panel_->SetSources(sources);
+        Resize(panel_->PopupSize());
+    }
     void Cancel() {
         if (destroy_requested_) return;
         closing_ = true; waiting_release_ = false; callback_ = {};
@@ -124,6 +131,7 @@ private:
         desired.y = std::clamp(desired.y, 1, std::max(1, work.height - FromDIP(24)));
         const int x = std::clamp(anchor_.x - desired.x, work.x, work.x + work.width - desired.x);
         const int y = std::clamp(anchor_.y + FromDIP(6), work.y, work.y + work.height - desired.y);
+        if (GetRect() == wxRect(x, y, desired.x, desired.y)) return;
         SetSize(x, y, desired.x, desired.y);
         ApplyRoundedPopupShape(this, 8);
         Layout(); PlaceFrame();
@@ -153,14 +161,28 @@ private:
     bool dark_ = true, closing_ = false, waiting_release_ = false;
     bool dismiss_from_press_ = false, destroy_requested_ = false;
 };
+wxWeakRef<SummaryPopup> current;
 }  // namespace
+
+bool NativeSummaryPopupShown(wxWindow* owner) {
+    return owner && !owner->IsBeingDeleted() && current && current->GetParent() == owner &&
+           !current->Closing() && current->IsShown();
+}
+
+void RefreshNativeSummaryPopup(wxWindow* owner, const std::vector<SubAgentInfo>& agents,
+                               const std::vector<SourceReference>& sources) {
+    if (NativeSummaryPopupShown(owner)) current->UpdateContent(agents, sources);
+}
+
+void DismissNativeSummaryPopup(wxWindow* owner) {
+    if (current && current->GetParent() == owner) current->Cancel();
+}
 
 void ShowNativeSummaryPopup(wxWindow* owner, const wxPoint& screen_anchor,
                             const std::vector<SubAgentInfo>& agents,
                             const std::vector<SourceReference>& sources,
                             NativeSummaryPopupCallback on_select) {
     if (!owner || owner->IsBeingDeleted() || wxDisplay::GetCount() == 0) return;
-    static wxWeakRef<SummaryPopup> current;
     if (current) {
         const bool toggle_off = current->GetParent() == owner &&
                                (!current->Closing() || current->WaitingForRelease());

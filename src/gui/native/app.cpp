@@ -1,6 +1,7 @@
 #include "gui/native/app.h"
 #include "core/context_compactor.h"
 #include "gui/localization.h"
+#include "gui/native/summary_popup.h"
 #include "platform/clock.h"
 #include "platform/desktop_capture.h"
 
@@ -13,6 +14,7 @@
 #include <wx/sizer.h>
 #include <wx/stdpaths.h>
 #include <wx/settings.h>
+#include <wx/weakref.h>
 #include <wx/wrapsizer.h>
 #include <algorithm>
 
@@ -70,7 +72,16 @@ NativeFrame::NativeFrame(AppConfig config)
     ApplyConfig(config_);
     RefreshSidebar();
     tray_ = std::make_unique<Tray>(this);
-    Bind(wxEVT_TIMER, &NativeFrame::Tick, this);
+    Bind(wxEVT_TIMER, [this, last_summary_refresh = uint64_t{0}](wxTimerEvent& event) mutable {
+        const wxWeakRef<NativeFrame> owner(this);
+        Tick(event);
+        if (!owner || owner->IsBeingDeleted()) return;
+        const auto now = MonotonicMillis();
+        if (!close_pending_ && NativeSummaryPopupShown(this) && now - last_summary_refresh >= 1000) {
+            last_summary_refresh = now;
+            RefreshSummary();
+        }
+    });
     Bind(wxEVT_CLOSE_WINDOW, &NativeFrame::OnClose, this);
     Bind(wxEVT_ACTIVATE, [this](wxActivateEvent& event) {
         const auto windows = SnapshotWindows();
@@ -157,6 +168,7 @@ void NativeFrame::CreateChat() {
     composer_hint_->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent&) { composer_->SetFocus(); });
     composer_->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { if (!refreshing_) draft_dirty_ = true; UpdateControls(); });
     composer_->Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
+        if (event.GetKeyCode() == WXK_ESCAPE && Pause()) return;
         if (event.GetKeyCode() == 'V' && event.CmdDown() && PasteAttachments()) return;
         if (event.GetKeyCode() == WXK_RETURN && !event.ShiftDown() &&
             ((config_.ui.send_key == "ctrl+enter") == event.CmdDown())) { Send(); return; }

@@ -31,6 +31,17 @@ std::vector<SourceReference> Sources(const SessionState& state) {
 }
 }  // namespace
 
+void ReconcileNativeSummaryHistory(std::vector<SubAgentInfo>& history, const std::vector<SubAgentInfo>& live) {
+    for (auto& child : history) {
+        if (child.state == SubAgentState::Running &&
+            std::none_of(live.begin(), live.end(), [&](const auto& current) { return current.id == child.id; })) {
+            child.state = SubAgentState::Cancelled;
+            child.started_tick_ms = 0;
+            child.error = "The previous application process stopped before this child completed.";
+        }
+    }
+}
+
 void NativeFrame::ResetSideConversation() {
     side_loader_.Cancel();
     ++side_generation_;
@@ -45,6 +56,7 @@ void NativeFrame::ResetSideConversation() {
 void NativeFrame::RefreshSummary(bool load_history) {
     const bool changed_parent = summary_parent_ != active_;
     if (changed_parent) {
+        DismissNativeSummaryPopup(this);
         summary_parent_ = active_;
         ResetSideConversation();
         side_panel_->ShowAgents();
@@ -55,6 +67,7 @@ void NativeFrame::RefreshSummary(bool load_history) {
     if (load_history || changed_parent) {
         summary_children_ = active_.empty() ? std::vector<SubAgentInfo>{} :
             SubAgentManager::LoadHistory(config_.storage.data_dir, NormalizePathForComparison(active_));
+        ReconcileNativeSummaryHistory(summary_children_, live);
     }
     for (const auto& child : live) {
         const auto found = std::find_if(summary_children_.begin(), summary_children_.end(),
@@ -74,6 +87,7 @@ void NativeFrame::RefreshSummary(bool load_history) {
         summary_thumbnails_.Request(source.detail, std::min(FromDIP(28), NativeSummaryPanel::kMaxThumbnailPixels));
     side_panel_->SetAgents(summary_children_);
     side_panel_->SetSources(summary_sources_);
+    RefreshNativeSummaryPopup(this, summary_children_, summary_sources_);
 }
 
 void NativeFrame::Summary() {

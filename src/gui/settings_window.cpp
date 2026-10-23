@@ -475,6 +475,11 @@ void SettingsWindow::ApplyLocalization() {
     SelectChoiceByValue(theme_combo_, theme, 0);
     shell_combo_.options = {L"cmd.exe", L"powershell.exe"};
     shell_combo_.values = {"cmd.exe", "powershell.exe"};
+    if (!config_.ui.shell.empty() &&
+        std::find(shell_combo_.values.begin(), shell_combo_.values.end(), config_.ui.shell) == shell_combo_.values.end()) {
+        shell_combo_.options.push_back(Utf8ToWide(config_.ui.shell));
+        shell_combo_.values.push_back(config_.ui.shell);
+    }
     SelectChoiceByValue(shell_combo_, shell, 0);
     send_key_combo_.options = {L"enter", L"ctrl+enter"};
     send_key_combo_.values = {"enter", "ctrl+enter"};
@@ -537,6 +542,8 @@ void SettingsWindow::CreateControls() {
                            0, 0, 0, 0, window_, ControlId(kNav), instance, nullptr);
     page_title_ = label(Text(L"General"), kPageTitle, SS_LEFT | SS_ENDELLIPSIS);
     status_ = label(L"", kStatus, SS_LEFT | SS_ENDELLIPSIS);
+    general_scrollbar_ = CreateWindowW(L"SCROLLBAR", L"", WS_CHILD | SBS_VERT, 0, 0, 0, 0,
+                                       window_, nullptr, instance, nullptr);
 
     label(Text(L"Default task folder"), kLabelWorkspace, SS_LEFT);
     workspace_path_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
@@ -545,7 +552,7 @@ void SettingsWindow::CreateControls() {
     label(Text(L"Model configuration status"), kLabelModel, SS_LEFT);
     model_status_ = label(L"", kModelStatus, SS_LEFT | SS_ENDELLIPSIS);
     label(Text(L"Configuration file"), kLabelConfig, SS_LEFT | SS_ENDELLIPSIS);
-    config_path_ = label(L"", kConfigPath, SS_LEFT | SS_PATHELLIPSIS);
+    config_path_ = label(L"", kConfigPath, SS_LEFT | SS_PATHELLIPSIS | SS_NOTIFY);
     open_config_ = button(Text(L"Open config"), kOpenConfig);
     label(Text(L"Preferences"), kLabelPreferences, SS_LEFT);
     CreateChoice(language_combo_, kLanguageCombo, {});
@@ -556,7 +563,7 @@ void SettingsWindow::CreateControls() {
     CreateChoice(send_key_combo_, kSendKeyCombo, {L"enter", L"ctrl+enter"});
     send_key_combo_.values = {"enter", "ctrl+enter"};
     label(Text(L"Data folder"), kLabelData, SS_LEFT);
-    data_path_ = label(L"", kDataPath, SS_LEFT | SS_PATHELLIPSIS);
+    data_path_ = label(L"", kDataPath, SS_LEFT | SS_PATHELLIPSIS | SS_NOTIFY);
     clean_cache_ = button(Text(L"Clear cache"), kCleanCache);
     delete_all_button_ = CreateWindowW(L"BUTTON", Text(L"Delete all"),
                                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 0, 0, window_,
@@ -601,6 +608,14 @@ void SettingsWindow::CreateControls() {
     tool.lpszText = const_cast<wchar_t*>(L"");
     SendMessageW(archive_tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
     SendMessageW(archive_tooltip_, TTM_SETMAXTIPWIDTH, 0, Dpi(360));
+    for (HWND path : {config_path_, data_path_}) {
+        TOOLINFOW path_tool{TTTOOLINFOW_V2_SIZE};
+        path_tool.hwnd = window_;
+        path_tool.uId = reinterpret_cast<UINT_PTR>(path);
+        path_tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+        path_tool.lpszText = LPSTR_TEXTCALLBACKW;
+        SendMessageW(archive_tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&path_tool));
+    }
     ShowWindow(restore_button_, SW_HIDE);
     ShowWindow(delete_archive_button_, SW_HIDE);
 }
@@ -782,6 +797,31 @@ void SettingsWindow::Layout() {
                  provider_status_height, SWP_NOZORDER);
     provider_editor_.Resize(x, Dpi(24), content_width, std::max(1, height - Dpi(48)));
     HoverProvider({-1, -1});
+    general_scroll_max_ = std::max(0, data_card_bottom + Dpi(54) - height);
+    general_scroll_ = std::clamp(general_scroll_, 0, general_scroll_max_);
+    ShowControl(general_scrollbar_, page_ == Page::General && general_scroll_max_ > 0);
+    if (page_ == Page::General) {
+        SetWindowPos(general_scrollbar_, nullptr, x + content_width + Dpi(6), Dpi(82),
+                     GetSystemMetrics(SM_CXVSCROLL), std::max(1, height - Dpi(82)), SWP_NOZORDER);
+        SCROLLINFO scroll{sizeof(scroll), SIF_RANGE | SIF_PAGE | SIF_POS};
+        scroll.nMax = std::max(0, data_card_bottom + Dpi(54) - Dpi(82) - 1);
+        scroll.nPage = std::max(1, height - Dpi(82));
+        scroll.nPos = general_scroll_;
+        SetScrollInfo(general_scrollbar_, SB_CTL, &scroll, TRUE);
+        for (RECT& card : general_cards_) OffsetRect(&card, 0, -general_scroll_);
+        for (HWND control : {workspace_path_, choose_workspace_, language_combo_.button, theme_combo_.button,
+                             shell_combo_.button, send_key_combo_.button, data_path_, clean_cache_, status_,
+                             GetDlgItem(window_, kLabelWorkspace), GetDlgItem(window_, kLabelPreferences),
+                             GetDlgItem(window_, kLabelData)}) {
+            RECT rect{}; GetWindowRect(control, &rect);
+            MapWindowPoints(nullptr, window_, reinterpret_cast<POINT*>(&rect), 2);
+            OffsetRect(&rect, 0, -general_scroll_);
+            SetWindowPos(control, nullptr, rect.left, rect.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            HRGN clip = CreateRectRgn(0, std::max<LONG>(0, Dpi(82) - rect.top), rect.right - rect.left,
+                                      std::max<LONG>(0, std::min<LONG>(rect.bottom, height) - rect.top));
+            if (!SetWindowRgn(control, clip, TRUE)) DeleteObject(clip);
+        }
+    }
 }
 
 void SettingsWindow::SwitchPage(Page page) {
@@ -1397,6 +1437,42 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND window, UINT message, WPARAM wp
 
 LRESULT SettingsWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
     switch (message) {
+        case WM_VSCROLL:
+        case WM_MOUSEWHEEL: {
+            if (page_ != Page::General || (message == WM_VSCROLL &&
+                reinterpret_cast<HWND>(lparam) != general_scrollbar_)) break;
+            int position = general_scroll_;
+            if (message == WM_MOUSEWHEEL) position -= GET_WHEEL_DELTA_WPARAM(wparam) * Dpi(40) / WHEEL_DELTA;
+            else {
+                SCROLLINFO info{sizeof(info), SIF_TRACKPOS | SIF_PAGE};
+                GetScrollInfo(general_scrollbar_, SB_CTL, &info);
+                switch (LOWORD(wparam)) {
+                    case SB_TOP: position = 0; break;
+                    case SB_BOTTOM: position = general_scroll_max_; break;
+                    case SB_LINEUP: position -= Dpi(30); break;
+                    case SB_LINEDOWN: position += Dpi(30); break;
+                    case SB_PAGEUP: position -= info.nPage; break;
+                    case SB_PAGEDOWN: position += info.nPage; break;
+                    case SB_THUMBTRACK:
+                    case SB_THUMBPOSITION: position = info.nTrackPos; break;
+                    default: return 0;
+                }
+            }
+            general_scroll_ = std::clamp(position, 0, general_scroll_max_);
+            Layout(); InvalidateRect(window_, nullptr, FALSE);
+            return 0;
+        }
+        case WM_NOTIFY: {
+            auto* info = reinterpret_cast<NMHDR*>(lparam);
+            if (info && info->hwndFrom == archive_tooltip_ && info->code == TTN_GETDISPINFOW &&
+                (info->idFrom == reinterpret_cast<UINT_PTR>(config_path_) ||
+                 info->idFrom == reinterpret_cast<UINT_PTR>(data_path_))) {
+                path_tooltip_text_ = ReadWindowText(reinterpret_cast<HWND>(info->idFrom));
+                reinterpret_cast<NMTTDISPINFOW*>(info)->lpszText = const_cast<wchar_t*>(path_tooltip_text_.c_str());
+                return 0;
+            }
+            break;
+        }
         case WM_SIZE:
             Layout();
             return 0;
@@ -1474,6 +1550,8 @@ LRESULT SettingsWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
             SelectObject(device, old_divider);
             DeleteObject(divider);
             if (page_ == Page::General) {
+                const int clip = SaveDC(device);
+                IntersectClipRect(device, nav_width + Dpi(1), Dpi(82), client.right, client.bottom);
                 for (const RECT& card : general_cards_) {
                     if (card.bottom <= card.top) continue;
                     HBRUSH fill = CreateSolidBrush(kPanel);
@@ -1486,6 +1564,7 @@ LRESULT SettingsWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
                     DeleteObject(border);
                     DeleteObject(fill);
                 }
+                RestoreDC(device, clip);
             }
             if (message == WM_PAINT) EndPaint(window_, &paint);
             return 0;

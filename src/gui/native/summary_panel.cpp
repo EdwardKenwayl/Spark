@@ -241,9 +241,12 @@ public:
             event.Skip();
         });
         Bind(wxEVT_LEAVE_WINDOW, [this](wxMouseEvent& event) {
-            hovered_ = wxNOT_FOUND; Refresh(false); event.Skip();
+            hovered_ = wxNOT_FOUND;
+            if (!dragging_) pressed_ = wxNOT_FOUND;
+            Refresh(false); event.Skip();
         });
     }
+    bool InteractionActive() const { return dragging_ || pressed_ != wxNOT_FOUND; }
     void SetRowsCount(size_t count) {
         size_t anchor = 0;
         int within_row = 0;
@@ -560,6 +563,7 @@ void NativeSummaryPanel::SetPopupMode(bool popup) {
 void NativeSummaryPanel::ResetOverview() {
     show_all_ = false; agents_expanded_ = false; RefreshView();
 }
+bool NativeSummaryPanel::InteractionActive() const { return rows_->InteractionActive(); }
 wxSize NativeSummaryPanel::PopupSize() const {
     int height = 20;
     for (const auto& row : display_rows_) height += RowHeight(row);

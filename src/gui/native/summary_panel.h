@@ -63,6 +63,7 @@ public:
     // Popup mode only: preferred 320-DIP width and visible-row height +20 DIP.
     // Main clamps to work area, positions and dismisses its popup host.
     wxSize PopupSize() const;
+    bool InteractionActive() const;
     const std::string& ActiveChildId() const { return active_child_; }
     // Borrowed window. SetTranscript borrows main's transcript; detach it before
     // destroying that transcript. Main must drive Changed/Tick/SetLoading.

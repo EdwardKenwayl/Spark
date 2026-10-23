@@ -29,6 +29,7 @@ private:
     friend struct AppWindowSettingsTest;
     friend struct SettingsProviderTest;
     friend struct SettingsArchiveTest;
+    friend struct SettingsLayoutTest;
 
     enum class Page {
         General,
@@ -145,6 +146,10 @@ private:
     HWND nav_ = nullptr;
     HWND page_title_ = nullptr;
     HWND status_ = nullptr;
+    HWND general_scrollbar_ = nullptr;
+    int general_scroll_ = 0;
+    int general_scroll_max_ = 0;
+    std::wstring path_tooltip_text_;
 
     HWND workspace_path_ = nullptr;
     HWND choose_workspace_ = nullptr;

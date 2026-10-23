@@ -15,6 +15,10 @@ enum class NativeSummaryPopupAction { Sources, Agent };
 using NativeSummaryPopupCallback =
     std::function<void(NativeSummaryPopupAction, const std::string&)>;
 
+// Reconciles display metadata only; callers merge live records afterwards.
+// Never persists historical states or changes the live children.
+void ReconcileNativeSummaryHistory(std::vector<SubAgentInfo>& history, const std::vector<SubAgentInfo>& live);
+
 // UI thread only; screen_anchor is in physical screen pixels. Copies bounded
 // metadata before returning, never retains agents/sources or their references.
 // Same-owner repeated call toggles off. Dismissal has no selection callback.
@@ -25,5 +29,12 @@ void ShowNativeSummaryPopup(wxWindow* owner, const wxPoint& screen_anchor,
                             const std::vector<SubAgentInfo>& agents,
                             const std::vector<SourceReference>& sources,
                             NativeSummaryPopupCallback on_select);
+
+// UI thread only. Refreshes an existing same-owner popup without reopening it
+// or resetting its expanded groups, scroll position, or selection callback.
+bool NativeSummaryPopupShown(wxWindow* owner);
+void RefreshNativeSummaryPopup(wxWindow* owner, const std::vector<SubAgentInfo>& agents,
+                               const std::vector<SourceReference>& sources);
+void DismissNativeSummaryPopup(wxWindow* owner);
 
 }  // namespace spark

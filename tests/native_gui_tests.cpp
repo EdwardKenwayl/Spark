@@ -14,6 +14,7 @@
 #include "gui/native/approval_prompt.h"
 #include "gui/native/summary_panel.h"
 #include "gui/native/summary_popup.h"
+#include "platform/clock.h"
 
 #include <wx/app.h>
 #include <wx/choice.h>
@@ -27,6 +28,7 @@
 #include <wx/textctrl.h>
 #include <wx/timer.h>
 #include <wx/utils.h>
+#include <wx/weakref.h>
 #include <algorithm>
 #include <fstream>
 #include <set>
@@ -45,6 +47,205 @@ void Check(bool condition, const char* text) {
 }
 void Events() {
     for (int count = 0; count < 5; ++count) { wxYield(); wxMilliSleep(20); }
+}
+void CheckSummaryHistory() {
+    using namespace spark;
+    SubAgentInfo orphan;
+    orphan.id = "orphan"; orphan.state = SubAgentState::Running; orphan.started_tick_ms = 123;
+    SubAgentInfo active = orphan;
+    active.id = "active";
+    SubAgentInfo finished = orphan;
+    finished.id = "finished"; finished.state = SubAgentState::Completed;
+    finished.error = "retained";
+    std::vector<SubAgentInfo> history{orphan, active, finished};
+    const std::vector<SubAgentInfo> live{active};
+    ReconcileNativeSummaryHistory(history, live);
+    Check(history[0].state == SubAgentState::Cancelled && history[0].started_tick_ms == 0 &&
+              history[0].error == "The previous application process stopped before this child completed.",
+          "historical running children without a live match are displayed as stopped");
+    Check(history[1].state == SubAgentState::Running && history[1].started_tick_ms == 123 &&
+              live[0].state == SubAgentState::Running && live[0].started_tick_ms == 123,
+          "history reconciliation preserves matching live children and their runtime metadata");
+    ReconcileNativeSummaryHistory(history, {});
+    Check(history[1].state == SubAgentState::Cancelled &&
+              history[2].state == SubAgentState::Completed && history[2].error == "retained" &&
+              history[2].started_tick_ms == 123,
+          "reconciliation is repeatable and does not change finished children");
+}
+void CheckSummaryConversation(spark::NativeFrame* frame, const spark::fs::path& data) {
+    using namespace spark;
+    auto* recent = dynamic_cast<NativeList*>(wxWindow::FindWindowByName("spark.history", frame));
+    for (int attempt = 0; attempt < 20 && recent && recent->GetItemCount() != 1; ++attempt) Events();
+    Check(recent && recent->GetItemCount() == 1, "summary fixture exposes one recent conversation");
+    if (!recent || recent->GetItemCount() != 1) return;
+    wxCommandEvent activate(wxEVT_LISTBOX, recent->GetId());
+    activate.SetInt(0); activate.SetEventObject(recent);
+    recent->GetEventHandler()->ProcessEvent(activate);
+    auto* input = dynamic_cast<wxTextCtrl*>(wxWindow::FindWindowByName("spark.composer", frame));
+    auto* send = wxWindow::FindWindowByName("spark.send", frame);
+    for (int attempt = 0; attempt < 20 && input && !input->IsEnabled(); ++attempt) Events();
+    const auto registry = data / "external_agents";
+    fs::create_directories(registry);
+    const auto process = registry / "process-fixture.json";
+    const auto control = registry / "control.json";
+    const nlohmann::json running = {
+        {"process_id", static_cast<uint64_t>(wxGetProcessId())}, {"updated_at", UnixTimeSeconds()},
+        {"runs", {{{"id", "escape-fixture"}, {"state", "running"},
+                   {"session_path", PathToUtf8(data / "sessions" / "recent.jsonl")}}}}
+    };
+    std::ofstream(process) << running.dump();
+    for (int attempt = 0; attempt < 25 && send && send->GetToolTipText() != "Pause"; ++attempt) Events();
+    Check(input && send && send->GetToolTipText() == "Pause",
+          "Escape fixture recognizes an isolated active external turn");
+    if (input && send && send->GetToolTipText() == "Pause") {
+        input->ChangeValue("unsent draft");
+        wxKeyEvent escape(wxEVT_KEY_DOWN);
+        escape.m_keyCode = WXK_ESCAPE; escape.SetEventObject(input);
+        input->GetEventHandler()->ProcessEvent(escape);
+        const auto contents = ReadFileUtf8(PathToUtf8(control));
+        const auto command = contents ? nlohmann::json::parse(*contents, nullptr, false) : nlohmann::json{};
+        Check(command.is_object() && command.value("action", "") == "cancel" &&
+                  command.value("id", "") == "escape-fixture" && input->GetValue() == "unsent draft",
+              "composer Escape uses the existing cancellation path without sending its draft");
+    }
+    fs::remove(process); fs::remove(control);
+    for (int attempt = 0; attempt < 25 && send && send->GetToolTipText() == "Pause"; ++attempt) Events();
+    if (input) {
+        const auto session = PathToUtf8(data / "sessions" / "recent.jsonl");
+        const auto journal_before = ReadFileUtf8(session);
+        input->ChangeValue("unsent draft");
+        wxKeyEvent escape(wxEVT_KEY_DOWN);
+        escape.m_keyCode = WXK_ESCAPE; escape.SetEventObject(input);
+        input->GetEventHandler()->ProcessEvent(escape);
+        Check(escape.GetSkipped() && !fs::exists(control) && input->GetValue() == "unsent draft" &&
+                  journal_before && ReadFileUtf8(session) == journal_before,
+              "idle composer Escape is left to the control and does not submit text");
+        input->ChangeValue("");
+    }
+    auto* summary_button = wxWindow::FindWindowByName("spark.summary", frame);
+    Check(summary_button != nullptr, "summary fixture exposes its summary control");
+    if (!summary_button) return;
+    wxCommandEvent open(wxEVT_BUTTON, summary_button->GetId());
+    open.SetEventObject(summary_button);
+    summary_button->GetEventHandler()->ProcessEvent(open);
+    auto* popup = wxWindow::FindWindowByName("spark.summary.popup", frame);
+    auto* rows = popup ? wxWindow::FindWindowByName("spark.summary.rows", popup) : nullptr;
+    const wxWeakRef<NativeSummaryPanel> overview(
+        rows ? dynamic_cast<NativeSummaryPanel*>(rows->GetParent()) : nullptr);
+    Check(overview.get() != nullptr, "active conversation exposes its summary popup model");
+    if (overview) {
+        const auto height = overview->PopupSize().y;
+        std::ofstream(data / "sessions" / "recent.jsonl", std::ios::app) <<
+            nlohmann::json({{"type", "message"}, {"payload", {
+                {"role", "assistant"}, {"content", "source fixture"},
+                {"sources", {{{"kind", "web"}, {"label", "Live source"},
+                              {"detail", "https://example.com/live"}}}}
+            }}}).dump() << '\n';
+        for (int attempt = 0; attempt < 40 && overview && overview->PopupSize().y == height; ++attempt) Events();
+        Check(overview && wxWindow::FindWindowByName("spark.summary.popup", frame) == popup &&
+                  overview->PopupSize().y > height,
+              "frame polling refreshes open popup sources even with the docked panel hidden");
+    }
+    DismissNativeSummaryPopup(frame);
+    Events();
+}
+void CheckSummaryOnly(spark::AppConfig config) {
+    using namespace spark;
+    CheckSummaryHistory();
+    const auto data = NativePath(config.storage.data_dir);
+    fs::create_directories(data / "sessions");
+    {
+        std::ofstream session(data / "sessions" / "recent.jsonl");
+        session << nlohmann::json({{"type", "session.created"}, {"payload", {
+            {"session_id", "summary-fixture"}, {"title", "Summary fixture"},
+            {"workspace", config.workspace.path}}}}).dump() << '\n';
+        session << nlohmann::json({{"type", "session.scope"}, {"payload", {{"scope", "recent"}}}}).dump() << '\n';
+        session << nlohmann::json({{"type", "message"}, {"payload", {
+            {"role", "user"}, {"content", "fixture"}}}}).dump() << '\n';
+    }
+    auto* frame = new NativeFrame(std::move(config));
+    frame->SetSize(1100, 750); frame->Show(); Events();
+    CheckSummaryConversation(frame, data);
+    auto* host = new wxFrame(frame, wxID_ANY, "Summary refresh fixture", wxDefaultPosition, wxSize(900, 600));
+    host->Show(); Events();
+    std::vector<SubAgentInfo> children(32);
+    for (size_t index = 0; index < children.size(); ++index) {
+        children[index].id = "live-child-" + std::to_string(index);
+        children[index].name = "Child " + std::to_string(index);
+        children[index].started_at = index;
+    }
+    const std::vector<SourceReference> sources{{"web", "Live source", "https://example.com/live"}};
+    const auto select_scrolled_child = [&](bool refresh) {
+        std::string selected;
+        ShowNativeSummaryPopup(host, host->ClientToScreen(wxPoint(800, 40)), children, {},
+            [&](NativeSummaryPopupAction action, const std::string& id) {
+                if (action == NativeSummaryPopupAction::Agent) selected = id;
+            });
+        Events();
+        const wxWeakRef<wxWindow> popup(wxWindow::FindWindowByName("spark.summary.popup", host));
+        const wxWeakRef<wxWindow> rows(popup ? wxWindow::FindWindowByName("spark.summary.rows", popup.get()) : nullptr);
+        const wxWeakRef<NativeSummaryPanel> panel(
+            rows ? dynamic_cast<NativeSummaryPanel*>(rows->GetParent()) : nullptr);
+        Check(panel && NativeSummaryPopupShown(host), "focused summary popup opens");
+        if (panel) {
+            const auto mouse = [&](wxEventType type, wxPoint position) {
+                if (!rows) return;
+                wxMouseEvent event(type);
+                event.SetPosition(position); event.SetEventObject(rows.get());
+                rows->GetEventHandler()->ProcessEvent(event);
+            };
+            const auto collapsed = panel->PopupSize();
+            RefreshNativeSummaryPopup(frame, {}, sources);
+            Check(panel->PopupSize() == collapsed, "another owner cannot refresh the focused popup");
+            mouse(wxEVT_LEFT_DOWN, rows->FromDIP(wxPoint(40, 20)));
+            mouse(wxEVT_LEFT_UP, rows->FromDIP(wxPoint(40, 20)));
+            Check(panel->PopupSize().y > collapsed.y, "focused popup expands its live children");
+            wxKeyEvent scroll(wxEVT_KEY_DOWN);
+            scroll.m_keyCode = WXK_PAGEDOWN; scroll.SetEventObject(rows.get());
+            rows->GetEventHandler()->ProcessEvent(scroll);
+            if (refresh) {
+                children[0].provider = "updated metadata";
+                RefreshNativeSummaryPopup(host, children, sources);
+                Events();
+                Check(panel && rows && popup && NativeSummaryPopupShown(host) &&
+                          wxWindow::FindWindowByName("spark.summary.rows", popup.get()) == rows.get() &&
+                          panel->PopupSize().y > collapsed.y && selected.empty(),
+                      "live popup refresh preserves its expanded control without navigation");
+            }
+            if (rows) {
+                rows->Refresh(false); rows->Update();
+                const auto point = rows->FromDIP(wxPoint(60, 100));
+                mouse(wxEVT_LEFT_DOWN, point);
+                mouse(wxEVT_LEAVE_WINDOW, {-1, -1});
+                Check(panel && !panel->InteractionActive(),
+                      "leaving a pressed row cannot indefinitely block live popup refresh");
+                const auto size_before_press = panel->PopupSize();
+                mouse(wxEVT_LEFT_DOWN, point);
+                Check(panel && panel->InteractionActive(), "summary row press remains active until release");
+                if (refresh) {
+                    auto updated_children = children;
+                    updated_children[0].name = "Refreshed during press";
+                    auto updated_sources = sources;
+                    updated_sources.push_back({"web", "Another source", "https://example.com/another"});
+                    RefreshNativeSummaryPopup(host, updated_children, updated_sources);
+                    Check(panel && panel->InteractionActive() && panel->PopupSize() == size_before_press &&
+                              selected.empty(),
+                          "live popup metadata is deferred while a row press is active");
+                }
+                mouse(wxEVT_LEFT_UP, point);
+            }
+        }
+        DismissNativeSummaryPopup(host); Events();
+        RefreshNativeSummaryPopup(host, children, sources);
+        Check(!NativeSummaryPopupShown(host), "focused refresh does not reopen a dismissed popup");
+        return selected;
+    };
+    const auto before = select_scrolled_child(false);
+    const auto after = select_scrolled_child(true);
+    Check(!before.empty() && before == after,
+          "mouse-down, live refresh, mouse-up selects the same scrolled child as an uninterrupted click");
+    host->Destroy(); Events();
+    frame->Destroy(); Events();
 }
 void Capture(wxWindow* window, const spark::fs::path& path, wxSize minimum = wxSize(700, 400)) {
     wxBitmap bitmap(window->GetClientSize());
@@ -68,6 +269,9 @@ void Capture(wxWindow* window, const spark::fs::path& path, wxSize minimum = wxS
 }  // namespace
 int main(int argc, char** argv) {
     using namespace spark;
+    bool summary_only = false;
+    for (int index = 1; index < argc; ++index)
+        if (std::string(argv[index]) == "--summary") summary_only = true;
     wxSetAssertHandler([](const wxString&, int line, const wxString& function,
                          const wxString& condition, const wxString& message) {
         ++failures;
@@ -76,10 +280,12 @@ int main(int argc, char** argv) {
     if (!wxEntryStart(argc, argv) || !wxTheApp->CallOnInit()) return 2;
     const auto temporary = fs::temp_directory_path() / NativePath("spark-gui-" + NewSessionId());
     fs::create_directories(temporary);
-    const auto output_root = argc > 1 ? NativePath(AbsolutePath(argv[1])) : temporary / "screenshots";
+    const auto output_root = !summary_only && argc > 1 ? NativePath(AbsolutePath(argv[1])) : temporary / "screenshots";
     const auto output = output_root / NativePath("run-" + NewSessionId());
-    fs::create_directories(output);
-    std::cout << "Screenshot run: " << PathToUtf8(output) << std::endl;
+    if (!summary_only) {
+        fs::create_directories(output);
+        std::cout << "Screenshot run: " << PathToUtf8(output) << std::endl;
+    }
     AppConfig config;
     config.config_path = PathToUtf8(temporary / "config.json");
     config.storage.data_dir = PathToUtf8(temporary / "data");
@@ -99,6 +305,15 @@ int main(int argc, char** argv) {
     }
     config.providers.push_back(std::move(provider));
     config.active = {"fixture", "test-model-0", "medium"};
+    if (summary_only) {
+        CheckSummaryOnly(config);
+        wxTheApp->OnExit();
+        wxEntryCleanup();
+        std::error_code error;
+        fs::remove_all(temporary, error);
+        std::cout << "Summary regression failures: " << failures << std::endl;
+        return failures ? 1 : 0;
+    }
     if (argc > 3 && std::string(argv[2]) == "--settings-smoke") {
         const auto existing = LoadConfig(argv[3], false);
         Check(existing.ok, "settings fixture loads the supplied configuration read-only");
@@ -191,6 +406,7 @@ int main(int argc, char** argv) {
         std::cout << "Settings smoke failures: " << failures << std::endl;
         return failures == 0 ? 0 : 1;
     }
+    CheckSummaryHistory();
     for (const auto decision : {NativeApprovalDecision::Once, NativeApprovalDecision::Deny,
                                  NativeApprovalDecision::Turn}) {
         NativeApprovalPrompt prompt(frame, {ApprovalKind::FileWrite, "Write fixture?", "  fixture.txt  "});
@@ -812,6 +1028,7 @@ int main(int argc, char** argv) {
     for (int attempt = 0; attempt < 20 && recent_list && recent_list->GetItemCount() != 1; ++attempt) Events();
     Check(project_list && project_list->GetItemCount() == 2 && recent_list && recent_list->GetItemCount() == 1,
           "project and recent sidebar chats use independent lists and collapsed projects");
+    CheckSummaryConversation(sidebar_frame, sidebar_data);
     auto* projects_menu = wxWindow::FindWindowByName("spark.sidebar.projects.menu", sidebar_frame);
     auto* projects_add = wxWindow::FindWindowByName("spark.sidebar.projects.add", sidebar_frame);
     Check(projects_menu && projects_add && projects_menu->GetPosition().x < projects_add->GetPosition().x,
@@ -1556,11 +1773,64 @@ int main(int argc, char** argv) {
     auto* summary_popup = wxWindow::FindWindowByName("spark.summary.popup", summary_host);
     Check(summary_popup && summary_popup->IsShownOnScreen(), "summary opens a dedicated grouped popup");
     Capture(summary_host, output / "summary-popup.png");
+    auto* popup_rows = summary_popup ? wxWindow::FindWindowByName("spark.summary.rows", summary_popup) : nullptr;
+    auto* popup_panel = popup_rows ? dynamic_cast<NativeSummaryPanel*>(popup_rows->GetParent()) : nullptr;
+    if (popup_panel) {
+        const int original_height = popup_panel->PopupSize().y;
+        RefreshNativeSummaryPopup(frame, {}, summary_sources);
+        Check(popup_panel->PopupSize().y == original_height,
+              "live summary refresh cannot change another owner's popup");
+        std::vector<SubAgentInfo> children(32, child);
+        for (size_t index = 0; index < children.size(); ++index) {
+            children[index].id = "live-child-" + std::to_string(index);
+            children[index].name = "Child " + std::to_string(index);
+            children[index].started_at = index;
+        }
+        RefreshNativeSummaryPopup(summary_host, children, summary_sources);
+        Events();
+        Check(wxWindow::FindWindowByName("spark.summary.popup", summary_host) == summary_popup &&
+                  wxWindow::FindWindowByName("spark.summary.rows", summary_popup) == popup_rows &&
+                  popup_panel->PopupSize().y > original_height && popup_selections == 0,
+              "live children and sources refresh the same popup without navigation");
+        const int collapsed_height = popup_panel->PopupSize().y;
+        for (const auto type : {wxEVT_LEFT_DOWN, wxEVT_LEFT_UP}) {
+            wxMouseEvent click(type);
+            click.SetPosition(popup_rows->FromDIP(wxPoint(40, 20))); click.SetEventObject(popup_rows);
+            popup_rows->GetEventHandler()->ProcessEvent(click);
+        }
+        Check(popup_panel->PopupSize().y > collapsed_height, "popup subagents expand before live refresh");
+        wxKeyEvent scroll(wxEVT_KEY_DOWN);
+        scroll.m_keyCode = WXK_PAGEDOWN; scroll.SetEventObject(popup_rows);
+        popup_rows->GetEventHandler()->ProcessEvent(scroll);
+        wxMouseEvent leave(wxEVT_LEAVE_WINDOW);
+        leave.SetEventObject(popup_rows);
+        popup_rows->GetEventHandler()->ProcessEvent(leave);
+        Events();
+        const auto pixels = [&] {
+            wxBitmap bitmap(popup_rows->GetClientSize());
+            wxMemoryDC buffer(bitmap); wxClientDC source(popup_rows);
+            buffer.Blit(0, 0, bitmap.GetWidth(), bitmap.GetHeight(), &source, 0, 0);
+            buffer.SelectObject(wxNullBitmap);
+            return bitmap.ConvertToImage();
+        };
+        const auto before = pixels();
+        children[0].provider = "updated metadata";
+        RefreshNativeSummaryPopup(summary_host, children, summary_sources);
+        Events();
+        const auto after = pixels();
+        Check(before.IsOk() && after.IsOk() && before.GetWidth() == after.GetWidth() &&
+                  before.GetHeight() == after.GetHeight() &&
+                  std::equal(before.GetData(), before.GetData() + before.GetWidth() * before.GetHeight() * 3,
+                             after.GetData()) && popup_panel->PopupSize().y > collapsed_height,
+              "live metadata refresh preserves expanded popup rows and their scroll position");
+    }
     ShowNativeSummaryPopup(summary_host, popup_anchor, {child}, {}, popup_callback);
     Events();
     summary_popup = wxWindow::FindWindowByName("spark.summary.popup", summary_host);
     Check((!summary_popup || !summary_popup->IsShown()) && popup_selections == 0,
               "clicking summary again dismisses the same-owner popup without navigation");
+    RefreshNativeSummaryPopup(summary_host, {child}, summary_sources);
+    Check(!NativeSummaryPopupShown(summary_host), "live refresh never reopens a dismissed summary popup");
     summary_host->Destroy(); Events();
 
     frame->Destroy();

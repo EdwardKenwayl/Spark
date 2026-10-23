@@ -29,16 +29,21 @@ bool LiveProcess(uint64_t id) {
 }
 }  // namespace
 
-void NativeFrame::Send() {
-    if (!loading_path_.empty()) return;
-    if (runtime_.Running(active_)) { runtime_.Pause(active_); return; }
+bool NativeFrame::Pause() {
+    if (runtime_.Running(active_)) { runtime_.Pause(active_); return true; }
     const auto remote = external_.find(active_);
     if (remote != external_.end()) {
         const nlohmann::json command = {{"action", "cancel"}, {"id", remote->second.value("id", std::string{})},
                                         {"requested_at", UnixTimeSeconds()}};
         WriteFileUtf8Atomic(JoinPath(JoinPath(config_.storage.data_dir, "external_agents"), "control.json"), command.dump());
-        return;
+        return true;
     }
+    return false;
+}
+
+void NativeFrame::Send() {
+    if (!loading_path_.empty()) return;
+    if (Pause()) return;
     const auto validation = ValidateConfig(config_);
     if (!validation.empty()) { Error(validation.front()); return; }
     const std::string text = Trim(S(composer_->GetValue()));

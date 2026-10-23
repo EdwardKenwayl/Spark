@@ -74,6 +74,7 @@ private:
     void ImportConversation(int project = -1);
     void SaveProjects();
     void LoadProjects();
+    bool Pause();
     void Send();
     void AddAttachments();
     void AttachPath(const std::string& path);
