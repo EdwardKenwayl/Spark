@@ -64,6 +64,7 @@ COLORREF kBackground = RGB(28, 29, 31);
 COLORREF kSidebar = RGB(37, 38, 40);
 COLORREF kPanel = RGB(43, 44, 47);
 COLORREF kInput = RGB(48, 49, 52);
+COLORREF kSelection = RGB(61, 62, 66);
 COLORREF kText = RGB(236, 237, 240);
 COLORREF kMuted = RGB(150, 153, 160);
 COLORREF kBorder = RGB(67, 68, 72);
@@ -402,6 +403,9 @@ void SettingsWindow::Close() {
     CancelProviderDrag();
     CancelProviderTest();
     provider_editor_.Close();
+    for (HWND tooltip : {archive_tooltip_, provider_tooltip_})
+        if (tooltip != nullptr) DestroyWindow(tooltip);
+    archive_tooltip_ = provider_tooltip_ = nullptr;
     if (window_ != nullptr) DestroyWindow(window_);
 }
 
@@ -416,6 +420,7 @@ void SettingsWindow::ApplyTheme() {
     kSidebar = palette.sidebar;
     kPanel = palette.panel;
     kInput = palette.input;
+    kSelection = palette.selection;
     kText = palette.text;
     kMuted = palette.muted;
     kBorder = palette.border;
@@ -559,6 +564,7 @@ void SettingsWindow::CreateControls() {
 
     archive_search_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                       0, 0, 0, 0, window_, ControlId(kArchiveSearch), instance, nullptr);
+    SendMessageW(archive_search_, EM_SETLIMITTEXT, 256, 0);
     archive_list_ = CreateWindowExW(0, L"LISTBOX", L"",
                                     WS_CHILD | WS_VSCROLL | LBS_NOTIFY | LBS_HASSTRINGS | LBS_OWNERDRAWVARIABLE |
                                         LBS_NOSEL,
@@ -586,6 +592,15 @@ void SettingsWindow::CreateControls() {
     SendMessageW(nav_, LB_SETITEMHEIGHT, 0, Dpi(48));
     SendMessageW(page_title_, WM_SETFONT, reinterpret_cast<WPARAM>(title_font_), TRUE);
     SetWindowSubclass(archive_list_, ArchiveListProc, kArchiveListSubclass, reinterpret_cast<DWORD_PTR>(this));
+    archive_tooltip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+        WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, archive_list_, nullptr, instance, nullptr);
+    TOOLINFOW tool{TTTOOLINFOW_V2_SIZE};
+    tool.hwnd = archive_list_;
+    tool.uId = 1;
+    tool.uFlags = TTF_SUBCLASS;
+    tool.lpszText = const_cast<wchar_t*>(L"");
+    SendMessageW(archive_tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
+    SendMessageW(archive_tooltip_, TTM_SETMAXTIPWIDTH, 0, Dpi(360));
     ShowWindow(restore_button_, SW_HIDE);
     ShowWindow(delete_archive_button_, SW_HIDE);
 }
@@ -635,7 +650,7 @@ void SettingsWindow::Layout() {
     if (device != nullptr) ReleaseDC(window_, device);
 
     const bool compact_providers = content_width - GetSystemMetrics(SM_CXVSCROLL) < Dpi(480);
-    const int title_width = page_ == Page::Archived ? content_width - delete_all_width - Dpi(16)
+    const int title_width = page_ == Page::Archived ? std::max(1, content_width - delete_all_width - Dpi(16))
         : page_ == Page::Providers && !compact_providers ? content_width - add_width - Dpi(16) : content_width;
     SetWindowPos(page_title_, nullptr, x, Dpi(28), title_width, Dpi(30), SWP_NOZORDER);
     const int label_width = std::min(Dpi(168), std::max(Dpi(96), content_width / 3));
@@ -720,15 +735,21 @@ void SettingsWindow::Layout() {
     SetWindowPos(status_, nullptr, x + Dpi(12), std::max(data_card_bottom + Dpi(12), height - Dpi(48)),
                  std::max(1, content_width - Dpi(24)), Dpi(26), SWP_NOZORDER);
 
-    const int archive_scope_width = Dpi(210);
-    const int archive_search_width = std::max(Dpi(180), content_width - archive_scope_width - Dpi(12));
-    SetWindowPos(archive_search_, nullptr, x, Dpi(104), archive_search_width, Dpi(36), SWP_NOZORDER);
-    SetWindowPos(archive_scope_combo_, nullptr, x + archive_search_width + Dpi(12), Dpi(104),
-                 archive_scope_width, Dpi(36), SWP_NOZORDER);
-    SetWindowPos(delete_all_button_, nullptr, x + content_width - delete_all_width, Dpi(24), delete_all_width, Dpi(34),
+    const bool stacked_archives = content_width < Dpi(360);
+    const int archive_gap = std::min(Dpi(12), std::max(0, content_width - 2));
+    const int archive_scope_width = std::clamp(content_width - Dpi(192), 1,
+        std::max(1, std::min(Dpi(210), content_width - archive_gap - 1)));
+    const int archive_search_width = std::max(1, content_width - archive_scope_width - archive_gap);
+    SetWindowPos(archive_search_, nullptr, x, Dpi(104),
+                 stacked_archives ? content_width : archive_search_width, Dpi(36), SWP_NOZORDER);
+    SetWindowPos(archive_scope_combo_, nullptr, stacked_archives ? x : x + archive_search_width + archive_gap,
+                 Dpi(stacked_archives ? 152 : 104), stacked_archives ? content_width : archive_scope_width,
+                 Dpi(36), SWP_NOZORDER);
+    SetWindowPos(delete_all_button_, nullptr, x + std::max(0, content_width - delete_all_width), Dpi(24),
+                 std::min(delete_all_width, content_width), Dpi(34),
                  SWP_NOZORDER);
-    SetWindowPos(archive_list_, nullptr, x, Dpi(152), content_width,
-                 std::max(Dpi(140), height - Dpi(204)), SWP_NOZORDER);
+    SetWindowPos(archive_list_, nullptr, x, Dpi(stacked_archives ? 200 : 152), content_width,
+                 std::max(1, height - Dpi(stacked_archives ? 252 : 204)), SWP_NOZORDER);
     SetWindowPos(restore_button_, nullptr, x, height - Dpi(56), restore_width, Dpi(30), SWP_NOZORDER);
     SetWindowPos(delete_archive_button_, nullptr, x + restore_width + Dpi(10), height - Dpi(56), delete_archive_width,
                  Dpi(30), SWP_NOZORDER);
@@ -828,6 +849,10 @@ void SettingsWindow::RefreshModelStatus() {
 
 void SettingsWindow::RefreshArchived() {
     if (archive_list_ == nullptr) return;
+    if (GetCapture() == archive_list_) ReleaseCapture();
+    archive_pressed_row_ = -1;
+    archive_pressed_action_ = 0;
+    HandleArchiveListMove({-1, -1});
     SendMessageW(archive_list_, LB_RESETCONTENT, 0, 0);
     archive_entries_.clear();
     archive_projects_.clear();
@@ -904,9 +929,6 @@ void SettingsWindow::RefreshArchived() {
                 }
             }
         }
-        const std::wstring haystack = Utf8ToWide(LowerAscii(
-            entry.title + " " + WideToUtf8(ConversationTitle(entry.title)) + " " + entry.workspace));
-        if (!search.empty() && haystack.find(search) == std::wstring::npos) continue;
         if (entry.scope == "recent") {
             entry.project_index = static_cast<size_t>(-1);
         } else if (!entry.workspace.empty()) {
@@ -938,6 +960,9 @@ void SettingsWindow::RefreshArchived() {
     std::vector<size_t> visible_entries;
     for (size_t index = 0; index < archive_entries_.size(); ++index) {
         const ArchiveEntry& entry = archive_entries_[index];
+        const std::wstring haystack = Utf8ToWide(LowerAscii(
+            entry.title + " " + WideToUtf8(ConversationTitle(entry.title)) + " " + entry.workspace));
+        if (!search.empty() && haystack.find(search) == std::wstring::npos) continue;
         const bool project_scope = entry.project_index != static_cast<size_t>(-1);
         if (archive_scope_ == ArchiveScope::Project) {
             if (entry.project_index != archive_scope_project_) continue;
@@ -1019,6 +1044,7 @@ void SettingsWindow::RefreshArchiveLabels() {
         SetWindowTextW(archive_status_, i18n::Format(L"Archived chats: {count}.",
             {{L"count", std::to_wstring(count)}}).c_str());
     }
+    EnableWindow(delete_all_button_, !archive_entries_.empty());
     InvalidateRect(archive_list_, nullptr, TRUE);
 }
 
@@ -1114,12 +1140,55 @@ void SettingsWindow::RestoreArchiveAt(size_t index) {
                                                        : WideToUtf8(spark::fs::path(Utf8ToWide(selected)).filename().wstring()));
     std::error_code error;
     spark::fs::create_directories(Utf8ToWide(sessions), error);
-    if (!MoveFileExW(Utf8ToWide(selected).c_str(), Utf8ToWide(destination).c_str(), MOVEFILE_REPLACE_EXISTING)) {
+    std::string staged;
+    const auto& entry = archive_entries_[index];
+    if (!error && entry.scope == "project" && entry.project_index == static_cast<size_t>(-1)) {
+        // Preserve history, but restore chats whose project was removed into Recent.
+        wchar_t temporary[MAX_PATH]{};
+        if (!GetTempFileNameW(Utf8ToWide(sessions).c_str(), L"rst", 0, temporary)) {
+            SetStatus(i18n::Format(L"Save failed: {error}", {{L"error", Utf8ToWide(FormatWin32Error(GetLastError()))}}));
+            return;
+        }
+        staged = WideToUtf8(temporary);
+        if (!CopyFileW(Utf8ToWide(selected).c_str(), temporary, FALSE)) {
+            const auto failure = GetLastError();
+            DeleteFileW(temporary);
+            SetStatus(i18n::Format(L"Save failed: {error}", {{L"error", Utf8ToWide(FormatWin32Error(failure))}}));
+            return;
+        }
+        HANDLE file = CreateFileW(Utf8ToWide(staged).c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+        bool prepared = false;
+        DWORD failure = GetLastError();
+        if (file != INVALID_HANDLE_VALUE) {
+            const auto record = "\n" + nlohmann::json({{"timestamp", UnixTimeSeconds()}, {"type", "session.scope"},
+                {"payload", {{"scope", "recent"}}}}).dump() + "\n";
+            LARGE_INTEGER end{};
+            DWORD written = 0;
+            prepared = SetFilePointerEx(file, end, nullptr, FILE_END) &&
+                WriteFile(file, record.data(), static_cast<DWORD>(record.size()), &written, nullptr) &&
+                written == record.size() && FlushFileBuffers(file);
+            failure = GetLastError();
+            if (!CloseHandle(file)) { prepared = false; failure = GetLastError(); }
+        }
+        if (!prepared) {
+            DeleteFileW(Utf8ToWide(staged).c_str());
+            SetStatus(i18n::Format(L"Save failed: {error}", {{L"error", Utf8ToWide(FormatWin32Error(failure))}}));
+            return;
+        }
+    }
+    if (error || !MoveFileExW(Utf8ToWide(staged.empty() ? selected : staged).c_str(),
+                              Utf8ToWide(destination).c_str(), 0)) {
+        if (!staged.empty()) DeleteFileW(Utf8ToWide(staged).c_str());
         SetWindowTextW(archive_status_, Text(L"Restore failed. A session with the same name may still exist at the destination."));
         return;
     }
+    const DWORD cleanup_error = !staged.empty() && !DeleteFileW(Utf8ToWide(selected).c_str())
+        ? GetLastError() : ERROR_SUCCESS;
     RefreshArchived();
     if (on_changed_) on_changed_();
+    if (cleanup_error != ERROR_SUCCESS)
+        SetStatus(Text(L"Delete failed."));
     Resize();
 }
 
@@ -1176,6 +1245,9 @@ std::string SettingsWindow::SelectedArchivePath() const {
 
 int SettingsWindow::ArchiveRowAt(POINT point) const {
     if (archive_list_ == nullptr) return -1;
+    RECT client{};
+    GetClientRect(archive_list_, &client);
+    if (!PtInRect(&client, point)) return -1;
     const LRESULT hit = SendMessageW(archive_list_, LB_ITEMFROMPOINT, 0, MAKELPARAM(point.x, point.y));
     if (HIWORD(hit) != 0) return -1;
     const int row = LOWORD(hit);
@@ -1199,12 +1271,38 @@ void SettingsWindow::HandleArchiveListMove(POINT point) {
     const int row = ArchiveRowAt(point);
     const int action = ArchiveActionAt(row, point.x);
     if (row == archive_hover_row_ && action == archive_hover_action_) return;
+    const int previous = archive_hover_row_;
     archive_hover_row_ = row;
     archive_hover_action_ = action;
-    InvalidateRect(archive_list_, nullptr, TRUE);
+    for (int index : {previous, row}) {
+        RECT rect{};
+        if (index >= 0 && SendMessageW(archive_list_, LB_GETITEMRECT, index,
+                                      reinterpret_cast<LPARAM>(&rect)) != LB_ERR)
+            InvalidateRect(archive_list_, &rect, FALSE);
+    }
+    archive_tooltip_text_.clear();
+    TOOLINFOW tool{TTTOOLINFOW_V2_SIZE};
+    tool.hwnd = archive_list_;
+    tool.uId = 1;
+    if (row >= 0) {
+        SendMessageW(archive_list_, LB_GETITEMRECT, row, reinterpret_cast<LPARAM>(&tool.rect));
+        const auto& item = archive_rows_[row];
+        if (action) archive_tooltip_text_ = Text(action == 1 ? L"Unarchive" : L"Delete archived chat");
+        else if (item.kind == ArchiveRowKind::Header)
+            archive_tooltip_text_ = item.header.empty() ? Text(L"No project") : item.header;
+        else if (item.entry_index < archive_entries_.size()) {
+            const auto& entry = archive_entries_[item.entry_index];
+            archive_tooltip_text_ = ConversationTitle(entry.title) + L"\n" + Utf8ToWide(entry.workspace);
+        }
+    }
+    tool.lpszText = const_cast<wchar_t*>(archive_tooltip_text_.c_str());
+    SendMessageW(archive_tooltip_, TTM_POP, 0, 0);
+    SendMessageW(archive_tooltip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
+    SendMessageW(archive_tooltip_, TTM_NEWTOOLRECTW, 0, reinterpret_cast<LPARAM>(&tool));
 }
 
 void SettingsWindow::HandleArchiveListClick(POINT point) {
+    if (!IsWindowEnabled(archive_list_)) return;
     const int row = ArchiveRowAt(point);
     if (row < 0 || row >= static_cast<int>(archive_rows_.size())) return;
     const ArchiveRow& archive_row = archive_rows_[row];
@@ -1230,24 +1328,50 @@ LRESULT CALLBACK SettingsWindow::ArchiveListProc(HWND window, UINT message, WPAR
             break;
         }
         case WM_MOUSELEAVE:
-            if (self->archive_hover_row_ != -1 || self->archive_hover_action_ != 0) {
-                self->archive_hover_row_ = -1;
-                self->archive_hover_action_ = 0;
-                InvalidateRect(window, nullptr, TRUE);
-            }
+        case WM_MOUSEWHEEL:
+        case WM_VSCROLL:
+        case WM_SIZE:
+            self->HandleArchiveListMove({-1, -1});
             break;
-        case WM_LBUTTONUP: {
+        case WM_LBUTTONDOWN: {
+            if (!IsWindowEnabled(window)) return 0;
+            SetFocus(window);
             POINT point{static_cast<short>(LOWORD(lparam)), static_cast<short>(HIWORD(lparam))};
-            self->HandleArchiveListClick(point);
+            self->archive_pressed_row_ = self->ArchiveRowAt(point);
+            self->archive_pressed_action_ = self->ArchiveActionAt(self->archive_pressed_row_, point.x);
+            if (self->archive_pressed_action_) SetCapture(window);
             return 0;
         }
+        case WM_LBUTTONUP: {
+            POINT point{static_cast<short>(LOWORD(lparam)), static_cast<short>(HIWORD(lparam))};
+            const int row = self->archive_pressed_row_, action = self->archive_pressed_action_;
+            self->archive_pressed_row_ = -1;
+            self->archive_pressed_action_ = 0;
+            if (GetCapture() == window) ReleaseCapture();
+            if (row >= 0 && row == self->ArchiveRowAt(point) && action &&
+                action == self->ArchiveActionAt(row, point.x))
+                self->HandleArchiveListClick(point);
+            return 0;
+        }
+        case WM_LBUTTONDBLCLK: {
+            POINT point{static_cast<short>(LOWORD(lparam)), static_cast<short>(HIWORD(lparam))};
+            const int row = self->ArchiveRowAt(point);
+            if (IsWindowEnabled(window) && row >= 0 && self->archive_rows_[row].kind == ArchiveRowKind::Entry &&
+                !self->ArchiveActionAt(row, point.x))
+                self->RestoreArchiveAt(self->archive_rows_[row].entry_index);
+            return 0;
+        }
+        case WM_CAPTURECHANGED:
+            self->archive_pressed_row_ = -1;
+            self->archive_pressed_action_ = 0;
+            break;
         case WM_SETCURSOR:
             if (LOWORD(lparam) == HTCLIENT) {
                 POINT point{};
                 GetCursorPos(&point);
                 ScreenToClient(window, &point);
                 const int action = self->ArchiveActionAt(self->ArchiveRowAt(point), point.x);
-                SetCursor(LoadCursorW(nullptr, action == 0 ? IDC_ARROW : IDC_HAND));
+                SetCursor(LoadCursorW(nullptr, action == 0 || !IsWindowEnabled(window) ? IDC_ARROW : IDC_HAND));
                 return TRUE;
             }
             break;
@@ -1349,20 +1473,6 @@ LRESULT SettingsWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
             LineTo(device, nav_width, client.bottom);
             SelectObject(device, old_divider);
             DeleteObject(divider);
-            const int x = nav_width + Dpi(42);
-            const int card_right = x + std::min(Dpi(980), std::max(Dpi(420), static_cast<int>(client.right) - x - Dpi(64)));
-            auto draw_card = [&](int top, int bottom) {
-                RECT card{x, top, card_right, bottom};
-                HBRUSH fill = CreateSolidBrush(kPanel);
-                HPEN border = CreatePen(PS_SOLID, 1, kBorder);
-                HGDIOBJ old_brush = SelectObject(device, fill);
-                HGDIOBJ old_pen = SelectObject(device, border);
-                RoundRect(device, card.left, card.top, card.right, card.bottom, Dpi(8), Dpi(8));
-                SelectObject(device, old_pen);
-                SelectObject(device, old_brush);
-                DeleteObject(border);
-                DeleteObject(fill);
-            };
             if (page_ == Page::General) {
                 for (const RECT& card : general_cards_) {
                     if (card.bottom <= card.top) continue;
@@ -1376,8 +1486,6 @@ LRESULT SettingsWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
                     DeleteObject(border);
                     DeleteObject(fill);
                 }
-            } else if (page_ == Page::Archived) {
-                draw_card(Dpi(96), client.bottom - Dpi(84));
             }
             if (message == WM_PAINT) EndPaint(window_, &paint);
             return 0;
@@ -1386,10 +1494,11 @@ LRESULT SettingsWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
             HDC device = reinterpret_cast<HDC>(wparam);
             HWND control = reinterpret_cast<HWND>(lparam);
             SetTextColor(device, kText);
-            const COLORREF color = control == nav_ ? kSidebar : control == provider_list_ ? kBackground : kPanel;
+            const bool page_list = control == provider_list_ || control == archive_list_;
+            const COLORREF color = control == nav_ ? kSidebar : page_list ? kBackground : kPanel;
             SetBkColor(device, color);
             return reinterpret_cast<LRESULT>(control == nav_ ? sidebar_brush_
-                : control == provider_list_ ? background_brush_ : panel_brush_);
+                : page_list ? background_brush_ : panel_brush_);
         }
         case WM_MEASUREITEM: {
             auto* item = reinterpret_cast<MEASUREITEMSTRUCT*>(lparam);
@@ -1510,7 +1619,7 @@ LRESULT SettingsWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
                     RECT restore_rect{ restore_left, item->rcItem.top + Dpi(11), restore_right,
                                        item->rcItem.bottom - Dpi(11) };
                     HBRUSH restore_fill = CreateSolidBrush(archive_hover_action_ == 1 && archive_hover_row_ == row_index
-                                                               ? RGB(58, 59, 64)
+                                                               ? kSelection
                                                                : kInput);
                     HPEN restore_border = CreatePen(PS_SOLID, 1, kBorder);
                     HGDIOBJ old_brush = SelectObject(item->hDC, restore_fill);

@@ -28,6 +28,7 @@ public:
 private:
     friend struct AppWindowSettingsTest;
     friend struct SettingsProviderTest;
+    friend struct SettingsArchiveTest;
 
     enum class Page {
         General,
@@ -160,6 +161,7 @@ private:
 
     HWND archive_search_ = nullptr;
     HWND archive_list_ = nullptr;
+    HWND archive_tooltip_ = nullptr;
     HWND restore_button_ = nullptr;
     HWND delete_archive_button_ = nullptr;
     HWND archive_status_ = nullptr;
@@ -202,6 +204,9 @@ private:
     size_t archive_scope_project_ = static_cast<size_t>(-1);
     int archive_hover_row_ = -1;
     int archive_hover_action_ = 0;
+    int archive_pressed_row_ = -1;
+    int archive_pressed_action_ = 0;
+    std::wstring archive_tooltip_text_;
     int archive_restore_width_ = 0;
     int preferences_extra_height_ = 0;
     RECT general_cards_[3]{};

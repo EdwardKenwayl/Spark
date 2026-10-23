@@ -405,6 +405,11 @@ if(WIN32 AND NOT SPARK_CORE_ONLY)
     add_test(NAME spark_settings_provider_tests COMMAND spark_settings_provider_tests)
     set_tests_properties(spark_settings_provider_tests PROPERTIES TIMEOUT 10)
 
+    add_executable(spark_settings_archive_tests tests/settings_archive_tests.cpp)
+    target_link_libraries(spark_settings_archive_tests PRIVATE spark_gui)
+    add_test(NAME spark_settings_archive_tests COMMAND spark_settings_archive_tests)
+    set_tests_properties(spark_settings_archive_tests PROPERTIES TIMEOUT 15)
+
     add_executable(spark_provider_models_tests tests/provider_models_tests.cpp)
     target_link_libraries(spark_provider_models_tests PRIVATE spark_core ws2_32)
     add_test(NAME spark_provider_models_tests COMMAND spark_provider_models_tests)
