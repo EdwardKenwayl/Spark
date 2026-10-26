@@ -2,7 +2,7 @@
 
 [Simplified Chinese](README.zh-CN.md)
 
-> Early development: source only. No prebuilt releases are currently published.
+> Early development. Download prebuilt packages from [Releases](https://github.com/EdwardKenwayl/Spark/releases).
 > The cross-platform ports are experimental and known issues remain.
 
 Spark is an independent desktop AI coding agent built with C++17. The Windows

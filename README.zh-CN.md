@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-> 目前处于早期开发阶段，仅公开源码，暂未发布预编译发行版。
+> 目前处于早期开发阶段，可在 [Releases](https://github.com/EdwardKenwayl/Spark/releases) 下载预编译发行包。
 > 跨平台移植仍属实验阶段，存在已知问题。
 
 Spark 是使用 C++17 构建的独立桌面 AI 编程智能体。Windows 界面继续使用 Win32/GDI；Linux 和 macOS
