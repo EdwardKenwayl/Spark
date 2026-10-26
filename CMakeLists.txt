@@ -428,7 +428,9 @@ if(WIN32 AND NOT SPARK_CORE_ONLY)
     add_executable(spark_composer_tests tests/composer_tests.cpp)
     target_link_libraries(spark_composer_tests PRIVATE spark_gui)
     add_test(NAME spark_composer_tests COMMAND spark_composer_tests)
-    set_tests_properties(spark_composer_tests PROPERTIES TIMEOUT 10)
+    # Includes two bounded five-second snapshot waits plus menus and rendering.
+    # Leave headroom for process startup and scheduling on shared CI runners.
+    set_tests_properties(spark_composer_tests PROPERTIES TIMEOUT 30)
 
     add_executable(spark_snapshot_tests tests/snapshot_tests.cpp)
     target_link_libraries(spark_snapshot_tests PRIVATE spark_gui)

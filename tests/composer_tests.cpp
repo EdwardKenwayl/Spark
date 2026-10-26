@@ -11,6 +11,7 @@ using byte = BYTE;
 #include "platform/filesystem.h"
 #include <fstream>
 #include <iostream>
+#include <utility>
 
 namespace spark {
 
@@ -871,17 +872,20 @@ struct AppWindowComposerTest {
         if (!RegisterClassW(&window_class)) return 1;
         // Hidden windows and temporary drafts only; never start the real GUI or
         // load the user's configuration, clipboard, model, or conversation data.
-        TestAttachments();
-        TestErrors();
-        TestExternalActivity();
-        TestComposerModes();
-        TestAddMenu();
-        TestSnapshotCapture();
-        TestSnapshotDraftScope();
-        TestHeaderLayout();
-        TestModelMenus();
-        TestScrollableModelPicker();
-        TestSummary();
+        const std::pair<const char*, void (*)()> checks[] = {
+            {"attachments", TestAttachments}, {"errors", TestErrors},
+            {"external activity", TestExternalActivity}, {"composer modes", TestComposerModes},
+            {"add menu", TestAddMenu}, {"snapshot capture", TestSnapshotCapture},
+            {"snapshot draft scope", TestSnapshotDraftScope}, {"header layout", TestHeaderLayout},
+            {"model menus", TestModelMenus}, {"scrollable model picker", TestScrollableModelPicker},
+            {"summary", TestSummary},
+        };
+        for (const auto& [name, check] : checks) {
+            std::cout << "START: " << name << std::endl;
+            const auto started = GetTickCount64();
+            check();
+            std::cout << "DONE: " << name << " (" << GetTickCount64() - started << " ms)" << std::endl;
+        }
         UnregisterClassW(window_class.lpszClassName, window_class.hInstance);
         if (failures == 0) std::cout << "Composer checks passed.\n";
         return failures == 0 ? 0 : 1;
