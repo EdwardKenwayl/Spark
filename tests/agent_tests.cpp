@@ -1188,6 +1188,44 @@ void TestMcpSessionNetworkPolicy() {
               mcp_server.Requests().size() == 3,
           "session policy hides cached HTTP tools and blocks forced calls before network access");
 
+    FakeServer search_model;
+    const auto search_workspace = TempDirectory("web_search_network_policy");
+    auto search_config = MakeConfig(search_model.Port(), search_workspace);
+    search_config.permissions.allow_network = false;
+    search_model.Enqueue({200, "text/event-stream",
+        R"(data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"search","function":{"name":"web_search","arguments":"{\"query\":\"policy test\"}"}}]},"finish_reason":"tool_calls"}]})"
+        "\n\ndata: [DONE]\n\n"});
+    search_model.Enqueue({200, "text/event-stream", TextSse("search blocked")});
+    spark::SessionJournal search_journal;
+    Check(search_journal.Open(search_config.storage.data_dir, search_workspace).ok,
+          "web search policy session opens");
+    spark::Agent search_agent(search_config, &search_journal, nullptr);
+    Check(search_agent.RunTurn("check web search policy", {}, {}, nullptr).ok,
+          "blocked web search turn completes");
+    const auto blocked_search_requests = search_model.Requests();
+    Check(blocked_search_requests.size() == 2 &&
+              RequestBody(blocked_search_requests[0]).find("\"name\":\"web_search\"") == std::string::npos &&
+              RequestBody(blocked_search_requests[1]).find("permissions.allow_network") != std::string::npos,
+          "web_search is hidden and forced calls are rejected when network permission is disabled");
+    RemoveDirectory(search_workspace);
+
+    FakeServer enabled_search_model;
+    const auto enabled_search_workspace = TempDirectory("web_search_enabled_policy");
+    auto enabled_search_config = MakeConfig(enabled_search_model.Port(), enabled_search_workspace);
+    enabled_search_config.permissions.allow_network = true;
+    enabled_search_model.Enqueue({200, "text/event-stream", TextSse("ready")});
+    spark::SessionJournal enabled_search_journal;
+    Check(enabled_search_journal.Open(enabled_search_config.storage.data_dir, enabled_search_workspace).ok,
+          "enabled web search policy session opens");
+    spark::Agent enabled_search_agent(enabled_search_config, &enabled_search_journal, nullptr);
+    Check(enabled_search_agent.RunTurn("check available tools", {}, {}, nullptr).ok,
+          "enabled web search policy turn completes");
+    const auto enabled_search_requests = enabled_search_model.Requests();
+    Check(enabled_search_requests.size() == 1 &&
+              RequestBody(enabled_search_requests[0]).find("\"name\":\"web_search\"") != std::string::npos,
+          "web_search is exposed when network permission is enabled");
+    RemoveDirectory(enabled_search_workspace);
+
     FakeServer external_model;
     FakeServer external_mcp;
     config.providers.front().base_url = "http://127.0.0.1:" + std::to_string(external_model.Port()) + "/v1";

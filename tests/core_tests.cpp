@@ -13,6 +13,7 @@
 #include "core/session_exchange.h"
 #include "core/skills.h"
 #include "core/tools.h"
+#include "core/web_search.h"
 #include "platform/window_text.h"
 
 #include <algorithm>
@@ -983,6 +984,30 @@ int main() {
     tool_context.workspace.path = scan_directory;
     tool_context.limits.max_tool_output_bytes = 65536;
     spark::ToolRegistry registry;
+    bool web_search_registered = false;
+    for (const auto& definition : registry.Definitions()) {
+        if (definition.name == "web_search" && definition.parameters.contains("properties") &&
+            definition.parameters["properties"].contains("query")) {
+            web_search_registered = true;
+            break;
+        }
+    }
+    Check(web_search_registered, "web_search is registered as a model tool");
+    const auto disabled_web_search = registry.Execute("web_search", R"({"query":"test"})", tool_context);
+    Check(!disabled_web_search.ok && disabled_web_search.output.find("allow_network") != std::string::npos,
+          "web_search is denied when network permission is disabled");
+    const auto parsed_web_results = spark::ParseDuckDuckGoSearchResults(
+        R"(<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fguide%3Fa%3D1&amp;rut=test">Alpha &amp; Beta</a><a class="result__snippet">A <b>useful</b> summary.</a>)",
+        5);
+    Check(parsed_web_results.size() == 1 && parsed_web_results[0].title == "Alpha & Beta" &&
+              parsed_web_results[0].url == "https://example.com/guide?a=1" &&
+              parsed_web_results[0].snippet == "A useful summary.",
+          "web search parser decodes redirect URLs, entities, and snippets");
+    tool_context.allow_network = true;
+    const auto empty_web_search = registry.Execute("web_search", R"({"query":"  "})", tool_context);
+    Check(!empty_web_search.ok && empty_web_search.output.find("query cannot be empty") != std::string::npos,
+          "web_search validates empty queries before making a request");
+    tool_context.allow_network = false;
     const auto listed = registry.Execute("list_files", "{\"path\":\".\",\"max_entries\":16}", tool_context);
     Check(listed.ok && listed.output.find("nested\\sample.txt") != std::string::npos, "bounded list files finds workspace file");
     Check(listed.output.find("[scan]") != std::string::npos, "list files reports scan metadata");

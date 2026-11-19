@@ -165,6 +165,7 @@ add_library(spark_core STATIC
     src/core/external_agents.cpp
     src/core/session_exchange.cpp
     src/core/tools.cpp
+    src/core/web_search.cpp
     src/core/tool_scan.cpp
     src/core/tool_process.cpp
     src/core/mcp.cpp

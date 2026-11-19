@@ -101,6 +101,9 @@ the provider editor masks a key until you explicitly reveal it.
   persistent conversation goals and plan mode.
 - Bounded local tools for listing, reading, literal search, atomic writes,
   patches, image viewing and supervised commands.
+- Optional public web search through the built-in `web_search` tool when
+  network permission is enabled. Results include titles, snippets and source
+  URLs, are bounded, and are treated as untrusted input.
 - Automatic context compaction with a per-model window and trigger percentage.
 - MCP clients over stdio and Streamable HTTP, Skills and `AGENTS.md` rules.
 - Internal subagents with independent model selection, plus `SparkMCP.exe` for

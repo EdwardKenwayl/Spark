@@ -19,6 +19,7 @@ struct ToolContext {
     CancellationToken* cancellation = nullptr;
     std::vector<std::string> secrets;
     std::string shell = UiConfig{}.shell;
+    bool allow_network = false;
 };
 
 struct ToolExecutionResult {

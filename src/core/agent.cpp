@@ -61,7 +61,7 @@ std::string ToolPhaseDetail(const ToolCall& call) {
 
 bool IsReadOnlyTool(const std::string& name) {
     return name == "list_files" || name == "read_file" || name == "search_text" || name == "view_image" ||
-           name == "read_skill" || name == "list_models";
+           name == "read_skill" || name == "list_models" || name == "web_search";
 }
 
 constexpr const char* kReadSkillToolName = "read_skill";
@@ -280,6 +280,7 @@ Result<ToolExecutionResult> Agent::ExecuteTool(const ToolCall& call, const Appro
     context.cancellation = cancellation;
     context.secrets = CollectConfiguredSecrets(config_);
     context.shell = config_.ui.shell;
+    context.allow_network = config_.permissions.allow_network;
     return Result<ToolExecutionResult>::Success(tools_.Execute(call.name, call.arguments_json, context));
 }
 
@@ -312,6 +313,11 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
     if (!model->capabilities.images) {
         definitions.erase(std::remove_if(definitions.begin(), definitions.end(),
                                          [](const ToolDefinition& definition) { return definition.name == "view_image"; }),
+                          definitions.end());
+    }
+    if (!config_.permissions.allow_network) {
+        definitions.erase(std::remove_if(definitions.begin(), definitions.end(),
+                                         [](const ToolDefinition& definition) { return definition.name == "web_search"; }),
                           definitions.end());
     }
     const auto persist_turn_error = [&](const std::string& error) {
