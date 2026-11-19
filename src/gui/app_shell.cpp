@@ -1414,6 +1414,7 @@ void AppWindow::CreateControls() {
     if (!chat_view_->Create(window_, instance_, kChat, chat_font_, mono_font_)) {
         MessageBoxW(window_, i18n::Text(L"Could not create the chat view."), i18n::Text(L"Startup failed"), MB_OK | MB_ICONERROR);
     }
+    chat_view_->SetLinkBaseDirectory(active_workspace_path_);
     chat_view_->SetActions([this](size_t index) { ToggleToolEntry(index); },
                            [this](size_t index) { CopyChatItem(index); },
                            [this](size_t index) { EditChatItem(index); });
@@ -1423,6 +1424,7 @@ void AppWindow::CreateControls() {
         side_chat_view_.reset();
     }
     if (side_chat_view_ != nullptr) {
+        side_chat_view_->SetLinkBaseDirectory(active_workspace_path_);
         side_chat_view_->SetActions([this](size_t index) { side_chat_view_->ToggleTool(index); },
                                     [this](size_t index) {
                                         const ChatItem* item = side_chat_view_->Item(index);
@@ -4772,6 +4774,8 @@ std::string AppWindow::PrepareNoProjectConversationWorkspace(std::string* error)
 }
 
 void AppWindow::UpdateActiveSessionScope(const std::string& scope, const std::string& workspace) {
+    if (chat_view_ != nullptr) chat_view_->SetLinkBaseDirectory(active_workspace_path_);
+    if (side_chat_view_ != nullptr) side_chat_view_->SetLinkBaseDirectory(active_workspace_path_);
     pending_new_conversation_ = false;
     active_session_scope_ = "recent";
     active_project_name_.clear();

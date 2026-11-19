@@ -23,6 +23,7 @@ struct StyleSpec {
     bool link = false;
     bool muted = false;
     bool heading = false;
+    std::wstring destination;
 };
 
 struct ListState {
@@ -60,13 +61,14 @@ MarkdownStyle ToStyle(const StyleSpec& style) {
     return MarkdownStyle::Body;
 }
 
-void AppendRun(std::vector<MarkdownRun>& runs, std::wstring text, MarkdownStyle style) {
+void AppendRun(std::vector<MarkdownRun>& runs, std::wstring text, MarkdownStyle style,
+               std::wstring destination = {}) {
     if (text.empty()) return;
-    if (!runs.empty() && runs.back().style == style) {
+    if (!runs.empty() && runs.back().style == style && runs.back().destination == destination) {
         runs.back().text += text;
         return;
     }
-    runs.push_back({std::move(text), style});
+    runs.push_back({std::move(text), style, std::move(destination)});
 }
 
 void AppendCodepoint(std::wstring& output, uint32_t codepoint) {
@@ -166,7 +168,7 @@ void AppendText(RenderState& state, const std::wstring& text, MarkdownStyle styl
     } else if (!state.line_open) {
         StartLine(state);
     }
-    AppendRun(state.current.runs, text, style);
+    AppendRun(state.current.runs, text, style, state.style.destination);
 }
 
 void AppendCodeText(RenderState& state, const std::wstring& text) {
@@ -399,7 +401,6 @@ int LeaveBlock(MD_BLOCKTYPE type, void* detail, void* userdata) {
 }
 
 int EnterSpan(MD_SPANTYPE type, void* detail, void* userdata) {
-    static_cast<void>(detail);
     auto& state = *static_cast<RenderState*>(userdata);
     StyleSpec style = state.style;
     switch (type) {
@@ -413,8 +414,16 @@ int EnterSpan(MD_SPANTYPE type, void* detail, void* userdata) {
             style.code = true;
             break;
         case MD_SPAN_A:
+            style.link = true;
+            if (detail != nullptr) {
+                style.destination = AttributeText(static_cast<const MD_SPAN_A_DETAIL*>(detail)->href);
+            }
+            break;
         case MD_SPAN_WIKILINK:
             style.link = true;
+            if (detail != nullptr) {
+                style.destination = AttributeText(static_cast<const MD_SPAN_WIKILINK_DETAIL*>(detail)->target);
+            }
             break;
         case MD_SPAN_DEL:
         case MD_SPAN_IMG:

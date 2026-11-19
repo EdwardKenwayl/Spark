@@ -7,6 +7,7 @@
 #include "render/markdown.h"
 
 #include <nlohmann/json.hpp>
+#include <shellapi.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -206,7 +207,6 @@ struct GroupInfo {
     bool hidden = false;
     bool indented = false;
     bool active = false;
-    bool failed = false;
 };
 
 bool LooksLikeImageTool(const std::string& name) {
@@ -513,7 +513,6 @@ std::vector<GroupInfo> ComputeGroups(const std::vector<ChatItem>& items) {
                                                    ? 0
                                                    : MonotonicMillis() - items[member].start_tick_ms;
                 }
-                if (items[member].finished && !items[member].success) groups[index].failed = true;
                 switch (CategoryOf(items[member].tool_name)) {
                     case ToolCategory::Read:
                         ++groups[index].read_count;
@@ -837,7 +836,8 @@ int RunLineHeight(HDC device, HFONT font) {
 }
 
 int RenderStyledRuns(HDC device, const std::vector<MarkdownRun>& runs, const RECT& bounds, const ChatFonts& fonts,
-                     bool code_block, bool draw) {
+                     bool code_block, bool draw,
+                     std::vector<std::pair<RECT, std::wstring>>* link_regions = nullptr) {
     if (runs.empty()) return DpiScale(8);
     int x = bounds.left;
     int y = bounds.top;
@@ -849,8 +849,13 @@ int RenderStyledRuns(HDC device, const std::vector<MarkdownRun>& runs, const REC
         x = bounds.left;
         line_height = DpiScale(18);
     };
-    const auto draw_token = [&](const std::wstring& token, MarkdownStyle style, HFONT font, COLORREF color) {
+    const auto draw_token = [&](const std::wstring& token, MarkdownStyle style, HFONT font, COLORREF color,
+                                const std::wstring& destination) {
         const int token_width = MeasureRunToken(device, font, token);
+        const int token_height = std::max(line_height, RunLineHeight(device, font));
+        if (link_regions != nullptr && !destination.empty()) {
+            link_regions->emplace_back(RECT{x, y, x + std::max(1, token_width), y + token_height}, destination);
+        }
         if (draw) {
             if (style == MarkdownStyle::Code && !code_block) {
                 RECT background{x - DpiScale(2), y, x + token_width + DpiScale(2), y + line_height};
@@ -864,7 +869,7 @@ int RenderStyledRuns(HDC device, const std::vector<MarkdownRun>& runs, const REC
             SelectObject(device, previous_font);
         }
         x += token_width;
-        line_height = std::max(line_height, RunLineHeight(device, font));
+        line_height = token_height;
     };
 
     SetBkMode(device, TRANSPARENT);
@@ -893,11 +898,11 @@ int RenderStyledRuns(HDC device, const std::vector<MarkdownRun>& runs, const REC
                     const std::wstring piece = token.substr(index, next - index);
                     const int piece_width = MeasureRunToken(device, font, piece);
                     if (x > bounds.left && x + piece_width > right) new_line();
-                    draw_token(piece, run.style, font, color);
+                    draw_token(piece, run.style, font, color, run.destination);
                     index = next;
                 }
             } else {
-                draw_token(token, run.style, font, color);
+                draw_token(token, run.style, font, color, run.destination);
             }
             start = end;
         }
@@ -994,6 +999,195 @@ void DrawStreamingMarkdown(HDC device, const markdown::StreamingMarkdown& stream
         if (!stable.empty()) y += DpiScale(8);
         const std::shared_ptr<const std::vector<MarkdownLine>> tail = stream.TailLines();
         DrawMarkdownLines(device, *tail, bounds, fonts, &y);
+    }
+}
+
+void CollectMarkdownLinkRegions(HDC device, const std::vector<MarkdownLine>& lines, const RECT& bounds,
+                                const ChatFonts& fonts, int* y_position,
+                                std::vector<std::pair<RECT, std::wstring>>* link_regions) {
+    int y = *y_position;
+    for (const MarkdownLine& line : lines) {
+        if (line.rule) {
+            y += DpiScale(12);
+            continue;
+        }
+        if (line.runs.empty()) {
+            y += DpiScale(8);
+            continue;
+        }
+        const int left = bounds.left + line.indent * DpiScale(14);
+        const RECT line_bounds{left, y, bounds.right, bounds.bottom};
+        const int height = RenderStyledRuns(device, line.runs, line_bounds, fonts, line.code, false, link_regions);
+        y += height + (line.code ? DpiScale(4) : 0);
+    }
+    *y_position = y;
+}
+
+enum class MarkdownLinkKind {
+    None,
+    Web,
+    File,
+};
+
+struct ResolvedMarkdownLink {
+    MarkdownLinkKind kind = MarkdownLinkKind::None;
+    std::wstring target;
+};
+
+bool StartsWithInsensitive(const std::wstring& value, const wchar_t* prefix) {
+    const size_t length = wcslen(prefix);
+    if (value.size() < length) return false;
+    for (size_t index = 0; index < length; ++index) {
+        if (std::towlower(value[index]) != std::towlower(prefix[index])) return false;
+    }
+    return true;
+}
+
+bool EqualsInsensitive(const std::wstring& left, const wchar_t* right) {
+    const size_t length = wcslen(right);
+    if (left.size() != length) return false;
+    for (size_t index = 0; index < length; ++index) {
+        if (std::towlower(left[index]) != std::towlower(right[index])) return false;
+    }
+    return true;
+}
+
+int HexDigitValue(char value) {
+    if (value >= '0' && value <= '9') return value - '0';
+    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+    if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+    return -1;
+}
+
+std::wstring FileUriToPath(const std::wstring& uri) {
+    std::wstring encoded_path = uri.substr(7);
+    if (encoded_path.size() >= 3 && std::iswalpha(encoded_path[0]) && encoded_path[1] == L':' &&
+        (encoded_path[2] == L'/' || encoded_path[2] == L'\\')) {
+        // file://C:/... is accepted alongside the standard file:///C:/... form.
+    } else if (encoded_path.size() >= 4 && encoded_path[0] == L'/' && std::iswalpha(encoded_path[1]) &&
+               encoded_path[2] == L':' && (encoded_path[3] == L'/' || encoded_path[3] == L'\\')) {
+        encoded_path.erase(encoded_path.begin());
+    } else if (!encoded_path.empty() && encoded_path[0] != L'/' && encoded_path[0] != L'\\') {
+        const size_t slash = encoded_path.find_first_of(L"/\\");
+        if (slash == std::wstring::npos) return {};
+        const std::wstring host = encoded_path.substr(0, slash);
+        if (!EqualsInsensitive(host, L"localhost")) {
+            encoded_path = L"//" + host + encoded_path.substr(slash);
+        } else {
+            encoded_path = encoded_path.substr(slash);
+            if (encoded_path.size() >= 4 && encoded_path[0] == L'/' && std::iswalpha(encoded_path[1]) &&
+                encoded_path[2] == L':' && (encoded_path[3] == L'/' || encoded_path[3] == L'\\')) {
+                encoded_path.erase(encoded_path.begin());
+            }
+        }
+    }
+
+    const std::string encoded_utf8 = WideToUtf8(encoded_path);
+    std::string decoded_utf8;
+    decoded_utf8.reserve(encoded_utf8.size());
+    for (size_t index = 0; index < encoded_utf8.size(); ++index) {
+        if (encoded_utf8[index] == '%' && index + 2 < encoded_utf8.size()) {
+            const int high = HexDigitValue(encoded_utf8[index + 1]);
+            const int low = HexDigitValue(encoded_utf8[index + 2]);
+            if (high >= 0 && low >= 0) {
+                decoded_utf8.push_back(static_cast<char>((high << 4) | low));
+                index += 2;
+                continue;
+            }
+        }
+        decoded_utf8.push_back(encoded_utf8[index]);
+    }
+    std::wstring path = Utf8ToWide(decoded_utf8);
+    std::replace(path.begin(), path.end(), L'/', L'\\');
+    return path;
+}
+
+bool IsAbsoluteWindowsPath(const std::wstring& path) {
+    if (path.size() >= 3 && std::iswalpha(path[0]) && path[1] == L':' &&
+        (path[2] == L'\\' || path[2] == L'/')) {
+        return true;
+    }
+    return path.size() >= 2 && (path[0] == L'\\' || path[0] == L'/') &&
+           (path[1] == L'\\' || path[1] == L'/');
+}
+
+ResolvedMarkdownLink ResolveMarkdownLink(const std::wstring& raw_target, const std::wstring& base_directory) {
+    if (StartsWithInsensitive(raw_target, L"http://") || StartsWithInsensitive(raw_target, L"https://")) {
+        return {MarkdownLinkKind::Web, raw_target};
+    }
+    if (StartsWithInsensitive(raw_target, L"file://")) {
+        std::wstring path = FileUriToPath(raw_target);
+        if (path.empty()) return {};
+        if (!IsAbsoluteWindowsPath(path) && !base_directory.empty()) {
+            path = Utf8ToWide(AbsolutePath(WideToUtf8(path), WideToUtf8(base_directory)));
+        }
+        return {MarkdownLinkKind::File, std::move(path)};
+    }
+    if (raw_target.empty() || raw_target[0] == L'#') return {};
+
+    std::wstring path = raw_target;
+    std::replace(path.begin(), path.end(), L'/', L'\\');
+    if (!IsAbsoluteWindowsPath(path) && raw_target.find(L':') != std::wstring::npos) return {};
+    if (!IsAbsoluteWindowsPath(path) && !base_directory.empty()) {
+        path = Utf8ToWide(AbsolutePath(WideToUtf8(path), WideToUtf8(base_directory)));
+    }
+    return {MarkdownLinkKind::File, std::move(path)};
+}
+
+void CopyTextToClipboard(HWND owner, const std::wstring& text) {
+    if (text.empty() || !OpenClipboard(owner)) return;
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, (text.size() + 1) * sizeof(wchar_t));
+    if (memory != nullptr) {
+        void* target = GlobalLock(memory);
+        if (target != nullptr) {
+            memcpy(target, text.c_str(), (text.size() + 1) * sizeof(wchar_t));
+            GlobalUnlock(memory);
+            EmptyClipboard();
+            if (!SetClipboardData(CF_UNICODETEXT, memory)) GlobalFree(memory);
+        } else {
+            GlobalFree(memory);
+        }
+    }
+    CloseClipboard();
+}
+
+void OpenMarkdownLink(HWND owner, const ResolvedMarkdownLink& link) {
+    if (link.kind == MarkdownLinkKind::Web || link.kind == MarkdownLinkKind::File) {
+        ShellExecuteW(owner, L"open", link.target.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+}
+
+void ShowMarkdownLinkMenu(HWND owner, const std::wstring& raw_target, const std::wstring& base_directory,
+                          POINT point) {
+    const ResolvedMarkdownLink link = ResolveMarkdownLink(raw_target, base_directory);
+    if (link.kind == MarkdownLinkKind::None) return;
+    HMENU menu = CreatePopupMenu();
+    if (menu == nullptr) return;
+    constexpr UINT kOpenLink = 1;
+    constexpr UINT kCopyLink = 2;
+    constexpr UINT kShowFile = 3;
+    AppendMenuW(menu, MF_STRING, kOpenLink,
+                i18n::Text(link.kind == MarkdownLinkKind::Web ? L"Open link" : L"Open file"));
+    AppendMenuW(menu, MF_STRING, kCopyLink,
+                i18n::Text(link.kind == MarkdownLinkKind::Web ? L"Copy link address" : L"Copy file path"));
+    if (link.kind == MarkdownLinkKind::File) {
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, kShowFile, i18n::Text(L"Show in Explorer"));
+    }
+    ClientToScreen(owner, &point);
+    SetForegroundWindow(owner);
+    const UINT command = static_cast<UINT>(
+        TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN,
+                       point.x, point.y, 0, owner, nullptr));
+    DestroyMenu(menu);
+    PostMessageW(owner, WM_NULL, 0, 0);
+    if (command == kOpenLink) {
+        OpenMarkdownLink(owner, link);
+    } else if (command == kCopyLink) {
+        CopyTextToClipboard(owner, link.target);
+    } else if (command == kShowFile && link.kind == MarkdownLinkKind::File) {
+        const std::wstring arguments = L"/select,\"" + link.target + L"\"";
+        ShellExecuteW(owner, L"open", L"explorer.exe", arguments.c_str(), nullptr, SW_SHOWNORMAL);
     }
 }
 
@@ -1331,6 +1525,10 @@ void ChatView::SetTheme(bool dark) {
     kRailTipBorder = dark ? RGB(78, 79, 85) : RGB(196, 198, 201);
     kAccent = dark ? RGB(142, 151, 168) : RGB(70, 78, 92);
     Rebuild();
+}
+
+void ChatView::SetLinkBaseDirectory(const std::string& directory) {
+    link_base_directory_ = Utf8ToWide(directory);
 }
 
 void ChatView::RefreshLocalization() {
@@ -1871,6 +2069,7 @@ void ChatView::ScrollToBottom() {
 
 void ChatView::Rebuild() {
     if (window_ == nullptr || loading_) return;
+    hit_areas_dirty_ = true;
     HDC device = GetDC(window_);
     const int content_height = CalculateContentHeight(device);
     RECT client{};
@@ -2072,7 +2271,6 @@ void ChatView::PrepareRestoreRows() {
                 group.last_member = index;
                 group.finished += item.finished ? 1 : 0;
                 group.active = group.active || !item.finished;
-                group.failed = group.failed || (item.finished && !item.success);
                 group.elapsed_ms += ToolElapsed(item);
                 switch (CategoryOf(item.tool_name)) {
                     case ToolCategory::Read: ++group.read_count; break;
@@ -2195,6 +2393,27 @@ std::vector<ChatView::HitArea> ChatView::CalculateHitAreas(HDC device) {
                                              client.right - client.left, fonts, time_font_, known_text_height);
         if (layout.bottom >= 0 && layout.top <= client.bottom) {
             areas.push_back(HitArea{HitArea::Type::Message, index, layout.message});
+            if (items_[index].kind == ChatItemKind::Assistant) {
+                std::vector<std::pair<RECT, std::wstring>> link_regions;
+                int link_y = layout.text.top;
+                const auto& stream = streaming_markdown_[index];
+                const std::vector<MarkdownLine>& stable = stream.StableLines();
+                CollectMarkdownLinkRegions(device, stable, layout.text, fonts, &link_y, &link_regions);
+                if (!stream.TailSource().empty()) {
+                    if (!stable.empty()) link_y += DpiScale(8);
+                    const auto tail = stream.TailLines();
+                    CollectMarkdownLinkRegions(device, *tail, layout.text, fonts, &link_y, &link_regions);
+                }
+                for (auto& link : link_regions) {
+                    if (ResolveMarkdownLink(link.second, link_base_directory_).kind == MarkdownLinkKind::None) continue;
+                    HitArea area;
+                    area.type = HitArea::Type::Link;
+                    area.item = index;
+                    area.rect = link.first;
+                    area.destination = std::move(link.second);
+                    areas.push_back(std::move(area));
+                }
+            }
             if (items_[index].kind == ChatItemKind::TurnStatus) {
                 areas.push_back(HitArea{HitArea::Type::TurnStatus, index, layout.message});
             } else if (items_[index].kind == ChatItemKind::Tool) {
@@ -2236,10 +2455,13 @@ ChatView::HitArea ChatView::HitTest(POINT point) {
         }
         return {};
     }
-    HDC device = GetDC(window_);
-    std::vector<HitArea> areas = CalculateHitAreas(device);
-    ReleaseDC(window_, device);
-    for (auto iterator = areas.rbegin(); iterator != areas.rend(); ++iterator) {
+    if (hit_areas_dirty_) {
+        HDC device = GetDC(window_);
+        hit_areas_ = CalculateHitAreas(device);
+        ReleaseDC(window_, device);
+        hit_areas_dirty_ = false;
+    }
+    for (auto iterator = hit_areas_.rbegin(); iterator != hit_areas_.rend(); ++iterator) {
         if (iterator->Contains(point)) return *iterator;
     }
     return {};
@@ -2478,21 +2700,18 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                         const int glyph_x = header.left + Scale(18);
                         const int glyph_y = (header.top + header.bottom) / 2;
                         const bool command_group = GroupKey(item.tool_name) == "command";
-                        const COLORREF group_color =
-                            hovered ? kText : (groups[index].failed ? kError : kMuted);
+                        const bool show_group_icon = command_group || groups[index].active;
+                        const COLORREF group_color = hovered ? kText : kMuted;
                         if (command_group) {
                             const RECT icon_rect{header.left + Scale(9), header.top, header.left + Scale(30), header.bottom};
                             DrawTerminalIcon(buffer, text_font_, icon_rect, group_color);
                         } else if (groups[index].active) {
                             DrawActivityGlyph(buffer, glyph_x, glyph_y, Scale(5), activity_frame_, kText);
-                        } else if (groups[index].failed) {
-                            DrawFailureGlyph(buffer, glyph_x, glyph_y, kError);
-                        } else {
-                            DrawSuccessGlyph(buffer, glyph_x, glyph_y, kSuccess);
                         }
                         HFONT group_font = static_cast<HFONT>(SelectObject(buffer, text_font_));
                         SetTextColor(buffer, group_color);
-                        RECT group_title{header.left + Scale(34), header.top, header.right - Scale(94), header.bottom};
+                        RECT group_title{header.left + Scale(show_group_icon ? 34 : 12), header.top,
+                                         header.right - Scale(94), header.bottom};
                         std::wstring group_text = GroupLabel(groups[index], GroupKey(item.tool_name));
                         if (groups[index].active) {
                             const std::wstring active_summary =
@@ -2703,7 +2922,8 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             const HitArea area = HitTest(point);
             const bool interactive = area.type == HitArea::Type::TurnStatus ||
                                      area.type == HitArea::Type::ToolHeader || area.type == HitArea::Type::ToolGroup ||
-                                     area.type == HitArea::Type::Copy || area.type == HitArea::Type::Edit ||
+                                     area.type == HitArea::Type::Link || area.type == HitArea::Type::Copy ||
+                                     area.type == HitArea::Type::Edit ||
                                      area.type == HitArea::Type::Rail;
             SetCursor(LoadCursorW(nullptr, interactive ? IDC_HAND : IDC_ARROW));
             return TRUE;
@@ -2724,8 +2944,19 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             } else if (area.type == HitArea::Type::TurnStatus) ToggleTurnStatus(area.item);
             else if (area.type == HitArea::Type::ToolGroup && toggle_group_) toggle_group_(area.item);
             else if (area.type == HitArea::Type::ToolHeader && toggle_tool_) toggle_tool_(area.item);
+            else if (area.type == HitArea::Type::Link) {
+                OpenMarkdownLink(window_, ResolveMarkdownLink(area.destination, link_base_directory_));
+            }
             else if (area.type == HitArea::Type::Copy && copy_item_) copy_item_(area.item);
             else if (area.type == HitArea::Type::Edit && edit_item_) edit_item_(area.item);
+            return 0;
+        }
+        case WM_RBUTTONUP: {
+            const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+            const HitArea area = HitTest(point);
+            if (area.type == HitArea::Type::Link) {
+                ShowMarkdownLinkMenu(window_, area.destination, link_base_directory_, point);
+            }
             return 0;
         }
         case WM_MOUSEWHEEL: {

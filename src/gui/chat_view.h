@@ -25,6 +25,7 @@ public:
     HWND hwnd() const { return window_; }
     void SetTheme(bool dark);
     void RefreshLocalization();
+    void SetLinkBaseDirectory(const std::string& directory);
     void SetActivityFrame(int frame);
     void SetActivityState(bool active, const std::wstring& label, uint64_t start_tick_ms = 0);
 
@@ -82,6 +83,7 @@ private:
             TurnStatus,
             ToolHeader,
             ToolGroup,
+            Link,
             Copy,
             Edit,
             Rail,
@@ -90,6 +92,7 @@ private:
         Type type = Type::None;
         size_t item = static_cast<size_t>(-1);
         RECT rect{};
+        std::wstring destination;
         bool Contains(POINT point) const {
             return point.x >= rect.left && point.x < rect.right && point.y >= rect.top && point.y < rect.bottom;
         }
@@ -136,11 +139,14 @@ private:
     HFONT mono_font_ = nullptr;
     HFONT time_font_ = nullptr;
     std::vector<ChatItem> items_;
+    std::wstring link_base_directory_;
     Action toggle_tool_;
     Action toggle_group_;
     Action copy_item_;
     Action edit_item_;
     std::vector<RailDash> rail_dashes_;
+    std::vector<HitArea> hit_areas_;
+    bool hit_areas_dirty_ = true;
     std::vector<int> item_heights_;
     // Cached rendered Markdown height for assistant rows. This is deliberately separate
     // from item_heights_, which includes metadata and the inter-item gap.

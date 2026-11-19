@@ -54,7 +54,9 @@ bool SameRendering(const std::vector<spark::markdown::MarkdownLine>& left,
                return first.code == second.code && first.rule == second.rule && first.indent == second.indent &&
                       first.runs.size() == second.runs.size() &&
                       std::equal(first.runs.begin(), first.runs.end(), second.runs.begin(),
-                                 [](const auto& a, const auto& b) { return a.text == b.text && a.style == b.style; });
+                                 [](const auto& a, const auto& b) {
+                                     return a.text == b.text && a.style == b.style && a.destination == b.destination;
+                                 });
            });
 }
 
@@ -94,6 +96,27 @@ int main() {
 
     const auto link = spark::markdown::ParseMarkdown(L"[OpenAI](https://openai.com)");
     Check(HasRun(link, L"OpenAI", spark::markdown::MarkdownStyle::Link), "link style");
+    bool has_link_destination = false;
+    for (const MarkdownLine& line : link) {
+        for (const auto& run : line.runs) {
+            if (run.text == L"OpenAI" && run.style == MarkdownStyle::Link &&
+                run.destination == L"https://openai.com") {
+                has_link_destination = true;
+            }
+        }
+    }
+    Check(has_link_destination, "link destination is retained for interaction");
+
+    const auto file_link = spark::markdown::ParseMarkdown(L"[source](file:///C:/workspace/My%20File.cpp)");
+    bool has_file_destination = false;
+    for (const MarkdownLine& line : file_link) {
+        for (const auto& run : line.runs) {
+            if (run.text == L"source" && run.destination == L"file:///C:/workspace/My%20File.cpp") {
+                has_file_destination = true;
+            }
+        }
+    }
+    Check(has_file_destination, "file link destination is retained");
 
     const auto entity = spark::markdown::ParseMarkdown(L"&amp; &lt; &#65;");
     Check(HasTextPart(entity, L"& < A"), "entity decoding");
@@ -108,7 +131,7 @@ int main() {
         {{{L"\u4F60\u597D ", MarkdownStyle::Body},
           {L"\u4E16\u754C \U0001F9EA", MarkdownStyle::Bold},
           {L" ", MarkdownStyle::Body},
-          {L"caf\u00E9 \U0001F600", MarkdownStyle::Link}}},
+          {L"caf\u00E9 \U0001F600", MarkdownStyle::Link, L"https://example.invalid/"}}},
         {},
         {{{L"\u53D8\u91CF \U0001F680", MarkdownStyle::Code}}},
     };

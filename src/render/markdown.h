@@ -23,6 +23,7 @@ enum class MarkdownStyle {
 struct MarkdownRun {
     std::wstring text;
     MarkdownStyle style = MarkdownStyle::Body;
+    std::wstring destination;
 };
 
 struct MarkdownLine {

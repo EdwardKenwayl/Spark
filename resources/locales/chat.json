@@ -622,5 +622,65 @@
     "es-ES": "Total del turno {total} · Entrada {input} · Salida {output} · Lectura de caché {cached} · Tasa de aciertos de caché {cache_rate} · Contexto {context}/{limit} ({context_rate}) · Llamadas {calls} · Duración {elapsed}",
     "pt-BR": "Total do turno {total} · Entrada {input} · Saída {output} · Leitura de cache {cached} · Taxa de acertos do cache {cache_rate} · Contexto {context}/{limit} ({context_rate}) · Chamadas {calls} · Tempo decorrido {elapsed}",
     "ru-RU": "Итого за ход {total} · Вход {input} · Выход {output} · Чтение кэша {cached} · Попадания в кэш {cache_rate} · Контекст {context}/{limit} ({context_rate}) · Вызовы {calls} · Время {elapsed}"
+  },
+  "Open link": {
+    "zh-CN": "打开链接",
+    "en-US": "Open link",
+    "zh-TW": "開啟連結",
+    "ja-JP": "リンクを開く",
+    "ko-KR": "링크 열기",
+    "de-DE": "Link öffnen",
+    "fr-FR": "Ouvrir le lien",
+    "es-ES": "Abrir enlace",
+    "pt-BR": "Abrir link",
+    "ru-RU": "Открыть ссылку"
+  },
+  "Open file": {
+    "zh-CN": "打开文件",
+    "en-US": "Open file",
+    "zh-TW": "開啟檔案",
+    "ja-JP": "ファイルを開く",
+    "ko-KR": "파일 열기",
+    "de-DE": "Datei öffnen",
+    "fr-FR": "Ouvrir le fichier",
+    "es-ES": "Abrir archivo",
+    "pt-BR": "Abrir arquivo",
+    "ru-RU": "Открыть файл"
+  },
+  "Copy link address": {
+    "zh-CN": "复制链接地址",
+    "en-US": "Copy link address",
+    "zh-TW": "複製連結位址",
+    "ja-JP": "リンクアドレスをコピー",
+    "ko-KR": "링크 주소 복사",
+    "de-DE": "Linkadresse kopieren",
+    "fr-FR": "Copier l’adresse du lien",
+    "es-ES": "Copiar dirección del enlace",
+    "pt-BR": "Copiar endereço do link",
+    "ru-RU": "Скопировать адрес ссылки"
+  },
+  "Copy file path": {
+    "zh-CN": "复制文件路径",
+    "en-US": "Copy file path",
+    "zh-TW": "複製檔案路徑",
+    "ja-JP": "ファイルパスをコピー",
+    "ko-KR": "파일 경로 복사",
+    "de-DE": "Dateipfad kopieren",
+    "fr-FR": "Copier le chemin du fichier",
+    "es-ES": "Copiar ruta del archivo",
+    "pt-BR": "Copiar caminho do arquivo",
+    "ru-RU": "Скопировать путь к файлу"
+  },
+  "Show in Explorer": {
+    "zh-CN": "在资源管理器中显示",
+    "en-US": "Show in Explorer",
+    "zh-TW": "在檔案總管中顯示",
+    "ja-JP": "エクスプローラーで表示",
+    "ko-KR": "파일 탐색기에서 표시",
+    "de-DE": "Im Explorer anzeigen",
+    "fr-FR": "Afficher dans l’Explorateur",
+    "es-ES": "Mostrar en el Explorador",
+    "pt-BR": "Mostrar no Explorador",
+    "ru-RU": "Показать в проводнике"
   }
 }
