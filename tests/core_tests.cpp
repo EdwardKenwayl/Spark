@@ -776,6 +776,73 @@ int main() {
         }
     }
 
+    const std::string compacted_rollout_path = spark::JoinPath(exchange_directory, "compacted-rollout.jsonl");
+    {
+        std::ofstream compacted_rollout(spark::Utf8ToWide(compacted_rollout_path),
+                                        std::ios::binary | std::ios::trunc);
+        Check(static_cast<bool>(compacted_rollout), "compacted Codex rollout fixture opens");
+        if (compacted_rollout) {
+            compacted_rollout
+                << R"({"type":"response_item","timestamp":"2026-10-01T00:00:00Z","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"INTERNAL_RECOVERY_MARKER"}]}})"
+                << "\n"
+                << R"({"type":"response_item","timestamp":"2026-10-01T00:00:00Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"INTERNAL_CONTEXTUAL_USER_MARKER"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["agents_md.instructions","environments.environment_context"]}}})"
+                << "\n"
+                << R"({"type":"response_item","timestamp":"2026-10-01T00:00:01Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"old visible question"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text"]}}})"
+                << "\n"
+                << R"({"type":"response_item","timestamp":"2026-10-01T00:00:02Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"old visible answer"}]}})"
+                << "\n"
+                << R"({"type":"compacted","payload":{"message":"first handoff","replacement_history":[{"type":"message","role":"user","content":[{"type":"input_text","text":"first checkpoint context"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first checkpoint answer"}]}]}})"
+                << "\n"
+                << R"({"type":"response_item","timestamp":"2026-10-01T00:00:03Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"intermediate question"}]}})"
+                << "\n"
+                << R"({"type":"response_item","timestamp":"2026-10-01T00:00:04Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"intermediate answer"}]}})"
+                << "\n"
+                << R"({"type":"compacted","payload":{"message":"latest handoff","replacement_history":[{"type":"message","role":"user","content":[{"type":"input_text","text":"latest checkpoint context"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"latest checkpoint answer"}]}]}})"
+                << "\n"
+                << R"({"type":"response_item","timestamp":"2026-10-01T00:00:05Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"current question"}]}})"
+                << "\n"
+                << R"({"type":"response_item","timestamp":"2026-10-01T00:00:06Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"current answer"}]}})"
+                << "\n";
+        }
+    }
+    const auto compacted_imported = spark::ImportCodexSessionToSpark(
+        compacted_rollout_path, spark::JoinPath(exchange_directory, "compacted-imported-data"),
+        spark::JoinPath(exchange_directory, "workspace"), "project");
+    Check(compacted_imported.ok, "Codex rollout with repeated compaction imports");
+    if (compacted_imported.ok) {
+        spark::SessionJournal compacted_journal;
+        Check(compacted_journal.Resume(compacted_imported.value.path).ok,
+              "compacted Codex import resumes from its journal");
+        if (!compacted_journal.State().id.empty()) {
+            const spark::SessionState& imported_state = compacted_journal.State();
+            const auto contains_message = [](const std::vector<spark::ChatMessage>& messages,
+                                             const std::string& content) {
+                return std::any_of(messages.begin(), messages.end(), [&](const spark::ChatMessage& message) {
+                    return message.content == content;
+                });
+            };
+            Check(imported_state.messages.size() == 6,
+                  "import retains visible messages and excludes developer instructions");
+            Check(contains_message(imported_state.messages, "old visible question") &&
+                      contains_message(imported_state.messages, "old visible answer") &&
+                      contains_message(imported_state.messages, "current question"),
+                  "import retains visible transcript across compaction");
+            Check(!contains_message(imported_state.messages, "INTERNAL_RECOVERY_MARKER"),
+                  "developer recovery text is not rendered as a user message");
+            Check(!contains_message(imported_state.messages, "INTERNAL_CONTEXTUAL_USER_MARKER"),
+                  "Codex user context fragments are not rendered as user messages");
+            const std::vector<spark::ChatMessage>& model_context = spark::ModelContextMessages(imported_state);
+            Check(model_context.size() == 4 &&
+                      model_context[0].content == "latest checkpoint context" &&
+                      model_context[1].content == "latest checkpoint answer" &&
+                      model_context[2].content == "current question" &&
+                      model_context[3].content == "current answer",
+                  "model context starts at the latest Codex replacement history");
+            Check(imported_state.metadata.value("context_compactions", nlohmann::json::array()).size() == 2,
+                  "import records both Codex compaction boundaries");
+        }
+    }
+
     const std::string large_rollout_path = spark::JoinPath(exchange_directory, "large-rollout.jsonl");
     {
         std::ofstream large_rollout(spark::Utf8ToWide(large_rollout_path), std::ios::binary | std::ios::trunc);

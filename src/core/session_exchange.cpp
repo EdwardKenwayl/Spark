@@ -169,8 +169,102 @@ void AppendCodexResponse(std::vector<std::string>& lines, uint64_t timestamp, co
     lines.push_back(Line("response_item", payload, timestamp).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 }
 
-std::string FirstUserTitle(const std::vector<ChatMessage>& messages) {
-    for (const ChatMessage& message : messages) {
+struct CodexImportStep {
+    enum class Kind { Message, Compaction };
+    Kind kind = Kind::Message;
+    ChatMessage message;
+    nlohmann::json payload;
+};
+
+bool IsCodexContextualUserMessage(const nlohmann::json& payload) {
+    const nlohmann::json passthrough =
+        payload.value("internal_chat_message_metadata_passthrough", nlohmann::json::object());
+    const nlohmann::json kinds = passthrough.value("content_item_kinds", nlohmann::json::array());
+    if (!kinds.is_array() || kinds.empty()) return false;
+
+    bool has_context_fragment = false;
+    for (const nlohmann::json& item : kinds) {
+        const std::string kind = item.is_string()
+                                     ? item.get<std::string>()
+                                     : item.is_object() ? item.value("kind", item.value("type", std::string{}))
+                                                        : std::string{};
+        if (kind.empty() || kind == "unknown" || kind.compare(0, 5, "user.") == 0) return false;
+        if (kind == "agents_md.instructions" || kind == "environments.environment_context" ||
+            kind == "hooks.additional_context" || kind == "memories.instructions" ||
+            kind == "host_skills.instructions" || kind == "permissions.instructions" ||
+            kind == "collaboration_mode.instructions" || kind == "plugins.usage_instructions" ||
+            kind == "tools.deferred_namespaces" || kind == "multi_agent.usage_hint" ||
+            kind == "multi_agent.mode_instructions" ||
+            kind == "additional_content.codex_apps_client_time_context" ||
+            kind == "generic.developer_instructions" || kind == "generic.turn_aborted") {
+            has_context_fragment = true;
+            continue;
+        }
+        return false;
+    }
+    return has_context_fragment;
+}
+
+bool ParseCodexResponseItem(const nlohmann::json& payload, uint64_t timestamp, ChatMessage* message,
+                            bool* is_plain_message) {
+    if (message == nullptr) return false;
+    if (is_plain_message != nullptr) *is_plain_message = false;
+    const std::string item_type = payload.value("type", std::string{});
+    if (item_type == "message") {
+        const std::string role = payload.value("role", std::string{});
+        if (role == "user") {
+            if (IsCodexContextualUserMessage(payload)) return false;
+            message->role = MessageRole::User;
+        } else if (role == "assistant") {
+            message->role = MessageRole::Assistant;
+        } else if (role == "tool") {
+            message->role = MessageRole::Tool;
+        } else {
+            return false;
+        }
+        message->content = ContentText(payload.value("content", nlohmann::json::array()));
+        message->timestamp = timestamp;
+        if (is_plain_message != nullptr) *is_plain_message = true;
+        return !message->content.empty();
+    }
+    if (item_type == "reasoning") {
+        const std::string reasoning = ReasoningText(payload);
+        if (reasoning.empty()) return false;
+        message->role = MessageRole::Assistant;
+        message->reasoning_text = reasoning;
+        message->reasoning_items.push_back(reasoning);
+        message->timestamp = timestamp;
+        return true;
+    }
+    if (item_type == "function_call" || item_type == "custom_tool_call") {
+        ToolCall call;
+        call.id = payload.value("call_id", std::string{});
+        call.name = payload.value("name", std::string{});
+        const nlohmann::json arguments = payload.value("arguments", payload.value("input", nlohmann::json::object()));
+        call.arguments_json = arguments.is_string()
+                                  ? arguments.get<std::string>()
+                                  : arguments.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+        if (call.name.empty()) return false;
+        message->role = MessageRole::Assistant;
+        message->timestamp = timestamp;
+        message->tool_calls.push_back(std::move(call));
+        return true;
+    }
+    if (item_type == "function_call_output" || item_type == "custom_tool_call_output") {
+        message->role = MessageRole::Tool;
+        message->tool_call_id = payload.value("call_id", std::string{});
+        message->name = payload.value("name", std::string{});
+        message->content = OutputText(payload.value("output", nlohmann::json{}));
+        message->timestamp = timestamp;
+        return true;
+    }
+    return false;
+}
+
+std::string FirstUserTitle(const std::vector<CodexImportStep>& steps) {
+    for (const CodexImportStep& step : steps) {
+        if (step.kind != CodexImportStep::Kind::Message) continue;
+        const ChatMessage& message = step.message;
         if (message.role != MessageRole::User || Trim(message.content).empty()) continue;
         std::string title = Trim(message.content);
         std::replace(title.begin(), title.end(), '\r', ' ');
@@ -310,12 +404,12 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
     fs_ifstream input(NativePath(codex_session_path), std::ios::binary);
     if (!input) return Result<CodexSessionImportResult>::Failure("could not open Codex session");
 
-    std::vector<ChatMessage> messages;
-    std::vector<ChatMessage> fallback_messages;
-    std::set<std::string> user_texts;
+    std::vector<CodexImportStep> import_steps;
+    std::vector<CodexImportStep> fallback_steps;
     std::string codex_workspace;
     uint64_t created_at = 0;
     size_t response_messages = 0;
+    size_t visible_message_count = 0;
 
     bool first_line = true;
     std::string line;
@@ -343,46 +437,44 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
             continue;
         }
         if (type == "response_item") {
-            const std::string item_type = payload.value("type", std::string{});
-            if (item_type == "message") {
-                ChatMessage message;
-                message.role = MessageRoleFromString(payload.value("role", std::string("user")));
-                message.content = ContentText(payload.value("content", nlohmann::json::array()));
-                message.timestamp = timestamp;
-                if (!message.content.empty()) {
-                    if (message.role == MessageRole::User) user_texts.insert(message.content);
-                    ++response_messages;
-                    messages.push_back(std::move(message));
-                }
-            } else if (item_type == "reasoning") {
-                const std::string reasoning = ReasoningText(payload);
-                if (!reasoning.empty()) {
-                    ChatMessage message;
-                    message.role = MessageRole::Assistant;
-                    message.reasoning_text = reasoning;
-                    message.reasoning_items.push_back(reasoning);
-                    message.timestamp = timestamp;
-                    messages.push_back(std::move(message));
-                }
-            } else if (item_type == "function_call" || item_type == "custom_tool_call") {
-                ChatMessage message;
-                message.role = MessageRole::Assistant;
-                message.timestamp = timestamp;
-                ToolCall call;
-                call.id = payload.value("call_id", std::string{});
-                call.name = payload.value("name", std::string{});
-                call.arguments_json = payload.value("arguments", payload.value("input", std::string("{}")));
-                if (!call.name.empty()) message.tool_calls.push_back(std::move(call));
-                if (!message.tool_calls.empty()) messages.push_back(std::move(message));
-            } else if (item_type == "function_call_output" || item_type == "custom_tool_call_output") {
-                ChatMessage message;
-                message.role = MessageRole::Tool;
-                message.tool_call_id = payload.value("call_id", std::string{});
-                message.name = payload.value("name", std::string{});
-                message.content = OutputText(payload.value("output", nlohmann::json{}));
-                message.timestamp = timestamp;
-                messages.push_back(std::move(message));
+            ChatMessage message;
+            bool is_plain_message = false;
+            if (ParseCodexResponseItem(payload, timestamp, &message, &is_plain_message)) {
+                if (is_plain_message && message.role != MessageRole::Tool) ++response_messages;
+                ++visible_message_count;
+                CodexImportStep step;
+                step.kind = CodexImportStep::Kind::Message;
+                step.message = std::move(message);
+                import_steps.push_back(std::move(step));
             }
+            continue;
+        }
+        if (type == "compacted") {
+            nlohmann::json compacted_payload = {
+                {"trigger", "codex_import"},
+                {"summary", payload.value("message", std::string{})},
+                {"message_count", visible_message_count},
+            };
+            const nlohmann::json replacement_history =
+                payload.value("replacement_history", nlohmann::json::array());
+            if (replacement_history.is_array()) {
+                std::vector<ChatMessage> context_messages;
+                for (const nlohmann::json& history_item : replacement_history) {
+                    const nlohmann::json item_payload =
+                        history_item.contains("item") && history_item["item"].is_object()
+                            ? history_item["item"]
+                            : history_item;
+                    ChatMessage message;
+                    if (ParseCodexResponseItem(item_payload, 0, &message, nullptr)) {
+                        context_messages.push_back(std::move(message));
+                    }
+                }
+                if (!context_messages.empty()) compacted_payload["context_messages"] = context_messages;
+            }
+            CodexImportStep step;
+            step.kind = CodexImportStep::Kind::Compaction;
+            step.payload = std::move(compacted_payload);
+            import_steps.push_back(std::move(step));
             continue;
         }
         if (type == "event_msg") {
@@ -392,18 +484,29 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
                 message.role = event_type == "user_message" ? MessageRole::User : MessageRole::Assistant;
                 message.content = payload.value("message", std::string{});
                 message.timestamp = timestamp;
-                if (!message.content.empty()) fallback_messages.push_back(std::move(message));
+                if (!message.content.empty()) {
+                    ++visible_message_count;
+                    CodexImportStep step;
+                    step.kind = CodexImportStep::Kind::Message;
+                    step.message = std::move(message);
+                    fallback_steps.push_back(std::move(step));
+                }
             }
         }
     }
 
     if (input.bad()) return Result<CodexSessionImportResult>::Failure("could not read Codex session");
-    if (response_messages == 0 && !fallback_messages.empty()) messages = std::move(fallback_messages);
-    if (messages.empty()) return Result<CodexSessionImportResult>::Failure("Codex session has no importable messages");
+    if (response_messages == 0 && !fallback_steps.empty()) {
+        import_steps = std::move(fallback_steps);
+        visible_message_count = import_steps.size();
+    }
+    if (visible_message_count == 0) {
+        return Result<CodexSessionImportResult>::Failure("Codex session has no importable messages");
+    }
 
     CodexSessionImportResult result;
-    result.title = FirstUserTitle(messages);
-    result.message_count = messages.size();
+    result.title = FirstUserTitle(import_steps);
+    result.message_count = visible_message_count;
     const std::string target_workspace = workspace.empty() ? (codex_workspace.empty() ? CurrentDirectoryUtf8() : codex_workspace)
                                                            : AbsolutePath(workspace);
 
@@ -411,9 +514,16 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
     const auto opened = journal.Open(data_directory, target_workspace);
     if (!opened.ok) return Result<CodexSessionImportResult>::Failure("could not create Spark session: " + opened.error);
     const std::string normalized_scope = scope == "project" ? "project" : "recent";
-    journal.Append("session.scope", {{"scope", normalized_scope}});
-    journal.Append("session.title", {{"title", result.title}});
-    for (const ChatMessage& message : messages) journal.Append("message", message);
+    const auto scope_result = journal.Append("session.scope", {{"scope", normalized_scope}});
+    if (!scope_result.ok) return Result<CodexSessionImportResult>::Failure(scope_result.error);
+    const auto title_result = journal.Append("session.title", {{"title", result.title}});
+    if (!title_result.ok) return Result<CodexSessionImportResult>::Failure(title_result.error);
+    for (const CodexImportStep& step : import_steps) {
+        const auto append_result = step.kind == CodexImportStep::Kind::Message
+                                       ? journal.Append("message", step.message)
+                                       : journal.Append("context.compacted", step.payload);
+        if (!append_result.ok) return Result<CodexSessionImportResult>::Failure(append_result.error);
+    }
     result.path = journal.Path();
     return Result<CodexSessionImportResult>::Success(std::move(result));
 }

@@ -86,6 +86,21 @@ void RecordCompaction(SessionState& state, const nlohmann::json& payload) {
     });
 }
 
+void ApplyContextCompaction(SessionState& state, const nlohmann::json& payload) {
+    RecordCompaction(state, payload);
+    state.context_messages.clear();
+    if (payload.contains("context_messages") && payload["context_messages"].is_array()) {
+        state.context_messages = payload["context_messages"].get<std::vector<ChatMessage>>();
+    }
+    if (state.context_messages.empty()) {
+        ChatMessage handoff;
+        handoff.role = MessageRole::System;
+        handoff.content = "Conversation history handoff summary:\n" +
+                          payload.value("summary", std::string{});
+        state.context_messages.push_back(std::move(handoff));
+    }
+}
+
 void RecordPermission(SessionState& state, const nlohmann::json& payload) {
     if (!state.metadata.is_object()) state.metadata = nlohmann::json::object();
     const std::string mode = LowerAscii(Trim(payload.value("mode", std::string("ask"))));
@@ -413,16 +428,10 @@ Result<void> SessionJournal::LoadEvents(std::istream& stream, const Cancellation
                 state_.messages.push_back(message);
                 if (context_override) state_.context_messages.push_back(std::move(message));
             } else if (type == "context.compacted") {
-                RecordCompaction(state_, payload);
+                ApplyContextCompaction(state_, payload);
                 // The following legacy snapshot stores only the compacted model context. Keep
                 // every earlier message event as the visible transcript.
                 context_override = true;
-                state_.context_messages.clear();
-                ChatMessage handoff;
-                handoff.role = MessageRole::System;
-                handoff.content = "Conversation history handoff summary:\n" +
-                                  payload.value("summary", std::string{});
-                state_.context_messages.push_back(std::move(handoff));
             } else if (type == "turn.completed" || type == "turn.duration") {
                 RecordTurnDuration(state_, payload);
                 replayed_durations = state_.metadata["turn_durations_ms"];
@@ -534,7 +543,7 @@ Result<void> SessionJournal::Append(const std::string& event_type, const nlohman
     } else if (event_type == "turn.usage") {
         RecordTurnUsage(state_, payload);
     } else if (event_type == "context.compacted") {
-        RecordCompaction(state_, payload);
+        ApplyContextCompaction(state_, payload);
     } else if (event_type == "session.permission") {
         RecordPermission(state_, payload);
     } else if (event_type == "tool.execution") {
