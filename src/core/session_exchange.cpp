@@ -22,17 +22,6 @@
 namespace spark {
 namespace {
 
-std::vector<std::string> SplitLines(const std::string& input) {
-    std::vector<std::string> lines;
-    std::istringstream stream(input);
-    std::string line;
-    while (std::getline(stream, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (!line.empty()) lines.push_back(std::move(line));
-    }
-    return lines;
-}
-
 std::string GenerateUuid() {
 #ifdef _WIN32
     GUID guid{};
@@ -318,9 +307,8 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
                                                            const std::string& data_directory,
                                                            const std::string& workspace,
                                                            const std::string& scope) {
-    std::string error;
-    const auto contents = ReadFileUtf8(codex_session_path, &error);
-    if (!contents.has_value()) return Result<CodexSessionImportResult>::Failure("could not read Codex session: " + error);
+    fs_ifstream input(NativePath(codex_session_path), std::ios::binary);
+    if (!input) return Result<CodexSessionImportResult>::Failure("could not open Codex session");
 
     std::vector<ChatMessage> messages;
     std::vector<ChatMessage> fallback_messages;
@@ -329,7 +317,18 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
     uint64_t created_at = 0;
     size_t response_messages = 0;
 
-    for (const std::string& line : SplitLines(*contents)) {
+    bool first_line = true;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (first_line) {
+            first_line = false;
+            if (line.size() >= 3 && static_cast<unsigned char>(line[0]) == 0xEF &&
+                static_cast<unsigned char>(line[1]) == 0xBB && static_cast<unsigned char>(line[2]) == 0xBF) {
+                line.erase(0, 3);
+            }
+        }
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
         nlohmann::json event;
         try {
             event = nlohmann::json::parse(line);
@@ -398,6 +397,7 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
         }
     }
 
+    if (input.bad()) return Result<CodexSessionImportResult>::Failure("could not read Codex session");
     if (response_messages == 0 && !fallback_messages.empty()) messages = std::move(fallback_messages);
     if (messages.empty()) return Result<CodexSessionImportResult>::Failure("Codex session has no importable messages");
 

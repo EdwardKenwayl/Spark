@@ -16,6 +16,7 @@
 #include "platform/window_text.h"
 
 #include <algorithm>
+#include <fstream>
 #include <iostream>
 #include <set>
 #include <thread>
@@ -771,6 +772,51 @@ int main() {
             const auto imported_text = spark::ReadFileUtf8(imported.value.path, &imported_error);
             Check(imported_text.has_value() && imported_text->find("\"scope\":\"project\"") != std::string::npos,
                   "imported project session keeps its scope");
+        }
+    }
+
+    const std::string large_rollout_path = spark::JoinPath(exchange_directory, "large-rollout.jsonl");
+    {
+        std::ofstream large_rollout(spark::Utf8ToWide(large_rollout_path), std::ios::binary | std::ios::trunc);
+        Check(static_cast<bool>(large_rollout), "large Codex rollout fixture opens");
+        if (large_rollout) {
+            large_rollout
+                << "{\"type\":\"response_item\",\"timestamp\":\"2026-10-01T00:00:00Z\",\"payload\":"
+                   "{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\","
+                   "\"text\":\"large import marker\"}]}}\n"
+                << "{\"type\":\"response_item\",\"timestamp\":\"2026-10-01T00:00:01Z\",\"payload\":"
+                   "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\","
+                   "\"text\":\"large import response\"}]}}\n";
+            const std::string ignored_event =
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"test_padding\",\"text\":\"" +
+                std::string(64 * 1024, 'x') + "\"}}\n";
+            for (size_t index = 0; index < 1040; ++index) large_rollout << ignored_event;
+            large_rollout
+                << "{\"type\":\"response_item\",\"timestamp\":\"2026-10-01T00:00:02Z\",\"payload\":"
+                   "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\","
+                   "\"text\":\"after former size limit\"}]}}";
+        }
+    }
+    std::error_code large_rollout_size_error;
+    const uint64_t large_rollout_size =
+        spark::fs::file_size(spark::Utf8ToWide(large_rollout_path), large_rollout_size_error);
+    Check(!large_rollout_size_error && large_rollout_size > 64u * 1024u * 1024u,
+          "large Codex rollout fixture exceeds the former limit");
+    if (!large_rollout_size_error && large_rollout_size > 64u * 1024u * 1024u) {
+        const auto large_imported = spark::ImportCodexSessionToSpark(
+            large_rollout_path, spark::JoinPath(exchange_directory, "large-imported-data"),
+            spark::JoinPath(exchange_directory, "workspace"), "project");
+        Check(large_imported.ok, "Codex rollout larger than 64 MiB imports");
+        if (large_imported.ok) {
+            Check(large_imported.value.title == "large import marker",
+                  "large imported session keeps its first user title");
+            spark::SessionJournal large_imported_journal;
+            Check(large_imported_journal.Resume(large_imported.value.path).ok,
+                  "large imported session resumes");
+            Check(large_imported_journal.State().messages.size() == 3 &&
+                      large_imported_journal.State().messages.front().content == "large import marker" &&
+                      large_imported_journal.State().messages.back().content == "after former size limit",
+                  "large imported session keeps messages beyond the former limit and the final unterminated line");
         }
     }
 
