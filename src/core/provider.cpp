@@ -760,7 +760,24 @@ public:
             {"input", nlohmann::json::array()},
             {"stream", request.model->capabilities.streaming},
         };
-        if (!request.reasoning_effort.empty()) payload["reasoning"] = {{"effort", request.reasoning_effort}};
+        if (request.model->capabilities.reasoning) {
+            if (!request.reasoning_effort.empty()) payload["reasoning"]["effort"] = request.reasoning_effort;
+            std::string model_id = LowerAscii(request.model->id);
+            const size_t separator = model_id.find_last_of('/');
+            if (separator != std::string::npos) model_id.erase(0, separator + 1);
+            const auto family = [&](const std::string& name) {
+                return model_id == name || model_id.rfind(name + "-", 0) == 0 ||
+                       model_id.rfind(name + ".", 0) == 0;
+            };
+            // Provider names are user-defined, and other Responses implementations
+            // do not necessarily accept OpenAI's optional summary parameter.
+            const bool supports_summary = family("gpt-5") || family("gpt-6") ||
+                                          (family("o3") && !family("o3-mini")) || family("o4-mini");
+            const std::string effort = LowerAscii(Trim(request.reasoning_effort));
+            if (supports_summary && effort != "none" && effort != "off" && effort != "disabled") {
+                payload["reasoning"]["summary"] = "auto";
+            }
+        }
         if (!request.prompt_cache_key.empty()) payload["prompt_cache_key"] = request.prompt_cache_key;
         std::string instructions;
         // Thinking models pair every assistant turn with the reasoning that produced it and
@@ -870,8 +887,30 @@ public:
         std::string reasoning_buffer;
         std::string reasoning_done;
         std::vector<std::string> reasoning_items;
+        std::map<std::string, size_t> reasoning_positions;
+        std::map<std::pair<std::string, size_t>, std::string> summary_parts;
         std::string raw_prefix;
-        const auto absorb_output_item = [&](const nlohmann::json& item, bool final) {
+        const auto reasoning_key = [](const std::string& id, size_t output_index) {
+            return id.empty() ? "output/" + std::to_string(output_index) : "item/" + id;
+        };
+        const auto emit_summary = [&](const std::string& item_key, size_t summary_index,
+                                      const std::string& text, bool delta) {
+            auto& delivered = summary_parts[{item_key, summary_index}];
+            std::string suffix;
+            if (delta) {
+                delivered += text;
+                suffix = text;
+            } else {
+                // A done/item/completed snapshot may repeat already streamed text,
+                // or provide the suffix (or whole part) a gateway did not stream.
+                if (text.size() > delivered.size() && text.compare(0, delivered.size(), delivered) == 0) {
+                    suffix = text.substr(delivered.size());
+                    delivered = text;
+                }
+            }
+            if (callbacks.on_reasoning_delta && !suffix.empty()) callbacks.on_reasoning_delta(suffix);
+        };
+        const auto absorb_output_item = [&](const nlohmann::json& item, bool final, size_t output_index) {
             if (!item.is_object()) return;
             CollectOutputSources(item, reply);
             const std::string item_type = item.value("type", std::string{});
@@ -879,7 +918,21 @@ public:
                 // Thinking models reject the follow-up request unless the reasoning item
                 // of the previous turn is handed back verbatim, so keep the finished item
                 // as the provider sent it (id / summary / content / encrypted_content).
-                if (final) reasoning_items.push_back(item.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+                if (final) {
+                    const std::string key = reasoning_key(item.value("id", std::string{}), output_index);
+                    const auto [position, inserted] = reasoning_positions.emplace(key, reasoning_items.size());
+                    if (inserted) reasoning_items.emplace_back();
+                    reasoning_items[position->second] = item.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+                    const auto summary = item.find("summary");
+                    if (summary != item.end() && summary->is_array()) {
+                        for (size_t index = 0; index < summary->size(); ++index) {
+                            const auto& part = (*summary)[index];
+                            if (part.is_object() && part.value("type", std::string{}) == "summary_text") {
+                                emit_summary(key, index, part.value("text", std::string{}), false);
+                            }
+                        }
+                    }
+                }
             } else if (item_type == "function_call") {
                 const std::string item_id = item.value("id", std::string{});
                 const std::string id = item.value("call_id", item_id);
@@ -931,13 +984,25 @@ public:
                         const std::string text = event.value("delta", std::string{});
                         // Keep the raw reasoning even when nobody is watching the UI: the
                         // provider wants it back on the next request.
-                        if (type == "response.reasoning_text.delta") reasoning_buffer += text;
-                        if (callbacks.on_reasoning_delta && !text.empty()) callbacks.on_reasoning_delta(text);
+                        if (type == "response.reasoning_text.delta") {
+                            reasoning_buffer += text;
+                            if (callbacks.on_reasoning_delta && !text.empty()) callbacks.on_reasoning_delta(text);
+                        } else {
+                            emit_summary(reasoning_key(event.value("item_id", std::string{}),
+                                                       event.value("output_index", size_t{0})),
+                                         event.value("summary_index", size_t{0}), text, true);
+                        }
+                    } else if (type == "response.reasoning_summary_text.done") {
+                        emit_summary(reasoning_key(event.value("item_id", std::string{}),
+                                                   event.value("output_index", size_t{0})),
+                                     event.value("summary_index", size_t{0}),
+                                     event.value("text", std::string{}), false);
                     } else if (type == "response.reasoning_text.done") {
                         reasoning_done = event.value("text", std::string{});
                     } else if (type == "response.output_item.added" || type == "response.output_item.done") {
                         absorb_output_item(event.value("item", nlohmann::json::object()),
-                                           type == "response.output_item.done");
+                                           type == "response.output_item.done",
+                                           event.value("output_index", reasoning_items.size()));
                     } else if (type == "response.output_text.annotation.added") {
                         const auto annotation = event.find("annotation");
                         if (annotation != event.end()) CollectCitation(*annotation, reply);
@@ -969,7 +1034,9 @@ public:
                         AddUsage(response.value("usage", nlohmann::json::object()), reply);
                         // Some gateways only publish the finished output here.
                         if (response.contains("output") && response["output"].is_array()) {
-                            for (const auto& item : response["output"]) absorb_output_item(item, true);
+                            for (size_t index = 0; index < response["output"].size(); ++index) {
+                                absorb_output_item(response["output"][index], true, index);
+                            }
                         }
                         stream_complete = true;
                     } else if (type == "error" || type == "response.failed" || type == "response.incomplete") {
@@ -984,7 +1051,39 @@ public:
             if (cancellation != nullptr && cancellation->IsCancelled()) return StreamAction::Cancel;
             return stream_complete ? StreamAction::Stop : StreamAction::Continue;
         };
-        const auto response = HttpRequestStreaming(http, chunk_callback, cancellation);
+        auto response = HttpRequestStreaming(http, chunk_callback, cancellation);
+        if (response.ok && (response.value.status == 400 || response.value.status == 422) &&
+            received_events == 0 && payload.contains("reasoning") && payload["reasoning"].contains("summary")) {
+            bool unsupported_summary = false;
+            try {
+                const auto body = nlohmann::json::parse(response.value.body);
+                const auto error = body.find("error");
+                if (error != body.end() && error->is_object()) {
+                    const std::string parameter = SourceString(*error, "param");
+                    const std::string code = LowerAscii(SourceString(*error, "code"));
+                    const std::string message = LowerAscii(SourceString(*error, "message"));
+                    unsupported_summary =
+                        (parameter == "reasoning.summary" || message.find("reasoning.summary") != std::string::npos) &&
+                        (code == "unsupported_parameter" || code == "unknown_parameter" ||
+                         message.find("unsupported") != std::string::npos ||
+                         message.find("not supported") != std::string::npos ||
+                         message.find("unknown") != std::string::npos ||
+                         message.find("unrecognized") != std::string::npos);
+                }
+            } catch (const nlohmann::json::exception&) {
+            }
+            if (unsupported_summary) {
+                // Retry only this explicit optional-parameter rejection. The HTTP
+                // layer retains its existing transport retry/cancellation policy.
+                payload["reasoning"].erase("summary");
+                if (payload["reasoning"].empty()) payload.erase("reasoning");
+                http.body = payload.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+                decoder = SseDecoder{};
+                received_bytes = 0;
+                raw_prefix.clear();
+                response = HttpRequestStreaming(http, chunk_callback, cancellation);
+            }
+        }
         std::string content_type;
         std::string request_id;
         if (response.ok) {
@@ -1033,11 +1132,14 @@ public:
                 }
                 AddUsage(json.value("usage", nlohmann::json::object()), reply);
                 if (json.contains("output") && json["output"].is_array()) {
-                    for (const auto& item : json["output"]) {
+                    for (size_t index = 0; index < json["output"].size(); ++index) {
+                        const auto& item = json["output"][index];
                         CollectOutputSources(item, reply);
                         const std::string type = item.value("type", std::string{});
                         if (type == "message") {
                             reply.text += ContentText(item.value("content", nlohmann::json::array()));
+                        } else if (type == "reasoning") {
+                            absorb_output_item(item, true, index);
                         } else if (type == "function_call") {
                             ToolCall call;
                             call.id = item.value("call_id", item.value("id", std::string{}));
@@ -1056,7 +1158,7 @@ public:
         // The finished reasoning belongs to the assistant turn: hand it back on the next
         // request so thinking models do not reject the tool loop with HTTP 400.
         reply.reasoning_text = reasoning_done.empty() ? reasoning_buffer : reasoning_done;
-        reply.reasoning_items = reasoning_items;
+        reply.reasoning_items = std::move(reasoning_items);
         if (!stream_error.empty()) return Result<ModelReply>::Failure(stream_error);
         if (reply.finish_reason == "error") {
             return Result<ModelReply>::Failure("Responses API returned an error");
