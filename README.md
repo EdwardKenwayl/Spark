@@ -370,6 +370,12 @@ Spark does not automatically read Codex's global rules from `CODEX_HOME` or
 - Select **Import Codex chat branch** from the recent conversations menu, or
   from a project's menu above **Archive chats**, to import into that scope.
 - Import creates a new Spark conversation and does not modify the source rollout.
+- The visible transcript keeps earlier messages and tool activity. Continuation
+  uses the latest Codex compaction checkpoint and subsequent messages, rather
+  than sending the entire transcript again. Codex host instructions and internal
+  recovery messages are excluded from the imported chat.
+- To apply corrected import behavior to a conversation imported with an older
+  Spark build, import its original Codex rollout again as a new conversation.
 - Import reads the JSONL rollout line by line instead of applying the shared
   64 MiB whole-file limit. Practical limits depend on available memory and the
   size of an individual JSONL record.

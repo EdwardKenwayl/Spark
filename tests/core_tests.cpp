@@ -843,6 +843,62 @@ int main() {
         }
     }
 
+    for (const std::string& variant : {std::string("mirrored"), std::string("nullable"),
+                                      std::string("event-only")}) {
+        const auto check_import = [&](bool condition, const std::string& message) {
+            Check(condition, (message + ": " + variant).c_str());
+        };
+        const std::string fixture_path = spark::JoinPath(exchange_directory, variant + ".jsonl");
+        std::ofstream fixture(spark::Utf8ToWide(fixture_path), std::ios::binary | std::ios::trunc);
+        const auto append_message = [&](const std::string& role, const std::string& text) {
+            if (variant != "event-only") {
+                nlohmann::json payload = {
+                    {"type", "message"}, {"role", role},
+                    {"content", {{{"type", "input_text"}, {"text", text}}}},
+                };
+                if (variant == "nullable") payload["internal_chat_message_metadata_passthrough"] = nullptr;
+                fixture << nlohmann::json({{"type", "response_item"}, {"payload", payload}}).dump() << "\n";
+            }
+            fixture << nlohmann::json({
+                {"type", "event_msg"}, {"payload", {
+                    {"type", role == "user" ? "user_message" : "agent_message"}, {"message", text}}},
+            }).dump() << "\n";
+        };
+        append_message("user", "legacy visible question");
+        fixture << R"({"type":"compacted","payload":{"message":"legacy handoff","replacement_history":null}})"
+                << "\n";
+        append_message("assistant", "legacy visible answer");
+        fixture.close();
+        try {
+            const auto legacy_imported = spark::ImportCodexSessionToSpark(
+                fixture_path, spark::JoinPath(exchange_directory, variant + "-data"),
+                spark::JoinPath(exchange_directory, "workspace"), "recent");
+            check_import(legacy_imported.ok, "legacy Codex compaction imports");
+            if (!legacy_imported.ok) continue;
+            spark::SessionJournal legacy_journal;
+            check_import(legacy_journal.Resume(legacy_imported.value.path).ok,
+                         "legacy Codex import resumes");
+            const auto& state = legacy_journal.State();
+            check_import(state.messages.size() == 2 && legacy_imported.value.message_count == 2,
+                         "import counts mirrored events once");
+            const auto& context = spark::ModelContextMessages(state);
+            check_import(context.size() == 2 &&
+                      context.front().content.find("legacy handoff") != std::string::npos &&
+                      context.back().content == "legacy visible answer",
+                         "legacy compaction preserves summary and tail");
+            check_import(state.metadata.value("context_compactions", nlohmann::json::array()).size() == 1,
+                         "legacy import keeps compaction boundary");
+            check_import(legacy_journal.SaveSnapshot().ok, "import snapshot saves");
+            spark::SessionJournal reloaded;
+            check_import(reloaded.Resume(legacy_imported.value.path).ok, "import snapshot reloads");
+            check_import(spark::ModelContextMessages(reloaded.State()).size() == context.size() &&
+                      reloaded.State().messages.size() == state.messages.size(),
+                         "import context survives snapshot and reopen");
+        } catch (const nlohmann::json::exception&) {
+            check_import(false, "nullable Codex metadata must not throw");
+        }
+    }
+
     const std::string large_rollout_path = spark::JoinPath(exchange_directory, "large-rollout.jsonl");
     {
         std::ofstream large_rollout(spark::Utf8ToWide(large_rollout_path), std::ios::binary | std::ios::trunc);

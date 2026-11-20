@@ -177,9 +177,11 @@ struct CodexImportStep {
 };
 
 bool IsCodexContextualUserMessage(const nlohmann::json& payload) {
-    const nlohmann::json passthrough =
-        payload.value("internal_chat_message_metadata_passthrough", nlohmann::json::object());
-    const nlohmann::json kinds = passthrough.value("content_item_kinds", nlohmann::json::array());
+    const auto metadata = payload.find("internal_chat_message_metadata_passthrough");
+    if (metadata == payload.end() || !metadata->is_object()) return false;
+    const auto kinds_field = metadata->find("content_item_kinds");
+    if (kinds_field == metadata->end() || !kinds_field->is_array()) return false;
+    const nlohmann::json& kinds = *kinds_field;
     if (!kinds.is_array() || kinds.empty()) return false;
 
     bool has_context_fragment = false;
@@ -410,6 +412,7 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
     uint64_t created_at = 0;
     size_t response_messages = 0;
     size_t visible_message_count = 0;
+    size_t fallback_message_count = 0;
 
     bool first_line = true;
     std::string line;
@@ -474,6 +477,8 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
             CodexImportStep step;
             step.kind = CodexImportStep::Kind::Compaction;
             step.payload = std::move(compacted_payload);
+            fallback_steps.push_back(step);
+            fallback_steps.back().payload["message_count"] = fallback_message_count;
             import_steps.push_back(std::move(step));
             continue;
         }
@@ -485,7 +490,7 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
                 message.content = payload.value("message", std::string{});
                 message.timestamp = timestamp;
                 if (!message.content.empty()) {
-                    ++visible_message_count;
+                    ++fallback_message_count;
                     CodexImportStep step;
                     step.kind = CodexImportStep::Kind::Message;
                     step.message = std::move(message);
@@ -496,9 +501,9 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
     }
 
     if (input.bad()) return Result<CodexSessionImportResult>::Failure("could not read Codex session");
-    if (response_messages == 0 && !fallback_steps.empty()) {
+    if (response_messages == 0 && fallback_message_count != 0) {
         import_steps = std::move(fallback_steps);
-        visible_message_count = import_steps.size();
+        visible_message_count = fallback_message_count;
     }
     if (visible_message_count == 0) {
         return Result<CodexSessionImportResult>::Failure("Codex session has no importable messages");
