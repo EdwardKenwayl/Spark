@@ -48,6 +48,9 @@ void NativeFrame::ResetSideConversation() {
     side_path_.clear();
     pending_side_.reset();
     side_loading_ = false;
+    side_earlier_ = false;
+    side_stamp_.reset();
+    side_journal_ = SessionJournal{};
     side_chat_->SetTranscript(nullptr);
     side_chat_->SetLoading(0);
     side_transcript_->Clear();
@@ -124,9 +127,25 @@ void NativeFrame::SelectChild(const std::string& id) {
         [&](const auto& child) { return child.id == id; });
     if (found == summary_children_.end() || found->session_path.empty()) return;
     side_path_ = found->session_path;
+    RequestSideSnapshot(true);
+    side_chat_->SetLoading(MonotonicMillis());
+}
+
+void NativeFrame::RequestSideSnapshot(bool force) {
+    if (side_path_.empty()) return;
+    side_poll_ = MonotonicMillis();
+    std::error_code error;
+    const auto path = NativePath(side_path_);
+    const auto modified = fs::last_write_time(path, error);
+    std::optional<std::pair<uintmax_t, fs::file_time_type>> stamp;
+    if (!error) {
+        const auto size = fs::file_size(path, error);
+        if (!error) stamp = std::make_pair(size, modified);
+    }
+    if (!force && stamp == side_stamp_) return;
+    side_stamp_ = stamp;
     side_generation_ = side_loader_.Request(side_path_);
     side_loading_ = true;
-    side_chat_->SetLoading(MonotonicMillis());
 }
 
 }  // namespace spark

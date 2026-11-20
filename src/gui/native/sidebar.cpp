@@ -154,7 +154,10 @@ void NativeFrame::RenderSidebar() {
             else if (row.path.empty() && row.project >= 0)
                 kind = chats[row.project].empty() ? NativeListKind::ProjectEmpty :
                     projects_[row.project].expanded ? NativeListKind::ProjectExpanded : NativeListKind::ProjectCollapsed;
-            list->Style(index, kind, !row.path.empty() && (runtime_.Running(row.path) || external_.count(row.path)));
+            const auto cached = views_.find(row.path);
+            const bool loading_history = cached != views_.end() && cached->second->earlier != nullptr;
+            list->Style(index, kind, !row.path.empty() &&
+                (loading_history || runtime_.Running(row.path) || external_.count(row.path)));
             if (!active_.empty() && row.path == active_) selection = static_cast<int>(index);
         }
         if (list->GetSelection() != selection) list->SetSelection(selection);
@@ -233,7 +236,7 @@ void NativeFrame::NewConversation(int project) {
     RenderSidebar();
 }
 void NativeFrame::OpenConversation(const std::string& path) {
-    if (path == active_ && loading_path_.empty()) return;
+    if (path == active_ && loading_path_.empty()) { chat_->RequestEarlier(); return; }
     SaveDraft();
     pending_view_.reset();
     edit_row_ = kNoChatItem;
@@ -256,6 +259,7 @@ void NativeFrame::OpenConversation(const std::string& path) {
         loading_path_.clear();
         chat_->SetLoading(0);
         chat_->SetTranscript(&cached->second->transcript, true);
+        chat_->SetEarlierLoading(cached->second->earlier != nullptr);
         RestoreDraft(); UpdateControls(); return;
     }
     loading_path_ = path;

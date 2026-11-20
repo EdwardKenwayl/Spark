@@ -14,6 +14,7 @@
 #include "gui/native/approval_prompt.h"
 #include "gui/native/summary_panel.h"
 #include "gui/native/summary_popup.h"
+#include "gui/history_window.h"
 #include "platform/clock.h"
 
 #include <wx/app.h>
@@ -27,6 +28,7 @@
 #include <wx/sizer.h>
 #include <wx/textctrl.h>
 #include <wx/timer.h>
+#include <wx/evtloop.h>
 #include <wx/utils.h>
 #include <wx/weakref.h>
 #include <algorithm>
@@ -34,19 +36,200 @@
 #include <set>
 #include <iostream>
 #include <iterator>
+#include <future>
+#include <cstdlib>
+#include <chrono>
+#include <thread>
 
 class SmokeApplication : public wxApp {
 public:
     bool OnInit() override { wxInitAllImageHandlers(); return true; }
 };
 wxIMPLEMENT_APP_NO_MAIN(SmokeApplication);
+namespace spark {
+struct NativeGuiTestAccess {
+    static void Seed(NativeFrame& frame, const SessionState& state) {
+        auto view = std::make_unique<NativeFrame::View>();
+        view->journal.MutableState() = state;
+        const auto window = SelectHistoryWindow(state.messages);
+        const auto replay = view->transcript.BeginReplay(state, {1700000000, MonotonicMillis()}, {},
+                                                         window.first_message);
+        while (!view->transcript.ReplayStep(replay)) {}
+        frame.active_ = "native-history-fixture";
+        frame.views_[frame.active_] = std::move(view);
+        frame.chat_->SetTranscript(&frame.Active()->transcript, true);
+    }
+    static NativeChatSurface* Surface(NativeFrame& frame) { return frame.chat_; }
+    static Transcript& Model(NativeFrame& frame) { return frame.Active()->transcript; }
+    static void Event(NativeFrame& frame, NativeEvent::Kind kind, const std::string& text = {}) {
+        NativeEvent event;
+        event.path = frame.active_; event.kind = kind; event.first = text;
+        if (kind == NativeEvent::Kind::ToolStart) {
+            event.second = "run_command"; event.third = R"({"command":"printf native-progress"})";
+        }
+        frame.Consume(event);
+    }
+    static wxString Activity(NativeChatSurface& surface) { return surface.ActivityText(); }
+    static bool Dirty(const NativeChatSurface& surface) { return surface.dirty_; }
+    static void ClickEarlier(NativeChatSurface& surface) {
+        const auto& bounds = surface.earlier_bounds_;
+        wxMouseEvent click(wxEVT_LEFT_UP);
+        click.SetPosition(surface.CalcScrolledPosition(wxPoint(bounds.x + bounds.width / 2,
+                                                               bounds.y + bounds.height / 2)));
+        surface.GetEventHandler()->ProcessEvent(click);
+    }
+    static void ScrollEarlier(NativeChatSurface& surface) { surface.ScrollBy(-surface.GetVirtualSize().y); }
+    static bool BoundReasoning(const NativeChatSurface& surface) {
+        for (const auto index : surface.rows_) {
+            const auto& row = surface.row_cache_.at(index);
+            if (!row.group_header.IsEmpty() && row.reasoning != kNoChatItem &&
+                std::find(surface.rows_.begin(), surface.rows_.end(), row.reasoning) == surface.rows_.end())
+                return true;
+        }
+        return false;
+    }
+    static int Anchor(NativeChatSurface& surface, const std::string& text) {
+        for (const auto& entry : surface.row_cache_) {
+            const auto* item = surface.transcript_->Item(entry.first);
+            if (item && item->kind == ChatItemKind::User && item->text == text)
+                return entry.second.bounds.y - surface.GetViewStart().y;
+        }
+        return -100000;
+    }
+    static bool SideStampIsStable(NativeFrame& frame) {
+        const auto path = NativePath(JoinPath(frame.config_.storage.data_dir, "native-side-stamp.jsonl"));
+        fs::create_directories(path.parent_path());
+        std::ofstream(path) << "{\"type\":\"session.created\",\"payload\":{\"session_id\":\"side-stamp\"}}\n";
+        frame.side_path_ = PathToUtf8(path);
+        frame.RequestSideSnapshot(true);
+        const auto generation = frame.side_generation_;
+        frame.RequestSideSnapshot();
+        const bool stable = generation == frame.side_generation_;
+        frame.ResetSideConversation();
+        return stable;
+    }
+    static void SeedSide(NativeFrame& frame, const SessionState& state) {
+        frame.side_path_ = "native-side-history-fixture";
+        frame.side_journal_.MutableState() = state;
+        const auto window = SelectHistoryWindow(state.messages);
+        const auto replay = frame.side_transcript_->BeginReplay(state, {1700000000, MonotonicMillis()}, {},
+                                                                 window.first_message);
+        while (!frame.side_transcript_->ReplayStep(replay)) {}
+        frame.side_chat_->SetTranscript(frame.side_transcript_.get(), true);
+    }
+    static NativeChatSurface* SideSurface(NativeFrame& frame) { return frame.side_chat_; }
+    static size_t SideFirst(NativeFrame& frame) { return frame.side_transcript_->HistoryFirstMessage(); }
+};
+}  // namespace spark
 namespace {
 int failures = 0;
+bool history_trace = false;
 void Check(bool condition, const char* text) {
+    if (history_trace) std::cout << spark::MonotonicMillis() << " " << (condition ? "PASS " : "FAIL ") << text << std::endl;
     if (!condition) { ++failures; std::cerr << text << '\n'; }
 }
 void Events() {
+    if (history_trace) {
+        // wxYield drains until idle and can starve under a continuous animation
+        // timer. Dispatch bounded iterations as the real main loop does.
+        auto* loop = wxEventLoopBase::GetActive();
+        const auto until = spark::MonotonicMillis() + 100;
+        while (spark::MonotonicMillis() < until) {
+            wxTheApp->ProcessPendingEvents();
+            if (loop && loop->Pending()) loop->Dispatch();
+            else wxMilliSleep(1);
+        }
+        return;
+    }
     for (int count = 0; count < 5; ++count) { wxYield(); wxMilliSleep(20); }
+}
+void CheckNativeHistoryActivity(spark::AppConfig config) {
+    using namespace spark;
+    std::cout << "history stage: construct frame" << std::endl;
+    auto* frame = new NativeFrame(std::move(config));
+    std::cout << "history stage: frame constructed" << std::endl;
+    frame->SetSize(900, 650);
+    frame->Show();
+    SessionState state;
+    for (int turn = 0; turn < 20; ++turn) {
+        ChatMessage user; user.role = MessageRole::User; user.content = "window-user-" + std::to_string(turn);
+        ChatMessage reply; reply.role = MessageRole::Assistant;
+        reply.content = "A completed reply.\n\n" + std::string(300, 'x');
+        state.messages.push_back(user); state.messages.push_back(reply);
+    }
+    NativeGuiTestAccess::Seed(*frame, state);
+    std::cout << "history stage: seeded recent window" << std::endl;
+    Events();
+    auto* surface = NativeGuiTestAccess::Surface(*frame);
+    Check(NativeGuiTestAccess::Model(*frame).HistoryFirstMessage() == 24,
+          "native first paint replays the newest eight turns");
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Phase);
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Reasoning, "Before the older-page replay");
+    Events();
+    surface->Scroll(0, 0);
+    const int anchor = NativeGuiTestAccess::Anchor(*surface, "window-user-12");
+    NativeGuiTestAccess::ClickEarlier(*surface);
+    Check(surface->EarlierLoading(), "earlier-message action exposes a loading state immediately");
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Reasoning, " and still receiving live deltas");
+    for (int attempt = 0; attempt < 20 && surface->EarlierLoading(); ++attempt) Events();
+    Check(NativeGuiTestAccess::Model(*frame).HistoryFirstMessage() == 8 &&
+              NativeGuiTestAccess::Anchor(*surface, "window-user-12") == anchor,
+          "prepending eight turns preserves the original message's viewport anchor");
+    Check(NativeGuiTestAccess::Activity(*surface).Contains("still receiving live deltas"),
+          "live deltas received during the older-page replay survive its commit");
+    NativeGuiTestAccess::ScrollEarlier(*surface);
+    for (int attempt = 0; attempt < 20 && surface->EarlierLoading(); ++attempt) Events();
+    Check(NativeGuiTestAccess::Model(*frame).HistoryFirstMessage() == 0,
+          "the final earlier page reaches the first user turn");
+
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Phase);
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Reasoning, "Inspecting the native fixture");
+    Events();
+    Check(NativeGuiTestAccess::Activity(*surface).Contains("Inspecting the native fixture"),
+          "received reasoning is visible in the compact activity slot");
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Phase);
+    Events();
+    Check(NativeGuiTestAccess::Activity(*surface).Contains("Inspecting the native fixture"),
+          "waiting phase preserves the latest reasoning");
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::ToolStart, "native-command");
+    Events();
+    Check(NativeGuiTestAccess::Activity(*surface).Contains("printf native-progress"),
+          "a same-batch command replaces reasoning with observable command progress");
+    surface->Tick();
+    Check(!NativeGuiTestAccess::Dirty(*surface), "animation does not invalidate transcript structure");
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::ToolFinish, "native-command");
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Reasoning, "Checking the command result");
+    Events();
+    Check(NativeGuiTestAccess::BoundReasoning(*surface),
+          "reasoning after one tool occupies the tool-group header without an extra reasoning row");
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::ToolStart, "native-command-2");
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::ToolStart, "native-command-3");
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::ToolFinish, "native-command-2");
+    Events();
+    Check(NativeGuiTestAccess::Activity(*surface).Contains("printf native-progress"),
+          "finishing one parallel command preserves the other command's activity");
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::ToolFinish, "native-command-3");
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Text, "A visible reply");
+    Events();
+    Check(!NativeGuiTestAccess::Activity(*surface).Contains("Inspecting the native fixture"),
+          "completed reasoning is not retained as the current activity");
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Reasoning, "A new same-batch reasoning delta");
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::ToolStart, "same-batch-command");
+    Events();
+    Check(NativeGuiTestAccess::Activity(*surface).Contains("printf native-progress"),
+          "reasoning followed by ToolStart before paint still presents actual command progress");
+    Check(NativeGuiTestAccess::SideStampIsStable(*frame),
+          "unchanged side journals do not schedule another snapshot generation");
+    NativeGuiTestAccess::SeedSide(*frame, state);
+    auto* side = NativeGuiTestAccess::SideSurface(*frame);
+    side->RequestEarlier();
+    for (int attempt = 0; attempt < 20 && side->EarlierLoading(); ++attempt) Events();
+    Check(NativeGuiTestAccess::SideFirst(*frame) == 8 && !side->EarlierLoading(),
+          "the side conversation can load the preceding eight turns independently");
+    frame->Destroy();
+    std::cout << "history stage: destroy requested" << std::endl;
+    Events();
+    std::cout << "history stage: destroy processed" << std::endl;
 }
 void CheckSummaryHistory() {
     using namespace spark;
@@ -269,9 +452,11 @@ void Capture(wxWindow* window, const spark::fs::path& path, wxSize minimum = wxS
 }  // namespace
 int main(int argc, char** argv) {
     using namespace spark;
-    bool summary_only = false;
-    for (int index = 1; index < argc; ++index)
+    bool summary_only = false, history_only = false;
+    for (int index = 1; index < argc; ++index) {
         if (std::string(argv[index]) == "--summary") summary_only = true;
+        if (std::string(argv[index]) == "--history-activity") history_only = true;
+    }
     wxSetAssertHandler([](const wxString&, int line, const wxString& function,
                          const wxString& condition, const wxString& message) {
         ++failures;
@@ -280,9 +465,10 @@ int main(int argc, char** argv) {
     if (!wxEntryStart(argc, argv) || !wxTheApp->CallOnInit()) return 2;
     const auto temporary = fs::temp_directory_path() / NativePath("spark-gui-" + NewSessionId());
     fs::create_directories(temporary);
-    const auto output_root = !summary_only && argc > 1 ? NativePath(AbsolutePath(argv[1])) : temporary / "screenshots";
+    const auto output_root = !summary_only && !history_only && argc > 1 ?
+        NativePath(AbsolutePath(argv[1])) : temporary / "screenshots";
     const auto output = output_root / NativePath("run-" + NewSessionId());
-    if (!summary_only) {
+    if (!summary_only && !history_only) {
         fs::create_directories(output);
         std::cout << "Screenshot run: " << PathToUtf8(output) << std::endl;
     }
@@ -305,6 +491,30 @@ int main(int argc, char** argv) {
     }
     config.providers.push_back(std::move(provider));
     config.active = {"fixture", "test-model-0", "medium"};
+    if (history_only) {
+        history_trace = true;
+        std::promise<void> completed;
+        auto result = completed.get_future();
+        std::thread watchdog([result = std::move(result)]() mutable {
+            if (result.wait_for(std::chrono::seconds(20)) != std::future_status::ready) {
+                std::cerr << "Native history/activity regression exceeded 20 seconds\n";
+                std::_Exit(124);
+            }
+        });
+        {
+            wxEventLoop event_loop;
+            wxEventLoopActivator activate(&event_loop);
+            CheckNativeHistoryActivity(config);
+        }
+        wxTheApp->OnExit();
+        wxEntryCleanup();
+        std::error_code error;
+        fs::remove_all(temporary, error);
+        std::cout << "Native history/activity regression failures: " << failures << std::endl;
+        completed.set_value();
+        watchdog.join();
+        return failures ? 1 : 0;
+    }
     if (summary_only) {
         CheckSummaryOnly(config);
         wxTheApp->OnExit();

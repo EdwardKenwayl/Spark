@@ -222,9 +222,37 @@ void NativeChatSurface::SetTranscript(Transcript* transcript, bool reset_scroll)
     hovered_ = kNoChatItem;
     hovered_action_ = Action::None;
     UnsetToolTip();
-    if (reset_scroll) { follow_ = true; Scroll(0, 0); }
+    earlier_loading_ = false;
+    if (reset_scroll) { anchor_item_ = kNoChatItem; follow_ = true; Scroll(0, 0); }
     dirty_ = true;
     Refresh(false);
+}
+void NativeChatSurface::SetEarlierLoading(bool loading) {
+    earlier_loading_ = loading;
+    Refresh(false);
+}
+void NativeChatSurface::RequestEarlier() {
+    if (!loading_ && !earlier_loading_ && transcript_ && transcript_->HistoryFirstMessage() && load_earlier) {
+        follow_ = false;
+        load_earlier();
+    }
+}
+void NativeChatSurface::PrependTranscript(Transcript* transcript, size_t added_items) {
+    size_t anchor = kNoChatItem;
+    int offset = 0;
+    const int scroll = GetViewStart().y;
+    for (const auto index : rows_) {
+        const auto found = row_cache_.find(index);
+        if (found != row_cache_.end() && found->second.bounds.GetBottom() >= scroll) {
+            anchor = index + added_items;
+            offset = scroll - found->second.bounds.y;
+            break;
+        }
+    }
+    SetTranscript(transcript);
+    follow_ = false;
+    anchor_item_ = anchor;
+    anchor_offset_ = offset;
 }
 void NativeChatSurface::Changed() {
     if (transcript_ && generation_ != transcript_->Generation()) {
@@ -251,15 +279,31 @@ void NativeChatSurface::ScrollBy(int pixels) {
     SetCursor(wxCURSOR_ARROW);
     Scroll(0, next);
     Refresh(false);
+    if (pixels < 0 && next == 0) RequestEarlier();
 }
 void NativeChatSurface::Tick() {
     const auto now = MonotonicMillis();
-    if (transcript_ && transcript_->NeedsAnimation() && now / 100 != elapsed_frame_) {
+    if (((loading_ && now - loading_ >= 150) || (transcript_ && transcript_->NeedsAnimation()) || earlier_loading_) &&
+        now / 100 != elapsed_frame_) {
         elapsed_frame_ = now / 100;
-        dirty_ = true;
-    }
-    if ((loading_ && now - loading_ >= 150) || (transcript_ && transcript_->NeedsAnimation()))
         Refresh(false);
+    }
+}
+
+wxString NativeChatSurface::ActivityText() const {
+    if (!transcript_) return {};
+    const auto* item = transcript_->Item(activity_item_);
+    if (item && item->visible && !item->finished) {
+        if (item->kind == ChatItemKind::Reasoning) return ReasoningLine(item->text);
+        if (item->kind == ChatItemKind::Tool)
+            return ToolLabel(*item) + "  \u00b7  " + U(ToolText(*item, ToolTextKind::Summary)) +
+                "  \u00b7  " + Duration(Transcript::Elapsed(*item, MonotonicMillis()));
+    }
+    const auto* status = transcript_->Item(activity_status_);
+    if (status && !status->finished)
+        return T(L"Processing") + "  \u00b7  " +
+            Duration(Transcript::Elapsed(*status, MonotonicMillis()), DurationKind::Turn);
+    return {};
 }
 
 void NativeChatSurface::Reflow(wxDC& dc) {
@@ -270,6 +314,8 @@ void NativeChatSurface::Reflow(wxDC& dc) {
     }
     rows_.clear();
     rail_.clear();
+    activity_item_ = activity_status_ = kNoChatItem;
+    earlier_bounds_ = {};
     dirty_ = false;
     if (layout_width_ != GetClientSize().x) row_cache_.clear();
     layout_width_ = GetClientSize().x;
@@ -280,11 +326,22 @@ void NativeChatSurface::Reflow(wxDC& dc) {
     int top = FromDIP(18);
     if (transcript_) {
         const auto& items = transcript_->Items();
+        if (transcript_->HistoryFirstMessage() && load_earlier) {
+            earlier_bounds_ = wxRect(left, top, width, FromDIP(32));
+            top += FromDIP(42);
+        }
+        for (size_t index = 0; index < items.size(); ++index) {
+            const auto& item = items[index];
+            if (!item.visible || item.finished) continue;
+            if (item.kind == ChatItemKind::TurnStatus) activity_status_ = index;
+            if (item.kind == ChatItemKind::Reasoning || item.kind == ChatItemKind::Tool) activity_item_ = index;
+        }
         const auto groups = transcript_->Groups(MonotonicMillis());
         const auto last_user = transcript_->LastUserIndex();
         for (size_t index = 0; index < items.size(); ++index) {
             const auto& item = items[index];
             if (!item.visible || groups[index].hidden) continue;
+            if (item.kind == ChatItemKind::TurnStatus && !item.finished && activity_item_ != kNoChatItem) continue;
             const auto cached = row_cache_.find(index);
             const bool message = item.kind == ChatItemKind::Assistant || item.kind == ChatItemKind::User;
             const bool editable = item.kind == ChatItemKind::User && index == last_user && edit;
@@ -319,7 +376,7 @@ void NativeChatSurface::Reflow(wxDC& dc) {
                     if (elapsed) label = wxString(i18n::Format(item.paused ? L"Interrupted {elapsed}"
                         : item.finished ? L"Processed {elapsed}" : L"Processing {elapsed}",
                         {{L"elapsed", Duration(elapsed, DurationKind::Turn).ToStdWstring()}}));
-                    row.fragments.push_back({wxControl::Ellipsize(label, dc, wxELLIPSIZE_END,
+                    if (item.finished) row.fragments.push_back({wxControl::Ellipsize(label, dc, wxELLIPSIZE_END,
                         std::max(1, width - FromDIP(24))),
                         {left, top + std::max(0, (FromDIP(22) - dc.GetTextExtent(label).y) / 2)},
                         body_, Muted(), false, true});
@@ -335,18 +392,20 @@ void NativeChatSurface::Reflow(wxDC& dc) {
                         row.group_expanded = !item.group_collapsed;
                         row.group_active = group.active;
                         row.group_failed = group.failed;
+                        row.reasoning = group.reasoning;
                         row.group_header = wxRect(left, top, width, FromDIP(28));
                         auto label = GroupLabel(group, item.tool_name);
                         if (group.active) {
                             for (size_t member = index; member <= group.last_member && member < items.size(); ++member) {
                                 if (items[member].kind == ChatItemKind::Tool && !items[member].finished) {
+                                    row.active_tool = member;
                                     label += "  \u00b7  " + U(ToolText(items[member], ToolTextKind::Summary));
                                     break;
                                 }
                             }
                         }
-                        if (group.elapsed_ms) label += "  \u00b7  " + Duration(group.elapsed_ms);
-                        row.fragments.push_back({wxControl::Ellipsize(label, dc, wxELLIPSIZE_END,
+                        if (group.elapsed_ms && !group.active) label += "  \u00b7  " + Duration(group.elapsed_ms);
+                        if (!group.active) row.fragments.push_back({wxControl::Ellipsize(label, dc, wxELLIPSIZE_END,
                             std::max(1, width - FromDIP(128))), {left + FromDIP(34), top + FromDIP(3)},
                             body_, group.failed ? wxColour(242, 128, 128) : Muted(), group.active, true});
                         top += FromDIP(28);
@@ -365,7 +424,7 @@ void NativeChatSurface::Reflow(wxDC& dc) {
                         dc.SetFont(time_);
                         const auto duration = wxControl::Ellipsize(Duration(Transcript::Elapsed(item, MonotonicMillis())),
                             dc, wxELLIPSIZE_END, FromDIP(58));
-                        row.fragments.push_back({duration, {row.header.GetRight() + 1 - FromDIP(30)
+                        if (item.finished) row.fragments.push_back({duration, {row.header.GetRight() + 1 - FromDIP(30)
                             - dc.GetTextExtent(duration).x,
                             top + std::max(0, (FromDIP(28) - dc.GetTextExtent(duration).y) / 2)},
                             time_, dark_ ? wxColour(112, 115, 122) : wxColour(135, 138, 144)});
@@ -467,7 +526,12 @@ void NativeChatSurface::Reflow(wxDC& dc) {
     }
     SetVirtualSize(GetClientSize().x, top + FromDIP(28));
     UpdateRail(top + FromDIP(4));
-    if (follow_) Scroll(0, std::max(0, GetVirtualSize().y - GetClientSize().y));
+    if (anchor_item_ != kNoChatItem) {
+        const auto anchor = row_cache_.find(anchor_item_);
+        if (anchor != row_cache_.end()) Scroll(0, std::clamp(anchor->second.bounds.y + anchor_offset_, 0,
+            std::max(0, GetVirtualSize().y - GetClientSize().y)));
+        anchor_item_ = kNoChatItem;
+    } else if (follow_) Scroll(0, std::max(0, GetVirtualSize().y - GetClientSize().y));
 }
 
 void NativeChatSurface::UpdateRail(int content_height) {
@@ -571,7 +635,7 @@ void NativeChatSurface::Paint(wxPaintEvent&) {
         }
         return;
     }
-    if (rows_.empty()) {
+    if (rows_.empty() && earlier_bounds_.IsEmpty()) {
         if (empty_title_.empty()) return;
         const int center_x = GetClientSize().x / 2, center_y = GetClientSize().y / 2;
         {
@@ -596,6 +660,12 @@ void NativeChatSurface::Paint(wxPaintEvent&) {
     PrepareDC(dc);
     const wxPoint origin = CalcUnscrolledPosition(wxPoint(0, 0));
     const wxRect viewport(origin, GetClientSize());
+    if (earlier_bounds_.Intersects(viewport)) {
+        dc.SetFont(body_);
+        dc.SetTextForeground(earlier_loading_ ? Muted() : Foreground());
+        dc.DrawLabel(T(earlier_loading_ ? L"Loading earlier messages..." : L"Load earlier messages"),
+                     earlier_bounds_, wxALIGN_CENTER);
+    }
     for (const auto index : rows_) {
         const auto cached = row_cache_.find(index);
         if (cached == row_cache_.end()) continue;
@@ -619,6 +689,36 @@ void NativeChatSurface::Paint(wxPaintEvent&) {
             dc.DrawLine(x, y - FromDIP(8), x, y + FromDIP(8));
         }
         PaintText(dc, row);
+        if (row.group_active && !row.group_header.IsEmpty()) {
+            const auto* reasoning = transcript_->Item(row.reasoning);
+            const auto* tool = transcript_->Item(row.active_tool);
+            wxString label;
+            if (reasoning && reasoning->visible && !reasoning->finished)
+                label = ReasoningLine(reasoning->text);
+            else if (tool && !tool->finished)
+                label = ToolLabel(*tool) + "  \u00b7  " + U(ToolText(*tool, ToolTextKind::Summary)) +
+                    "  \u00b7  " + Duration(Transcript::Elapsed(*tool, MonotonicMillis()));
+            dc.SetFont(body_);
+            dc.SetTextForeground(Muted());
+            auto bounds = row.group_header;
+            bounds.x += FromDIP(34); bounds.width = std::max(1, bounds.width - FromDIP(68));
+            dc.DrawLabel(wxControl::Ellipsize(label, dc, wxELLIPSIZE_END, bounds.width),
+                         bounds, wxALIGN_CENTER_VERTICAL);
+        }
+        if (item->kind == ChatItemKind::TurnStatus && !item->finished) {
+            dc.SetFont(body_);
+            dc.SetTextForeground(Muted());
+            dc.DrawLabel(wxControl::Ellipsize(ActivityText(), dc, wxELLIPSIZE_END,
+                std::max(1, row.message.width - FromDIP(24))), row.message, wxALIGN_TOP);
+        }
+        if (item->kind == ChatItemKind::Tool && !item->finished && !row.header.IsEmpty()) {
+            dc.SetFont(time_);
+            dc.SetTextForeground(Muted());
+            const auto duration = wxControl::Ellipsize(Duration(Transcript::Elapsed(*item, MonotonicMillis())),
+                                                       dc, wxELLIPSIZE_END, FromDIP(58));
+            dc.DrawText(duration, row.header.GetRight() + 1 - FromDIP(30) - dc.GetTextExtent(duration).x,
+                        row.header.y + std::max(0, (row.header.height - dc.GetTextExtent(duration).y) / 2));
+        }
         if (item->kind == ChatItemKind::TurnStatus) {
             dc.SetPen(wxPen(dark_ ? wxColour(50, 51, 56) : wxColour(214, 216, 219)));
             dc.DrawLine(row.message.x, row.message.GetBottom() - FromDIP(10),
@@ -688,6 +788,7 @@ NativeChatSurface::Hit NativeChatSurface::HitAt(const wxPoint& client_point) con
         return {};
     }
     const auto point = CalcUnscrolledPosition(client_point);
+    if (!earlier_loading_ && earlier_bounds_.Contains(point)) return {kNoChatItem, Action::Earlier};
     for (const auto index : rows_) {
         const auto cached = row_cache_.find(index);
         if (cached == row_cache_.end()) continue;
@@ -709,9 +810,11 @@ void NativeChatSurface::Click(wxMouseEvent& event) {
     if (!transcript_ || loading_) return;
     SetFocus();
     const auto hit = HitAt(event.GetPosition());
+    if (hit.action == Action::Earlier) { RequestEarlier(); return; }
     if (!transcript_->Item(hit.item)) return;
     switch (hit.action) {
         case Action::None: return;
+        case Action::Earlier: return;
         case Action::Copy: Copy(hit.item); return;
         case Action::Edit:
             if (edit && hit.item == transcript_->LastUserIndex()) edit(hit.item);

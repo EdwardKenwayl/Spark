@@ -1,6 +1,7 @@
 #include "gui/native/app.h"
 #include "gui/native/approval_prompt.h"
 #include "gui/localization.h"
+#include "gui/history_window.h"
 #include "core/external_agents.h"
 #include "platform/clock.h"
 
@@ -23,6 +24,36 @@ size_t Add(Transcript& model, ChatItemKind kind, const std::string& text = {}) {
 void HideReasoning(Transcript& model, size_t& row) {
     if (row != kNoChatItem) model.Apply({TranscriptEventKind::Hide, row, {}}, Now());
     row = kNoChatItem;
+}
+// Copy the current tail only at commit, so events received while the older page
+// replays are preserved. Add resets completion flags; restore them after all rows exist.
+size_t AppendCurrentWindow(Transcript& target, const Transcript& source) {
+    const size_t offset = target.Count();
+    const auto& items = source.Items();
+    for (const auto& item : items) target.Apply({TranscriptEventKind::Add, kNoChatItem, item}, Now());
+    for (size_t index = 0; index < items.size(); ++index) {
+        const auto& item = items[index];
+        if (item.finished && item.kind != ChatItemKind::TurnStatus)
+            target.Apply({TranscriptEventKind::Finish, offset + index, item}, Now());
+    }
+    for (size_t index = 0; index < items.size(); ++index) {
+        const auto& item = items[index];
+        if (item.kind == ChatItemKind::TurnStatus && item.finished)
+            target.Apply({item.paused ? TranscriptEventKind::PauseTurn : TranscriptEventKind::FinishTurn,
+                          offset + index, item}, Now());
+    }
+    for (size_t index = 0; index < items.size(); ++index) {
+        const auto& item = items[index];
+        const size_t row = offset + index;
+        if (target.Item(row)->expanded != item.expanded) {
+            if (item.kind == ChatItemKind::TurnStatus) target.ToggleTurnStatus(row);
+            else target.ToggleTool(row);
+        }
+        if (item.kind == ChatItemKind::Tool && target.Item(row)->group_collapsed != item.group_collapsed)
+            target.ToggleToolGroup(row);
+        if (!item.visible) target.Apply({TranscriptEventKind::Hide, row, {}}, Now());
+    }
+    return offset;
 }
 bool LiveProcess(uint64_t id) {
     return id > 0 && id <= 2147483647 && (::kill(static_cast<pid_t>(id), 0) == 0 || errno == EPERM);
@@ -70,10 +101,14 @@ void NativeFrame::Send() {
         chat_->SetTranscript(&view->transcript, true);
     }
     if (edit_row_ != kNoChatItem) {
-        size_t turn = 0;
+        view->earlier.reset();
+        chat_->SetEarlierLoading(false);
+        auto& state = view->journal.MutableState();
+        const auto first = std::min(view->transcript.HistoryFirstMessage(), state.messages.size());
+        size_t turn = static_cast<size_t>(std::count_if(state.messages.begin(), state.messages.begin() + first,
+            [](const ChatMessage& message) { return message.role == MessageRole::User; }));
         for (size_t index = 0; index < edit_row_; ++index)
             if (view->transcript.Items()[index].kind == ChatItemKind::User) ++turn;
-        auto& state = view->journal.MutableState();
         size_t count = 0, boundary = state.messages.size();
         for (size_t index = 0; index < state.messages.size(); ++index)
             if (state.messages[index].role == MessageRole::User && count++ == turn) { boundary = index; break; }
@@ -254,6 +289,42 @@ void NativeFrame::EditMessage(size_t row) {
     UpdateControls();
 }
 
+void NativeFrame::LoadEarlier() {
+    auto* view = Active();
+    if (!view || view->earlier || !loading_path_.empty()) return;
+    const auto first = view->transcript.HistoryFirstMessage();
+    if (!first || first > view->journal.State().messages.size()) return;
+    const auto window = SelectHistoryWindow(view->journal.State().messages, first);
+    if (window.first_message >= first) return;
+    SessionState prefix;
+    prefix.metadata = view->journal.State().metadata;
+    prefix.metadata.erase("live_turn");
+    prefix.metadata.erase("paused_turn");
+    prefix.messages.assign(view->journal.State().messages.begin(), view->journal.State().messages.begin() + first);
+    view->earlier = std::make_unique<View>();
+    view->earlier->replay = view->earlier->transcript.BeginReplay(prefix, Now(), {}, window.first_message);
+    chat_->SetEarlierLoading(true);
+    RenderSidebar();
+}
+
+void NativeFrame::LoadEarlierSide() {
+    if (side_path_.empty() || pending_side_ || side_loading_) return;
+    const auto first = side_transcript_->HistoryFirstMessage();
+    const auto& state = side_journal_.State();
+    if (!first || first > state.messages.size()) return;
+    const auto window = SelectHistoryWindow(state.messages, first);
+    if (window.first_message >= first) return;
+    SessionState prefix;
+    prefix.metadata = state.metadata;
+    prefix.metadata.erase("live_turn");
+    prefix.metadata.erase("paused_turn");
+    prefix.messages.assign(state.messages.begin(), state.messages.begin() + first);
+    pending_side_ = std::make_unique<Transcript>();
+    side_replay_ = pending_side_->BeginReplay(prefix, Now(), {}, window.first_message);
+    side_earlier_ = true;
+    side_chat_->SetEarlierLoading(true);
+}
+
 void NativeFrame::Tick(wxTimerEvent&) {
     if (close_pending_) {
         if (summary_thumbnails_.Drain()) { close_pending_ = false; Close(true); }
@@ -281,7 +352,12 @@ void NativeFrame::Tick(wxTimerEvent&) {
                 const auto& metadata = pending_view_->journal.State().metadata;
                 if (running && metadata.contains("live_turn") && metadata["live_turn"].is_object())
                     start = metadata["live_turn"].value("started_tick", uint64_t{0});
-                pending_view_->replay = pending_view_->transcript.BeginReplay(pending_view_->journal.State(), Now(), {running, start});
+                auto window = SelectHistoryWindow(pending_view_->journal.State().messages);
+                const auto previous = views_.find(loading_path_);
+                if (previous != views_.end())
+                    window.first_message = std::min(window.first_message, previous->second->transcript.HistoryFirstMessage());
+                pending_view_->replay = pending_view_->transcript.BeginReplay(pending_view_->journal.State(), Now(),
+                                                                             {running, start}, window.first_message);
                 if (metadata.contains("turn_usages") && metadata["turn_usages"].is_array() && !metadata["turn_usages"].empty()) {
                     const auto& usage = metadata["turn_usages"].back();
                     pending_view_->context = usage.value("context_tokens", uint64_t{0});
@@ -310,8 +386,30 @@ void NativeFrame::Tick(wxTimerEvent&) {
             views_.erase(remove);
         }
     }
-    for (auto& item : views_) if (item.second->transcript.Loading()) {
-        if (item.second->transcript.ReplayStep(item.second->replay) && item.first == active_) chat_->Changed();
+    for (auto& item : views_) {
+        auto& view = *item.second;
+        if (view.earlier && view.earlier->transcript.ReplayStep(view.earlier->replay)) {
+            auto replacement = std::move(view.earlier);
+            const size_t offset = AppendCurrentWindow(replacement->transcript, view.transcript);
+            const auto remap = [offset](size_t row) { return row == kNoChatItem ? row : row + offset; };
+            replacement->journal = std::move(view.journal);
+            replacement->assistant = remap(view.assistant);
+            replacement->reasoning = remap(view.reasoning);
+            replacement->status = remap(view.status);
+            replacement->tools = std::move(view.tools);
+            for (auto& tool : replacement->tools) tool.second = remap(tool.second);
+            replacement->context = view.context;
+            replacement->limit = view.limit;
+            if (item.first == active_) {
+                if (edit_row_ != kNoChatItem) edit_row_ = remap(edit_row_);
+                chat_->PrependTranscript(&replacement->transcript, offset);
+                chat_->SetEarlierLoading(false);
+            }
+            item.second = std::move(replacement);
+            RenderSidebar();
+        }
+        if (item.second->transcript.Loading() &&
+            item.second->transcript.ReplayStep(item.second->replay) && item.first == active_) chat_->Changed();
     }
     if (auto summaries = history_loader_.Poll()) { history_items_ = std::move(*summaries); RenderSidebar(); }
     if (MonotonicMillis() - last_poll_ >= 1000) {
@@ -319,16 +417,18 @@ void NativeFrame::Tick(wxTimerEvent&) {
         RenderSidebar();
             if (side_panel_->IsShown()) RefreshSummary();
             if (!side_path_.empty() && !side_loading_ && !pending_side_ && MonotonicMillis() - side_poll_ >= 1000) {
-            side_generation_ = side_loader_.Request(side_path_);
-            side_loading_ = true;
-            side_poll_ = MonotonicMillis();
+            RequestSideSnapshot();
         }
     }
     if (auto loaded = side_loader_.Poll()) {
         if (loaded->generation == side_generation_ && !side_path_.empty() && loaded->error.empty()) {
             pending_side_ = std::make_unique<Transcript>();
+            auto window = SelectHistoryWindow(loaded->journal.State().messages);
+            if (side_transcript_->Count())
+                window.first_message = std::min(window.first_message, side_transcript_->HistoryFirstMessage());
             side_replay_ = pending_side_->BeginReplay(loaded->journal.State(), Now(),
-                {loaded->journal.State().metadata.contains("live_turn"), 0});
+                {loaded->journal.State().metadata.contains("live_turn"), 0}, window.first_message);
+            side_journal_ = std::move(loaded->journal);
         } else if (loaded->generation == side_generation_ && !side_path_.empty()) {
             side_chat_->SetTranscript(nullptr);
             side_transcript_->Clear();
@@ -339,10 +439,14 @@ void NativeFrame::Tick(wxTimerEvent&) {
         if (loaded->generation == side_generation_) side_loading_ = false;
     }
     if (pending_side_ && pending_side_->ReplayStep(side_replay_)) {
-        side_chat_->SetTranscript(nullptr);
-        side_transcript_ = std::move(pending_side_);
         side_chat_->SetLoading(0);
-        side_chat_->SetTranscript(side_transcript_.get());
+        if (side_earlier_) {
+            const auto offset = AppendCurrentWindow(*pending_side_, *side_transcript_);
+            side_chat_->PrependTranscript(pending_side_.get(), offset);
+        } else side_chat_->SetTranscript(pending_side_.get());
+        side_transcript_ = std::move(pending_side_);
+        side_earlier_ = false;
+        side_chat_->SetEarlierLoading(false);
         side_chat_->Changed();
     }
     chat_->Tick();

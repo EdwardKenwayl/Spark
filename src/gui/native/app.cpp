@@ -141,6 +141,7 @@ void NativeFrame::CreateChat() {
     chat_ = new NativeChatSurface(chat_page_);
     chat_->SetName("spark.transcript");
     chat_->edit = [this](size_t row) { EditMessage(row); };
+    chat_->load_earlier = [this] { LoadEarlier(); };
     auto* transcript_row = new wxBoxSizer(wxHORIZONTAL);
     transcript_row->AddSpacer(FromDIP(16));
     transcript_row->Add(chat_, 1, wxEXPAND | wxTOP | wxBOTTOM, FromDIP(8));
@@ -224,6 +225,7 @@ void NativeFrame::CreateChat() {
     };
     side_panel_ = new NativeSummaryPanel(shell_, std::move(callbacks));
     side_chat_ = side_panel_->ChildChatSurface();
+    side_chat_->load_earlier = [this] { LoadEarlierSide(); };
     columns->Add(side_panel_, 0, wxEXPAND);
     side_panel_->Hide();
     shell_->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) { LayoutShell(); event.Skip(); });

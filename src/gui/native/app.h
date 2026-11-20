@@ -22,6 +22,7 @@
 #include <wx/timer.h>
 #include <wx/sizer.h>
 #include <set>
+#include <optional>
 
 namespace spark {
 
@@ -33,12 +34,14 @@ public:
     void RestoreWindow();
 
 private:
+    friend struct NativeGuiTestAccess;
     struct View {
         SessionJournal journal;
         Transcript transcript;
         size_t assistant = kNoChatItem, reasoning = kNoChatItem, status = kNoChatItem;
         std::map<std::string, size_t> tools;
         uint64_t context = 0, limit = 0, replay = 0;
+        std::unique_ptr<View> earlier;
     };
     struct Project {
         std::string name, workspace;
@@ -65,6 +68,9 @@ private:
     void RefreshModels();
     void UpdateControls();
     void OpenConversation(const std::string& path);
+    void LoadEarlier();
+    void LoadEarlierSide();
+    void RequestSideSnapshot(bool force = false);
     void NewConversation(int project = -1);
     void AddProject();
     void ProjectMenu(int project, const wxPoint& anchor);
@@ -137,6 +143,7 @@ private:
     std::unique_ptr<View> pending_view_;
     Transcript empty_;
     std::unique_ptr<Transcript> side_transcript_ = std::make_unique<Transcript>(), pending_side_;
+    SessionJournal side_journal_;
     std::string active_, project_workspace_, project_name_, goal_, side_path_;
     std::vector<std::string> attachments_;
     std::map<std::string, nlohmann::json> external_;
@@ -145,12 +152,14 @@ private:
     std::map<std::string, std::pair<spark::fs::file_time_type, TranscriptHistory>> summaries_;
     uint64_t load_generation_ = 0, loading_since_ = 0, last_poll_ = 0, last_draft_ = 0, side_poll_ = 0;
     uint64_t side_generation_ = 0, side_replay_ = 0;
+    std::optional<std::pair<uintmax_t, spark::fs::file_time_type>> side_stamp_;
     std::string loading_path_;
     std::string summary_parent_;
     uint64_t snapshot_target_id_ = 0;
     size_t edit_row_ = kNoChatItem;
     bool plan_ = false, quitting_ = false, refreshing_ = false, draft_dirty_ = false;
     bool side_loading_ = false;
+    bool side_earlier_ = false;
     bool close_pending_ = false;
     bool project_section_expanded_ = true, recent_section_expanded_ = true;
     bool recent_show_all_ = false;

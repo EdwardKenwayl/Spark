@@ -20,10 +20,17 @@ public:
     void Changed();
     void Tick();
     void ScrollToLatest();
+    void RequestEarlier();
+    void SetEarlierLoading(bool loading);
+    bool EarlierLoading() const { return earlier_loading_; }
+    // Replacing a replay after prepending keeps the old visible row at its screen position.
+    void PrependTranscript(Transcript* transcript, size_t added_items);
     std::function<void(size_t)> edit;
+    std::function<void()> load_earlier;
 
 private:
-    enum class Action { None, Turn, Tool, Group, Copy, Edit, Rail };
+    friend struct NativeGuiTestAccess;
+    enum class Action { None, Turn, Tool, Group, Copy, Edit, Rail, Earlier };
     struct Hit { size_t item = kNoChatItem; Action action = Action::None; };
     struct RailDash { size_t item; int content_top, y; };
     struct Fragment {
@@ -41,6 +48,7 @@ private:
         wxString timestamp;
         bool user = false, expanded = false, group_expanded = false, group_active = false, group_failed = false;
         uint64_t revision = 0;
+        size_t reasoning = kNoChatItem, active_tool = kNoChatItem;
         std::vector<Fragment> fragments;
         std::vector<MarkdownPanel> panels;
     };
@@ -63,6 +71,7 @@ private:
     void LayoutMarkdown(wxDC& dc, Row& row, const std::vector<markdown::MarkdownLine>& lines,
                         int left, int width, int& top);
     void PaintText(wxDC& dc, const Row& row);
+    wxString ActivityText() const;
     wxColour Foreground() const;
     wxColour Muted() const;
     Transcript* transcript_ = nullptr;
@@ -70,6 +79,10 @@ private:
     uint64_t loading_ = 0;
     uint64_t elapsed_frame_ = 0;
     uint64_t generation_ = 0;
+    bool earlier_loading_ = false;
+    size_t anchor_item_ = kNoChatItem, activity_item_ = kNoChatItem, activity_status_ = kNoChatItem;
+    int anchor_offset_ = 0;
+    wxRect earlier_bounds_;
     int layout_width_ = 0;
     size_t hovered_ = kNoChatItem;
     Action hovered_action_ = Action::None;
