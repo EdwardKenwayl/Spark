@@ -21,9 +21,11 @@ struct TranscriptEvent {
 struct TranscriptGroup {
     bool leader = false;
     size_t size = 0, last_member = 0, finished = 0;
+    size_t reasoning = kNoChatItem;
     size_t read_count = 0, search_count = 0, command_count = 0;
     uint64_t elapsed_ms = 0;
-    bool hidden = false, indented = false, active = false, failed = false;
+    // Mixed non-exploration categories use a neutral label; read/search/command combinations keep theirs.
+    bool hidden = false, indented = false, active = false, failed = false, mixed = false;
 };
 
 // No windows, widgets, timers, or journal writes. The adapter owns its clock and render scheduling.
@@ -46,11 +48,14 @@ public:
     bool NeedsAnimation() const;
     static uint64_t Elapsed(const ChatItem& item, uint64_t now_tick_ms);
 
-    // Pass journal.State(); the owned snapshot cannot race a later journal adoption.
+    // Pass journal.State(); only the selected message tail is copied into the owned snapshot.
     // Defer live Apply events until ReplayStep completes, as AppWindow does during restoration.
     // Active metadata.live_turn is merged only into its matching final user turn, even with run set.
     // Saved started_tick values use the adapter's monotonic epoch; an explicit run start takes precedence.
-    uint64_t BeginReplay(const SessionState& state, TranscriptTime now, TranscriptRun run = {});
+    // first_message aligns backward to a user boundary; metadata keeps absolute journal indices.
+    uint64_t BeginReplay(const SessionState& state, TranscriptTime now, TranscriptRun run = {},
+                         size_t first_message = 0);
+    size_t HistoryFirstMessage() const { return history_first_message_; }
     // At most 64 messages/live tools per call. Old generations are ignored after Clear/EraseFrom.
     bool ReplayStep(uint64_t generation, size_t max_messages = 64);
     bool Loading() const { return replay_ != nullptr; }
@@ -60,6 +65,7 @@ private:
     struct Replay;
     std::unique_ptr<Replay> replay_;
     uint64_t generation_ = 0;
+    size_t history_first_message_ = 0;
     std::vector<ChatItem> items_;
 };
 

@@ -1,4 +1,5 @@
 #include "gui/transcript.h"
+#include "gui/history_window.h"
 
 #include <algorithm>
 #include "platform/filesystem.h"
@@ -41,7 +42,7 @@ void TestEventsAndTimers() {
     auto groups = transcript.Groups(1500);
     Check(groups[first].leader && groups[first].size == 2 && groups[first].read_count == 1 &&
               groups[first].command_count == 1 && groups[first].elapsed_ms == 500 &&
-              groups[first].active && groups[first].failed && groups[second].hidden,
+              groups[first].active && groups[first].failed && groups[second].hidden && !groups[first].mixed,
           "exploration groups span reasoning and combine completed and live tool timing");
     transcript.ToggleToolGroup(first);
     transcript.ToggleTool(second);
@@ -469,6 +470,285 @@ void TestLiveTurnIdentity() {
           "clearing during live-tail replay rejects its remaining tools and text");
 }
 
+void TestHistoryWindows() {
+    std::vector<ChatMessage> messages;
+    for (size_t turn = 0; turn < 20; ++turn) {
+        ChatMessage user;
+        user.role = MessageRole::User;
+        user.content = "question " + std::to_string(turn);
+        messages.push_back(user);
+        ChatMessage assistant;
+        assistant.role = MessageRole::Assistant;
+        assistant.content = "answer " + std::to_string(turn);
+        messages.push_back(assistant);
+    }
+    const auto recent = SelectHistoryWindow(messages);
+    const auto older = SelectHistoryWindow(messages, recent.first_message);
+    const auto oldest = SelectHistoryWindow(messages, older.first_message);
+    Check(recent.first_message == 24 && recent.first_turn == 12 && recent.total_turns == 20 &&
+              older.first_message == 8 && older.first_turn == 4 && older.total_turns == 20 &&
+              oldest.first_message == 0 && oldest.first_turn == 0 && oldest.total_turns == 20,
+          "history selects the last eight turns and adds eight older turns without trimming the tail");
+    Check(SelectHistoryWindow(messages, 0).first_message == 0 &&
+              SelectHistoryWindow(messages, messages.size() + 100).first_message == recent.first_message,
+          "history cursors clamp safely at both ends");
+    const auto empty = SelectHistoryWindow({});
+    Check(empty.first_message == 0 && empty.first_turn == 0 && empty.total_turns == 0,
+          "empty history has an empty absolute window");
+    ChatMessage preamble;
+    preamble.role = MessageRole::Assistant;
+    const auto no_users = SelectHistoryWindow({preamble});
+    Check(no_users.first_message == 0 && no_users.total_turns == 0,
+          "history without a user retains its available messages");
+    auto prefixed = messages;
+    prefixed.insert(prefixed.begin(), preamble);
+    const auto first_user = SelectHistoryWindow(prefixed, 3, 8);
+    Check(first_user.first_message == 1 && first_user.first_turn == 0 && first_user.total_turns == 20,
+          "the oldest partial page starts at its first user rather than a non-user preamble");
+    messages.erase(messages.begin() + 1, messages.end());
+    ChatMessage filler;
+    filler.role = MessageRole::Assistant;
+    messages.resize(1000, filler);
+    const auto long_turn = SelectHistoryWindow(messages);
+    Check(long_turn.first_message == 0 && long_turn.total_turns == 1,
+          "one long turn is retained completely rather than cut at an item limit");
+
+    SessionState state;
+    state.messages = {messages.front(), messages.back(), messages.front(), messages.back()};
+    Transcript transcript;
+    auto generation = transcript.BeginReplay(state, {500, 2000}, {}, 3);
+    while (!transcript.ReplayStep(generation, 1)) {}
+    Check(transcript.HistoryFirstMessage() == 2 && transcript.LastUserIndex() == 0,
+          "replay aligns an interior message backward to its owning user boundary");
+    generation = transcript.BeginReplay(state, {500, 2000}, {}, SIZE_MAX);
+    while (!transcript.ReplayStep(generation)) {}
+    Check(transcript.HistoryFirstMessage() == 2,
+          "out-of-range replay starts retain the final complete turn");
+    generation = transcript.BeginReplay(state, {500, 2000});
+    while (!transcript.ReplayStep(generation)) {}
+    Check(transcript.HistoryFirstMessage() == 0 && transcript.LastUserIndex() == 2,
+          "existing replay calls still restore all turns");
+    transcript.Clear();
+    Check(transcript.HistoryFirstMessage() == 0, "clearing resets the saved history origin");
+}
+
+void TestWindowReplayMetadata() {
+    SessionState state;
+    state.metadata["turn_durations_ms"] = nlohmann::json::array();
+    state.metadata["turn_usages"] = nlohmann::json::array();
+    for (size_t turn = 0; turn < 12; ++turn) {
+        ChatMessage user;
+        user.role = MessageRole::User;
+        user.content = "question " + std::to_string(turn);
+        state.messages.push_back(user);
+        ChatMessage assistant;
+        assistant.role = MessageRole::Assistant;
+        assistant.content = "answer " + std::to_string(turn);
+        state.messages.push_back(assistant);
+        state.metadata["turn_durations_ms"].push_back(uint64_t{100} + turn);
+        state.metadata["turn_usages"].push_back({{"input_tokens", uint64_t{1000} + turn}});
+    }
+    state.messages.back().tool_calls = {
+        {"done", "read_file", "{}"}, {"pending", "run_command", "{}"}};
+    ChatMessage result;
+    result.role = MessageRole::Tool;
+    result.tool_call_id = "done";
+    result.content = "full saved output";
+    state.messages.push_back(result);
+    state.context_messages = {state.messages.front()};
+    state.context_messages.front().content = "model context remains complete";
+    state.metadata["turn_errors"] = nlohmann::json::array({
+        {{"turn_index", 2}, {"error", "outside window"}},
+        {{"turn_index", 7}, {"error", "absolute turn seven"}}});
+    state.metadata["context_compactions"] = nlohmann::json::array({
+        {{"message_count", 6}, {"timestamp", uint64_t{6}}},
+        {{"message_count", 8}, {"timestamp", uint64_t{8}}, {"trigger", "manual"}},
+        {{"message_count", 10}, {"timestamp", uint64_t{10}}},
+        {{"message_count", 25}, {"timestamp", uint64_t{25}}}});
+    state.metadata["live_turn"] = {
+        {"active", true}, {"turn_index", 11}, {"started_tick", 1000},
+        {"elapsed_ms", uint64_t{50}}, {"reasoning", "active summary"},
+        {"tools", nlohmann::json::array({
+            {{"tool_call_id", "done"}, {"finished", true}, {"success", false},
+             {"output", "short live output"}, {"elapsed_ms", uint64_t{17}}},
+            {{"tool_call_id", "pending"}, {"started_tick", 1200}, {"finished", false}}
+        })}};
+    const auto metadata = state.metadata;
+    const auto window = SelectHistoryWindow(state.messages);
+    Transcript transcript;
+    const auto generation = transcript.BeginReplay(state, {500, 2000}, {}, window.first_message);
+    state.messages[window.first_message].content = "changed after snapshot";
+    while (!transcript.ReplayStep(generation, 1)) {}
+    std::vector<uint64_t> times, usages, compactions;
+    std::vector<std::string> users, errors;
+    size_t live_status = kNoChatItem, done = kNoChatItem, pending = kNoChatItem;
+    for (size_t index = 0; index < transcript.Count(); ++index) {
+        const auto& item = *transcript.Item(index);
+        if (item.kind == ChatItemKind::User) users.push_back(item.text);
+        if (item.kind == ChatItemKind::TurnStatus) {
+            if (item.finished) times.push_back(item.elapsed_ms);
+            else live_status = index;
+        }
+        if (item.kind == ChatItemKind::UsageStats) usages.push_back(item.input_tokens);
+        if (item.kind == ChatItemKind::Compaction) compactions.push_back(item.timestamp);
+        if (item.kind == ChatItemKind::Error) errors.push_back(item.text);
+        if (item.kind == ChatItemKind::Tool && item.call_id == "done") done = index;
+        if (item.kind == ChatItemKind::Tool && item.call_id == "pending") pending = index;
+    }
+    Check(users.size() == 8 && users.front() == "question 4" && users.back() == "question 11" &&
+              transcript.HistoryFirstMessage() == 8,
+          "window replay owns only the requested complete tail with its absolute origin");
+    Check(times == std::vector<uint64_t>({104, 105, 106, 107, 108, 109, 110}) &&
+              usages == std::vector<uint64_t>({1004, 1005, 1006, 1007, 1008, 1009, 1010}) &&
+              errors == std::vector<std::string>({"absolute turn seven"}),
+          "window metadata uses absolute turn indices for durations, usage and errors");
+    Check(compactions == std::vector<uint64_t>({8, 10, 25}),
+          "absolute compaction boundaries retain the origin and final boundary but omit older events");
+    Check(live_status != kNoChatItem && done != kNoChatItem && pending != kNoChatItem &&
+              transcript.Item(live_status)->start_tick_ms == 1000 &&
+              Transcript::Elapsed(*transcript.Item(live_status), 2200) == 1250 &&
+              transcript.Item(done)->finished && !transcript.Item(done)->success &&
+              transcript.Item(done)->elapsed_ms == 17 &&
+              transcript.Item(done)->result == "full saved output" &&
+              !transcript.Item(pending)->finished && transcript.Item(pending)->start_tick_ms == 1200,
+          "absolute final-turn identity restores live clocks and tools without duplicating saved output");
+    if (pending != kNoChatItem) {
+        ChatItem completion;
+        completion.result = "finished after replay";
+        transcript.Apply({TranscriptEventKind::Finish, pending, completion}, {501, 2300});
+        Check(transcript.Item(pending)->finished &&
+                  transcript.Item(pending)->result == "finished after replay" &&
+                  transcript.HistoryFirstMessage() == 8,
+              "live event indices still address the restored tail after window replay");
+    }
+    Check(state.messages.size() == 25 && state.context_messages.size() == 1 &&
+              state.context_messages.front().content == "model context remains complete" &&
+              state.metadata == metadata,
+          "window replay leaves the journal messages, model context and metadata intact");
+    auto current = transcript.BeginReplay(state, {502, 3000}, {true, 900}, window.first_message);
+    while (!transcript.ReplayStep(current)) {}
+    const auto final_status = transcript.LastUserIndex() + 1;
+    Check(!transcript.Item(final_status)->finished && transcript.Item(final_status)->start_tick_ms == 900 &&
+              Transcript::Elapsed(*transcript.Item(final_status), 3200) == 2350,
+          "an explicit run clock overrides saved live timing at the absolute final window turn");
+    state.metadata["live_turn"]["active"] = false;
+    state.metadata["paused_turn"] = {{"elapsed_ms", uint64_t{555}}};
+    state.metadata["context_compactions"].back()["trigger"] = "manual";
+    current = transcript.BeginReplay(state, {503, 4000}, {}, window.first_message);
+    while (!transcript.ReplayStep(current, 1)) {}
+    const auto paused_status = transcript.LastUserIndex() + 1;
+    const auto tail_notice = std::find_if(transcript.Items().begin(), transcript.Items().end(),
+        [](const ChatItem& item) { return item.kind == ChatItemKind::Compaction && item.timestamp == 25; });
+    Check(transcript.Item(paused_status)->paused && transcript.Item(paused_status)->elapsed_ms == 555 &&
+              tail_notice != transcript.Items().end() && tail_notice->visible,
+          "a window tail manual compaction finishes only the absolute final paused turn");
+}
+
+void TestMixedToolGroups() {
+    Transcript transcript;
+    std::vector<size_t> indices;
+    for (const char* name : {"read_file", "generate_image", "write_file", "custom_alpha",
+                             "custom_beta", "search_text", "run_command"}) {
+        if (!indices.empty()) Add(transcript, ChatItemKind::Reasoning, "transparent summary");
+        ChatItem item;
+        item.kind = ChatItemKind::Tool;
+        item.tool_name = name;
+        indices.push_back(transcript.Apply({TranscriptEventKind::Add, kNoChatItem, item}, {123, 1000}));
+    }
+    ChatItem failure;
+    failure.success = false;
+    failure.result = "individual tool failure";
+    transcript.Apply({TranscriptEventKind::Finish, indices[1], failure}, {124, 1200});
+    auto groups = transcript.Groups(1500);
+    Check(groups[0].leader && groups[0].size == 7 && groups[0].mixed &&
+              groups[0].read_count == 1 && groups[0].search_count == 1 &&
+              groups[0].command_count == 1 && groups[0].active && groups[0].failed &&
+              groups[indices.back()].hidden,
+          "mixed command, image, write and custom tools share one neutral activity group");
+    transcript.ToggleToolGroup(0);
+    transcript.ToggleTool(indices[1]);
+    Check(!transcript.Groups(1500)[indices.back()].hidden && transcript.Item(indices[1])->expanded &&
+              !transcript.Item(indices[1])->success &&
+              transcript.Item(indices[1])->result == "individual tool failure",
+          "mixed group expansion preserves individual tool failures and output");
+    Add(transcript, ChatItemKind::Assistant, "visible boundary");
+    ChatItem item;
+    item.kind = ChatItemKind::Tool;
+    item.tool_name = "read_file";
+    const auto next = transcript.Apply({TranscriptEventKind::Add, kNoChatItem, item}, {124, 1500});
+    item.tool_name = "search_text";
+    transcript.Apply({TranscriptEventKind::Add, kNoChatItem, item}, {124, 1500});
+    groups = transcript.Groups(1600);
+    Check(groups[0].size == 7 && groups[next].leader && groups[next].size == 2 && !groups[next].mixed,
+          "assistant text remains a boundary between mixed tool groups");
+}
+
+void TestReasoningActivityGroups() {
+    Transcript transcript;
+    const auto initial = Add(transcript, ChatItemKind::Reasoning, "initial summary");
+    Check(!transcript.Groups(1500)[initial].hidden,
+          "initial reasoning without a preceding tool keeps its independent activity row");
+    transcript.Apply({TranscriptEventKind::Hide, initial, {}}, {123, 1000});
+    ChatItem tool;
+    tool.kind = ChatItemKind::Tool;
+    tool.tool_name = "read_file";
+    const auto first = transcript.Apply({TranscriptEventKind::Add, kNoChatItem, tool}, {123, 1000});
+    transcript.Apply({TranscriptEventKind::Finish, first, {}}, {124, 1200});
+    const auto summary = Add(transcript, ChatItemKind::Reasoning, "latest summary");
+    auto groups = transcript.Groups(1500);
+    Check(groups[first].leader && groups[first].size == 1 && groups[first].reasoning == summary &&
+              groups[first].active && groups[summary].hidden,
+          "live reasoning takes over the single preceding tool header without adding a second row");
+    const auto count = transcript.Count();
+    ChatItem delta;
+    delta.text = " updated";
+    transcript.Apply({TranscriptEventKind::AppendText, summary, delta}, {124, 1300});
+    groups = transcript.Groups(1500);
+    Check(transcript.Count() == count && groups[first].reasoning == summary &&
+              transcript.Item(summary)->text == "latest summary updated" && groups[summary].hidden,
+          "reasoning deltas refresh the existing shared activity header without adding rows");
+    const auto newer = Add(transcript, ChatItemKind::Reasoning, "newer summary");
+    groups = transcript.Groups(1500);
+    Check(groups[first].reasoning == newer && groups[summary].hidden && groups[newer].hidden,
+          "one activity header points at the newest live reasoning while hiding older live rows");
+    transcript.Apply({TranscriptEventKind::Hide, summary, {}}, {124, 1200});
+    transcript.Apply({TranscriptEventKind::Hide, newer, {}}, {124, 1200});
+    tool.tool_name = "run_command";
+    const auto second = transcript.Apply({TranscriptEventKind::Add, kNoChatItem, tool}, {124, 1200});
+    groups = transcript.Groups(1500);
+    Check(groups[first].leader && groups[first].size == 2 && groups[first].reasoning == kNoChatItem &&
+              groups[first].active && groups[second].hidden && !groups[first].mixed,
+          "tool start after hiding reasoning restores the live command group header");
+    transcript.Apply({TranscriptEventKind::Finish, second, {}}, {125, 1400});
+    groups = transcript.Groups(1500);
+    Check(!groups[first].active && groups[first].reasoning == kNoChatItem,
+          "hidden reasoning cannot keep a completed tool group active");
+    const auto finished = Add(transcript, ChatItemKind::Reasoning, "finished summary");
+    transcript.Apply({TranscriptEventKind::Finish, finished, {}}, {125, 1400});
+    groups = transcript.Groups(1500);
+    Check(!groups[first].active && groups[first].reasoning == kNoChatItem,
+          "finished reasoning cannot reactivate an earlier tool group");
+    Add(transcript, ChatItemKind::Assistant, "assistant boundary");
+    const auto after_assistant = Add(transcript, ChatItemKind::Reasoning, "separate summary");
+    groups = transcript.Groups(1500);
+    Check(!groups[after_assistant].hidden && groups[first].reasoning == kNoChatItem,
+          "assistant text prevents reasoning from joining an earlier tool group");
+    Add(transcript, ChatItemKind::User, "next turn");
+    const auto after_user = Add(transcript, ChatItemKind::Reasoning, "next turn summary");
+    groups = transcript.Groups(1500);
+    Check(!groups[after_user].hidden && groups[first].reasoning == kNoChatItem,
+          "a new user boundary keeps reasoning independent of the previous turn tools");
+    Transcript notices;
+    const auto before_notice = notices.Apply({TranscriptEventKind::Add, kNoChatItem, tool}, {123, 1000});
+    notices.Apply({TranscriptEventKind::Finish, before_notice, {}}, {124, 1200});
+    const auto notice = Add(notices, ChatItemKind::Compaction);
+    const auto after_notice = Add(notices, ChatItemKind::Reasoning, "summary after notice");
+    const auto notice_groups = notices.Groups(1500);
+    Check(notice_groups[before_notice].reasoning == after_notice &&
+              notice_groups[after_notice].hidden && notices.Item(notice)->visible,
+          "a compaction notice keeps its own row without splitting the reasoning activity header");
+}
+
 void TestHistory(const spark::fs::path& root) {
     const std::string path = PathToUtf8(root / NativePath(u8"\u5386\u53f2.jsonl"));
     std::string text = "\xef\xbb\xbf";
@@ -509,6 +789,10 @@ int main() {
         TestInvalidCompactionBoundaries();
         TestLiveReplay(root);
         TestLiveTurnIdentity();
+        TestHistoryWindows();
+        TestWindowReplayMetadata();
+        TestMixedToolGroups();
+        TestReasoningActivityGroups();
         TestHistory(root);
     } catch (const std::exception& exception) {
         Check(false, exception.what());

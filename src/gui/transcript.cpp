@@ -19,11 +19,6 @@ Activity Category(const std::string& name) {
     if (name == "write_file" || name == "apply_patch") return Activity::Write;
     return Activity::Other;
 }
-bool CanGroup(const ChatItem& left, const ChatItem& right) {
-    const auto a = Category(left.tool_name), b = Category(right.tool_name);
-    if (a <= Activity::Search && b <= Activity::Search) return true;
-    return a == b && (a != Activity::Other || LowerAscii(left.tool_name) == LowerAscii(right.tool_name));
-}
 size_t TurnEnd(const std::vector<ChatItem>& items, size_t index) {
     for (size_t end = index + 1; end < items.size(); ++end) {
         if (items[end].kind == ChatItemKind::User || items[end].kind == ChatItemKind::TurnStatus) return end;
@@ -58,7 +53,8 @@ struct Transcript::Replay {
     SessionState state;
     TranscriptTime now;
     TranscriptRun run;
-    size_t message = 0, turn = 0, total_turns = 0, compaction = 0;
+    size_t message = 0, first_message = 0, total_messages = 0;
+    size_t turn = 0, total_turns = 0, compaction = 0;
     size_t pending_status = kNoChatItem, pending_turn = kNoChatItem;
     size_t live_turn = kNoChatItem, live_tool = 0;
     std::string live_text, live_reasoning;
@@ -102,6 +98,7 @@ struct Transcript::Replay {
     void CompactionsThrough(Transcript& model, size_t count) {
         const auto& events = Metadata(state, "context_compactions");
         if (!events.is_array()) return;
+        const auto absolute_count = first_message + count;
         while (compaction < events.size()) {
             const auto& event = events[compaction];
             if (!event.is_object()) { ++compaction; continue; }
@@ -111,8 +108,8 @@ struct Transcript::Replay {
                 continue;
             }
             const auto message_count = *boundary;
-            if (message_count > state.messages.size() || message_count < count) { ++compaction; continue; }
-            if (message_count > count) break;
+            if (message_count > total_messages || message_count < absolute_count) { ++compaction; continue; }
+            if (message_count > absolute_count) break;
             ChatItem item;
             item.kind = ChatItemKind::Compaction;
             item.success = event.value("trigger", std::string("auto")) != "manual";
@@ -257,6 +254,7 @@ void Transcript::ToggleToolGroup(size_t index) {
 void Transcript::Clear() {
     replay_.reset();
     ++generation_;
+    history_first_message_ = 0;
     items_.clear();
 }
 void Transcript::EraseFrom(size_t index) {
@@ -289,14 +287,15 @@ std::vector<TranscriptGroup> Transcript::Groups(uint64_t now_tick_ms) const {
         for (;;) {
             size_t next = end + 1;
             while (next < items_.size() && items_[next].kind == ChatItemKind::Reasoning) ++next;
-            if (next >= items_.size() || items_[next].kind != ChatItemKind::Tool || !CanGroup(items_[end], items_[next])) break;
+            if (next >= items_.size() || items_[next].kind != ChatItemKind::Tool) break;
             end = next;
             ++count;
         }
-        if (count > 1) {
-            group.leader = true;
+        {
+            group.leader = count > 1;
             group.size = count;
             group.last_member = end;
+            const auto first_category = Category(items_[index].tool_name);
             for (size_t member = index; member <= end; ++member) {
                 const auto& item = items_[member];
                 if (item.kind != ChatItemKind::Tool) continue;
@@ -305,6 +304,10 @@ std::vector<TranscriptGroup> Transcript::Groups(uint64_t now_tick_ms) const {
                 group.active = group.active || !item.finished;
                 group.failed = group.failed || (item.finished && !item.success);
                 const auto category = Category(item.tool_name);
+                const bool exploration = first_category <= Activity::Search && category <= Activity::Search;
+                if (!exploration && (category != first_category ||
+                    (category == Activity::Other && LowerAscii(item.tool_name) != LowerAscii(items_[index].tool_name))))
+                    group.mixed = true;
                 if (category == Activity::Read) ++group.read_count;
                 if (category == Activity::Search) ++group.search_count;
                 if (category == Activity::Command) ++group.command_count;
@@ -313,18 +316,44 @@ std::vector<TranscriptGroup> Transcript::Groups(uint64_t now_tick_ms) const {
         }
         index = end;
     }
+    size_t leader = kNoChatItem;
+    for (size_t index = 0; index < items_.size(); ++index) {
+        const auto& item = items_[index];
+        if (item.kind == ChatItemKind::Assistant || item.kind == ChatItemKind::User) {
+            leader = kNoChatItem;
+        } else if (item.kind == ChatItemKind::Tool) {
+            if (!groups[index].indented) leader = index;
+        } else if (item.kind == ChatItemKind::Reasoning && item.visible && !item.finished &&
+                   leader != kNoChatItem) {
+            auto& group = groups[leader];
+            group.leader = group.active = true;
+            group.reasoning = index;
+            groups[index].hidden = true;
+        }
+    }
     return groups;
 }
 
-uint64_t Transcript::BeginReplay(const SessionState& state, TranscriptTime now, TranscriptRun run) {
+uint64_t Transcript::BeginReplay(const SessionState& state, TranscriptTime now, TranscriptRun run,
+                                 size_t first_message) {
     Clear();
+    first_message = std::min(first_message, state.messages.size());
+    while (first_message > 0 &&
+           (first_message == state.messages.size() || state.messages[first_message].role != MessageRole::User))
+        --first_message;
+    history_first_message_ = first_message;
     replay_ = std::make_unique<Replay>();
-    replay_->state.messages = state.messages;
+    replay_->first_message = first_message;
+    replay_->total_messages = state.messages.size();
+    replay_->state.messages.assign(state.messages.begin() + first_message, state.messages.end());
     replay_->state.metadata = state.metadata;
     replay_->now = now;
     replay_->run = run;
-    replay_->total_turns = static_cast<size_t>(std::count_if(state.messages.begin(), state.messages.end(),
-        [](const ChatMessage& message) { return message.role == MessageRole::User; }));
+    for (size_t index = 0; index < state.messages.size(); ++index) {
+        if (state.messages[index].role != MessageRole::User) continue;
+        ++replay_->total_turns;
+        if (index < first_message) ++replay_->turn;
+    }
     const auto& live = Metadata(replay_->state, "live_turn");
     if (replay_->total_turns > 0 && live.is_object() && live.contains("active") && live["active"] == true &&
         live.contains("turn_index") && live["turn_index"].is_number_integer() &&
