@@ -13,3 +13,8 @@ CMakeUserPresets.json
 *.dmp
 .env
 .env.*
+AGENTS.md
+AGENTS.override.md
+.codex/
+.spark/
+tmp/

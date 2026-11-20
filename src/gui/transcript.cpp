@@ -1,4 +1,5 @@
 #include "gui/transcript.h"
+#include "gui/compaction_boundary.h"
 
 #include <algorithm>
 #include <fstream>
@@ -104,13 +105,12 @@ struct Transcript::Replay {
         while (compaction < events.size()) {
             const auto& event = events[compaction];
             if (!event.is_object()) { ++compaction; continue; }
-            const auto boundary = event.find("message_count");
-            if (boundary == event.end() || !boundary->is_number_integer() ||
-                (!boundary->is_number_unsigned() && boundary->get<int64_t>() < 0)) {
+            const auto boundary = CompactionMessageCount(event);
+            if (!boundary) {
                 ++compaction;
                 continue;
             }
-            const auto message_count = boundary->get<uint64_t>();
+            const auto message_count = *boundary;
             if (message_count > state.messages.size() || message_count < count) { ++compaction; continue; }
             if (message_count > count) break;
             ChatItem item;

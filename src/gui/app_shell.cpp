@@ -1,5 +1,6 @@
 #include "platform/clock.h"
 #include "gui/app.h"
+#include "gui/compaction_boundary.h"
 #include "gui/localization.h"
 #include "gui/model_picker.h"
 #include "gui/theme.h"
@@ -4965,13 +4966,12 @@ void AppWindow::ReloadSessionIntoView() {
                     ++compaction_index;
                     continue;
                 }
-                const auto boundary = compaction.find("message_count");
-                if (boundary == compaction.end() || !boundary->is_number_integer() ||
-                    (!boundary->is_number_unsigned() && boundary->get<int64_t>() < 0)) {
+                const auto boundary = CompactionMessageCount(compaction);
+                if (!boundary) {
                     ++compaction_index;
                     continue;
                 }
-                const uint64_t compaction_message_count = boundary->get<uint64_t>();
+                const uint64_t compaction_message_count = *boundary;
                 if (compaction_message_count > transcript.size() || compaction_message_count < message_count) {
                     ++compaction_index;
                     continue;

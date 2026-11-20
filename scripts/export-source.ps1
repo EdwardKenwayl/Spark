@@ -23,6 +23,14 @@ if ((Test-Path -LiteralPath $source) -and -not $Force) {
 $sourceIsRepository = Test-Path -LiteralPath (Join-Path $source '.git')
 $previousFiles = @()
 if ($sourceIsRepository) {
+    $trackedFiles = @(& git -C $source ls-files)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect tracked source files.' }
+    $privateFiles = @($trackedFiles | Where-Object {
+        $_ -match '(^|/)(AGENTS(\.override)?\.md|config\.json|\.env(\.[^/]*)?|data|workspace|tmp|\.codex|\.spark)(/|$)'
+    })
+    if ($privateFiles) {
+        throw 'The source repository tracks internal guidance or private files; untrack them before exporting.'
+    }
     $status = & git -C $source status --porcelain --untracked-files=no
     if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the source repository.' }
     if ($status) { throw 'The source repository has uncommitted changes; commit or preserve them before exporting.' }
@@ -74,8 +82,10 @@ try {
         Copy-Item -LiteralPath $original -Destination $destination
     }
     $forbidden = Get-ChildItem -LiteralPath $stage -Recurse -File -Force | Where-Object {
-        $_.Name -eq 'config.json' -or $_.Extension -in @('.log', '.exe', '.pdb', '.obj', '.dmp', '.zip', '.rar', '.jsonl') -or
-        $_.FullName.Substring($stage.Length) -match '[\\/](data|workspace|build[^\\/]*|recovery[^\\/]*)[\\/]'
+        $_.Name -in @('config.json', 'AGENTS.md', 'AGENTS.override.md', '.env') -or
+        $_.Name -like '.env.*' -or
+        $_.Extension -in @('.log', '.exe', '.pdb', '.obj', '.dmp', '.zip', '.rar', '.jsonl') -or
+        $_.FullName.Substring($stage.Length) -match '[\\/](data|workspace|tmp|\.codex|\.spark|build[^\\/]*|recovery[^\\/]*)[\\/]'
     }
     if ($forbidden) { throw 'Unexpected private data or build outputs in the source export.' }
     $exportedFiles = @(Get-ChildItem -LiteralPath $stage -Recurse -File -Force)
