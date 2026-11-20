@@ -373,7 +373,10 @@ Spark does not automatically read Codex's global rules from `CODEX_HOME` or
 - The visible transcript keeps earlier messages and tool activity. Continuation
   uses the latest Codex compaction checkpoint and subsequent messages, rather
   than sending the entire transcript again. Codex host instructions and internal
-  recovery messages are excluded from the imported chat.
+  recovery messages are excluded from the imported chat. Generated compaction
+  summaries remain model context and are not displayed as assistant replies.
+- Compaction notices within a turn fold with its intermediate activity and
+  return in their original order when that turn is expanded.
 - To apply corrected import behavior to a conversation imported with an older
   Spark build, import its original Codex rollout again as a new conversation.
 - Import reads the JSONL rollout line by line instead of applying the shared

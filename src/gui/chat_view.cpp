@@ -1754,6 +1754,15 @@ size_t ChatView::AddCompactionNotice(bool automatic, uint64_t timestamp) {
     item.success = automatic;
     item.text = WideToUtf8(i18n::Text(automatic ? L"Context automatically compacted" : L"Context manually compacted"));
     item.timestamp = timestamp == 0 ? UnixTimeSeconds() : timestamp;
+    item.expanded = true;
+    for (size_t index = items_.size(); index > 0; --index) {
+        const auto& previous = items_[index - 1];
+        if (previous.kind == ChatItemKind::User) break;
+        if (previous.kind == ChatItemKind::TurnStatus) {
+            item.expanded = previous.finished;
+            break;
+        }
+    }
     PushItem(std::move(item));
     rail_dirty_ = true;
     ScrollToBottom();
@@ -1890,7 +1899,8 @@ void ChatView::FinishTurnStatus(size_t index, uint64_t elapsed_ms, uint64_t time
         if (items_[item].kind == ChatItemKind::Assistant) last_assistant = item;
     }
     for (size_t item = index + 1; item < end; ++item) {
-        if (items_[item].kind == ChatItemKind::Reasoning || items_[item].kind == ChatItemKind::Tool) {
+        if (items_[item].kind == ChatItemKind::Reasoning || items_[item].kind == ChatItemKind::Tool ||
+            (items_[item].kind == ChatItemKind::Compaction && !items_[item].expanded)) {
             items_[item].visible = false;
         } else if (items_[item].kind == ChatItemKind::Assistant) {
             items_[item].visible = item == last_assistant;
@@ -1995,7 +2005,8 @@ void ChatView::ToggleTurnStatus(size_t index) {
         if (items_[item].kind == ChatItemKind::Assistant) last_assistant = item;
     }
     for (size_t item = index + 1; item < end; ++item) {
-        if (items_[item].kind == ChatItemKind::Tool) {
+        if (items_[item].kind == ChatItemKind::Tool ||
+            (items_[item].kind == ChatItemKind::Compaction && !items_[item].expanded)) {
             items_[item].visible = expanded;
         } else if (items_[item].kind == ChatItemKind::Assistant) {
             items_[item].visible = expanded || item == last_assistant;

@@ -104,10 +104,24 @@ struct Transcript::Replay {
         while (compaction < events.size()) {
             const auto& event = events[compaction];
             if (!event.is_object()) { ++compaction; continue; }
-            if (event.value("message_count", uint64_t{0}) > count) break;
+            const auto boundary = event.find("message_count");
+            if (boundary == event.end() || !boundary->is_number_integer() ||
+                (!boundary->is_number_unsigned() && boundary->get<int64_t>() < 0)) {
+                ++compaction;
+                continue;
+            }
+            const auto message_count = boundary->get<uint64_t>();
+            if (message_count > state.messages.size() || message_count < count) { ++compaction; continue; }
+            if (message_count > count) break;
             ChatItem item;
             item.kind = ChatItemKind::Compaction;
             item.success = event.value("trigger", std::string("auto")) != "manual";
+            item.timestamp = event.value("timestamp", uint64_t{0});
+            const bool at_end = count == state.messages.size();
+            // A manual compaction between turns belongs to neither neighboring turn.
+            if (!item.success && (at_end || state.messages[count].role == MessageRole::User) &&
+                (!at_end || (!run.active && live_turn == kNoChatItem)))
+                FinishPending(model, at_end && Metadata(state, "paused_turn").is_object());
             model.Apply({TranscriptEventKind::Add, kNoChatItem, item}, now);
             ++compaction;
         }
@@ -133,8 +147,19 @@ size_t Transcript::Apply(const TranscriptEvent& event, TranscriptTime now) {
             value.tool_name = SanitizeDisplayText(value.tool_name);
             value.arguments = SanitizeDisplayText(value.arguments);
         }
-        if (value.kind == ChatItemKind::Compaction)
+        if (value.kind == ChatItemKind::Compaction) {
             value.text = value.success ? "Context automatically compacted" : "Context manually compacted";
+            // Standalone notices stay expanded independently of a finished turn's status.
+            value.expanded = true;
+            for (size_t index = items_.size(); index > 0; --index) {
+                const auto& previous = items_[index - 1];
+                if (previous.kind == ChatItemKind::User) break;
+                if (previous.kind == ChatItemKind::TurnStatus) {
+                    value.expanded = previous.finished;
+                    break;
+                }
+            }
+        }
         if (value.kind == ChatItemKind::Error || value.kind == ChatItemKind::Quota) value.success = false;
         if (value.kind == ChatItemKind::Quota) value.text =
             "Quota exhausted: this API key has no remaining balance or quota. Recharge or switch API key/model, then retry.";
@@ -200,7 +225,8 @@ void Transcript::FoldTurn(size_t index) {
     for (size_t next = index + 1; next < end; ++next) {
         auto& item = items_[next];
         ++item.revision;
-        if (item.kind == ChatItemKind::Tool || item.kind == ChatItemKind::Reasoning) item.visible = false;
+        if (item.kind == ChatItemKind::Tool || item.kind == ChatItemKind::Reasoning ||
+            (item.kind == ChatItemKind::Compaction && !item.expanded)) item.visible = false;
         if (item.kind == ChatItemKind::Assistant) item.visible = item.final_assistant = next == last;
     }
 }
@@ -213,7 +239,8 @@ void Transcript::ToggleTurnStatus(size_t index) {
     for (size_t next = index + 1; next < end; ++next) if (items_[next].kind == ChatItemKind::Assistant) last = next;
     for (size_t next = index + 1; next < end; ++next) {
         ++items_[next].revision;
-        if (items_[next].kind == ChatItemKind::Tool) items_[next].visible = expanded;
+        if (items_[next].kind == ChatItemKind::Tool ||
+            (items_[next].kind == ChatItemKind::Compaction && !items_[next].expanded)) items_[next].visible = expanded;
         if (items_[next].kind == ChatItemKind::Assistant) items_[next].visible = expanded || next == last;
     }
 }

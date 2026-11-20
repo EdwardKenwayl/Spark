@@ -189,6 +189,139 @@ void TestTurnBoundaries() {
           "even oversized replay requests yield after the hard 64-message batch cap");
 }
 
+void TestCompactionFolding() {
+    Transcript transcript;
+    ChatItem manual;
+    manual.kind = ChatItemKind::Compaction;
+    manual.success = false;
+    const auto before = transcript.Apply({TranscriptEventKind::Add, kNoChatItem, manual}, {100, 1000});
+    Add(transcript, ChatItemKind::User, "question");
+    const auto status = Add(transcript, ChatItemKind::TurnStatus);
+    const auto first = Add(transcript, ChatItemKind::Compaction);
+    Add(transcript, ChatItemKind::Assistant, "intermediate");
+    const auto second = transcript.Apply({TranscriptEventKind::Add, kNoChatItem, manual}, {124, 1100});
+    Add(transcript, ChatItemKind::Tool);
+    const auto final = Add(transcript, ChatItemKind::Assistant, "answer");
+    const auto third = Add(transcript, ChatItemKind::Compaction);
+    Check(transcript.Item(first)->visible && transcript.Item(second)->visible && transcript.Item(third)->visible,
+          "all compactions remain visible while their turn is active");
+    transcript.Apply({TranscriptEventKind::FinishTurn, status, {}}, {130, 1200});
+    Check(!transcript.Item(first)->visible && !transcript.Item(second)->visible &&
+              !transcript.Item(third)->visible && transcript.Item(final)->visible &&
+              transcript.Item(before)->visible,
+          "finishing a turn folds every owned compaction without hiding a pre-turn manual notice");
+    const auto after = transcript.Apply({TranscriptEventKind::Add, kNoChatItem, manual}, {131, 1300});
+    transcript.ToggleTurnStatus(status);
+    Check(transcript.Item(first)->visible && transcript.Item(second)->visible &&
+              transcript.Item(third)->visible && first < second && second < final && final < third &&
+              transcript.Item(before)->visible && transcript.Item(after)->visible,
+          "expansion restores all compactions at their original positions, including a trailing in-turn notice");
+    transcript.ToggleTurnStatus(status);
+    Check(!transcript.Item(first)->visible && !transcript.Item(second)->visible &&
+              !transcript.Item(third)->visible && transcript.Item(before)->visible && transcript.Item(after)->visible,
+          "repeated folding leaves a manual compaction emitted after completion outside the finished turn");
+    Add(transcript, ChatItemKind::User, "next question");
+    const auto paused = Add(transcript, ChatItemKind::TurnStatus);
+    const auto paused_compaction = Add(transcript, ChatItemKind::Compaction);
+    transcript.Apply({TranscriptEventKind::PauseTurn, paused, {}}, {132, 1400});
+    Check(transcript.Item(paused_compaction)->visible, "pausing preserves visible in-turn compactions");
+    transcript.ToggleTurnStatus(paused);
+    Check(!transcript.Item(paused_compaction)->visible, "a paused turn can fold its compactions");
+    transcript.ToggleTurnStatus(paused);
+    Check(transcript.Item(paused_compaction)->visible && transcript.Item(after)->visible,
+          "a paused turn restores its own compactions without absorbing the preceding manual notice");
+}
+
+void TestCompactionReplayBoundaries() {
+    SessionState state;
+    for (const auto role : {MessageRole::User, MessageRole::Assistant, MessageRole::User,
+                            MessageRole::Assistant, MessageRole::Assistant}) {
+        ChatMessage message;
+        message.role = role;
+        message.content = "compaction boundary";
+        message.timestamp = 100 + state.messages.size() * 10;
+        state.messages.push_back(message);
+    }
+    state.metadata["context_compactions"] = nlohmann::json::array({
+        {{"trigger", "manual"}, {"message_count", 0}, {"timestamp", uint64_t{90}}},
+        {{"trigger", "auto"}, {"message_count", 1}, {"timestamp", uint64_t{105}}},
+        {{"trigger", "manual"}, {"message_count", 2}, {"timestamp", uint64_t{115}}},
+        {{"trigger", "auto"}, {"message_count", 3}, {"timestamp", uint64_t{125}}},
+        {{"trigger", "auto"}, {"message_count", 4}, {"timestamp", uint64_t{135}}},
+        {{"trigger", "manual"}, {"message_count", 5}, {"timestamp", uint64_t{145}}}
+    });
+    for (const auto budget : {size_t{1}, size_t{64}}) {
+        Transcript transcript;
+        const auto generation = transcript.BeginReplay(state, {999, 1000});
+        while (!transcript.ReplayStep(generation, budget)) {}
+        std::vector<size_t> compactions, statuses;
+        for (size_t index = 0; index < transcript.Count(); ++index) {
+            if (transcript.Item(index)->kind == ChatItemKind::Compaction) compactions.push_back(index);
+            if (transcript.Item(index)->kind == ChatItemKind::TurnStatus) statuses.push_back(index);
+        }
+        Check(compactions.size() == 6 && statuses.size() == 2,
+              "bounded and full replay retain every valid compaction exactly once");
+        if (compactions.size() != 6 || statuses.size() != 2) continue;
+        const std::vector<size_t> expected = {0, 3, 5, 8, 10, 12};
+        Check(compactions == expected && transcript.Item(6)->kind == ChatItemKind::User &&
+                  transcript.Item(11)->final_assistant,
+              "compactions replay at their message boundaries in recorded order");
+        Check(transcript.Item(compactions[0])->timestamp == 90 &&
+                  transcript.Item(compactions[1])->timestamp == 105 &&
+                  transcript.Item(compactions[5])->timestamp == 145,
+              "replayed compactions retain event timestamps instead of receiving the replay clock");
+        Check(transcript.Item(compactions[0])->visible && !transcript.Item(compactions[1])->visible &&
+                  transcript.Item(compactions[2])->visible && !transcript.Item(compactions[3])->visible &&
+                  !transcript.Item(compactions[4])->visible && transcript.Item(compactions[5])->visible,
+              "only in-turn compactions fold; leading, between-turn and trailing manual notices stay visible");
+        transcript.ToggleTurnStatus(statuses[0]);
+        transcript.ToggleTurnStatus(statuses[0]);
+        transcript.ToggleTurnStatus(statuses[1]);
+        transcript.ToggleTurnStatus(statuses[1]);
+        Check(transcript.Item(compactions[0])->visible && transcript.Item(compactions[2])->visible &&
+                  transcript.Item(compactions[5])->visible && !transcript.Item(compactions[1])->visible &&
+                  !transcript.Item(compactions[3])->visible && !transcript.Item(compactions[4])->visible,
+              "toggling neighboring turns never adopts a manual compaction between completed turns");
+    }
+    state.metadata["context_compactions"].push_back(
+        {{"trigger", "auto"}, {"message_count", 5}, {"timestamp", uint64_t{150}}});
+    state.metadata["live_turn"] = {{"active", true}, {"turn_index", 1}};
+    Transcript active;
+    const auto generation = active.BeginReplay(state, {999, 1000});
+    while (!active.ReplayStep(generation, 1)) {}
+    Check(!active.Item(7)->finished && active.Items().back().kind == ChatItemKind::Compaction &&
+              active.Items().back().visible && active.Item(8)->visible && active.Item(10)->visible,
+          "active replay keeps both interior and end-boundary compactions visible");
+}
+
+void TestInvalidCompactionBoundaries() {
+    SessionState state;
+    ChatMessage user;
+    user.role = MessageRole::User;
+    ChatMessage assistant;
+    assistant.role = MessageRole::Assistant;
+    assistant.content = "answer";
+    state.messages = {user, assistant};
+    state.metadata["context_compactions"] = nlohmann::json::array({
+        {{"message_count", 99}},
+        {{"message_count", -1}},
+        {{"message_count", "1"}},
+        {{"message_count", 1.5}},
+        {{"message_count", nullptr}},
+        {{"trigger", "auto"}},
+        {{"trigger", "auto"}, {"message_count", 1}, {"timestamp", uint64_t{105}}},
+        {{"message_count", 100}}
+    });
+    Transcript transcript;
+    const auto generation = transcript.BeginReplay(state, {999, 1000});
+    while (!transcript.ReplayStep(generation, 1)) {}
+    const auto count = std::count_if(transcript.Items().begin(), transcript.Items().end(),
+        [](const ChatItem& item) { return item.kind == ChatItemKind::Compaction; });
+    Check(count == 1 && transcript.Item(2)->kind == ChatItemKind::Compaction &&
+              transcript.Item(2)->timestamp == 105 && !transcript.Item(2)->visible,
+          "invalid and future boundaries neither move to the tail nor block a later valid event");
+}
+
 void TestLiveReplay(const spark::fs::path& root) {
     SessionState state;
     const auto message = [&](MessageRole role, const std::string& content) -> ChatMessage& {
@@ -371,6 +504,9 @@ int main() {
         TestEventsAndTimers();
         TestJournalReplay(root);
         TestTurnBoundaries();
+        TestCompactionFolding();
+        TestCompactionReplayBoundaries();
+        TestInvalidCompactionBoundaries();
         TestLiveReplay(root);
         TestLiveTurnIdentity();
         TestHistory(root);

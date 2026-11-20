@@ -899,6 +899,64 @@ int main() {
         }
     }
 
+    for (const std::string& variant : {std::string("response"), std::string("event-only")}) {
+        const std::string fixture_path = spark::JoinPath(exchange_directory, "summary-" + variant + ".jsonl");
+        std::ofstream fixture(spark::Utf8ToWide(fixture_path), std::ios::binary | std::ios::trunc);
+        const auto append_message = [&](const std::string& role, const std::string& text) {
+            if (variant == "response") {
+                fixture << nlohmann::json({{"type", "response_item"}, {"payload", {
+                    {"type", "message"}, {"role", role}, {"phase", "final_answer"},
+                    {"content", {{{"type", "output_text"}, {"text", text}}}}}}}).dump() << "\n";
+            }
+            fixture << nlohmann::json({{"type", "event_msg"}, {"payload", {
+                {"type", role == "user" ? "user_message" : "agent_message"}, {"message", text}}}}).dump()
+                    << "\n";
+        };
+        const auto append_compaction = [&](const std::string& summary) {
+            fixture << nlohmann::json({{"type", "compacted"}, {"payload", {
+                {"message", "Another language model started to solve this problem and produced a summary "
+                            "of its thinking process. You also have access to the state of the tools that were "
+                            "used by that language model. Use this to build on the work that has already been "
+                            "done and avoid duplicating work. Here is the summary produced by the other "
+                            "language model, use the information in this summary to assist with your own analysis:\n"
+                            + summary},
+                {"replacement_history", nlohmann::json::array()}}}}).dump() << "\n";
+        };
+        append_message("user", "visible question");
+        append_message("assistant", "A normal answer ending with internal summary one");
+        append_message("assistant", "internal summary one");
+        append_compaction("internal summary one");
+        append_message("assistant", "middle visible answer");
+        append_message("assistant", "internal summary two");
+        append_compaction("internal summary two");
+        append_message("assistant", "final visible answer");
+        fixture.close();
+        const auto imported = spark::ImportCodexSessionToSpark(
+            fixture_path, spark::JoinPath(exchange_directory, "summary-" + variant + "-data"),
+            spark::JoinPath(exchange_directory, "workspace"), "recent");
+        Check(imported.ok, "Codex compaction summary fixture imports");
+        if (!imported.ok) continue;
+        spark::SessionJournal journal;
+        Check(journal.Resume(imported.value.path).ok, "Codex compaction summary journal resumes");
+        const auto& state = journal.State();
+        Check(state.messages.size() == 4 && imported.value.message_count == 4,
+              "compaction generation output stays out of the visible transcript");
+        Check(state.messages.size() == 4 &&
+                  state.messages[1].content == "A normal answer ending with internal summary one" &&
+                  state.messages.back().content == "final visible answer",
+              "ordinary replies are preserved when internal compaction summaries are removed");
+        const auto& compactions = state.metadata["context_compactions"];
+        Check(compactions.size() == 2 &&
+                  compactions[0].value("message_count", size_t{0}) == 2 &&
+                  compactions[1].value("message_count", size_t{0}) == 3,
+              "compaction boundaries count visible messages after removing generated summaries");
+        const auto& context = spark::ModelContextMessages(state);
+        Check(context.size() == 2 &&
+                  context.front().content.find("internal summary two") != std::string::npos &&
+                  context.back().content == "final visible answer",
+              "internal summary is still available to the model after compaction");
+    }
+
     const std::string large_rollout_path = spark::JoinPath(exchange_directory, "large-rollout.jsonl");
     {
         std::ofstream large_rollout(spark::Utf8ToWide(large_rollout_path), std::ios::binary | std::ios::trunc);

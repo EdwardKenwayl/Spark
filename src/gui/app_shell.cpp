@@ -4965,9 +4965,25 @@ void AppWindow::ReloadSessionIntoView() {
                     ++compaction_index;
                     continue;
                 }
-                if (compaction.value("message_count", uint64_t{0}) > message_count) break;
+                const auto boundary = compaction.find("message_count");
+                if (boundary == compaction.end() || !boundary->is_number_integer() ||
+                    (!boundary->is_number_unsigned() && boundary->get<int64_t>() < 0)) {
+                    ++compaction_index;
+                    continue;
+                }
+                const uint64_t compaction_message_count = boundary->get<uint64_t>();
+                if (compaction_message_count > transcript.size() || compaction_message_count < message_count) {
+                    ++compaction_index;
+                    continue;
+                }
+                if (compaction_message_count > message_count) break;
                 const std::string trigger = compaction.value("trigger", std::string("auto"));
-                chat_view_->AddCompactionNotice(trigger != "manual");
+                const bool at_end = message_count == transcript.size();
+                if (trigger == "manual" && (at_end || transcript[message_count].role == MessageRole::User) &&
+                    (!at_end || (running == nullptr && !external_running))) {
+                    finish_pending_turn(at_end && paused_tail);
+                }
+                chat_view_->AddCompactionNotice(trigger != "manual", compaction.value("timestamp", uint64_t{0}));
                 ++compaction_index;
             }
         };

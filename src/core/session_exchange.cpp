@@ -176,6 +176,26 @@ struct CodexImportStep {
     nlohmann::json payload;
 };
 
+bool RemoveCodexCompactionOutput(std::vector<CodexImportStep>& steps, const std::string& summary) {
+    if (steps.empty() || steps.back().kind != CodexImportStep::Kind::Message) return false;
+    const ChatMessage& message = steps.back().message;
+    if (message.role != MessageRole::Assistant || message.content.empty() || !message.tool_calls.empty())
+        return false;
+    const std::string prefix =
+        "Another language model started to solve this problem and produced a summary of its thinking process. "
+        "You also have access to the state of the tools that were used by that language model. Use this to "
+        "build on the work that has already been done and avoid duplicating work. Here is the summary "
+        "produced by the other language model, use the information in this summary to assist with your own analysis:";
+    // Codex persists the compaction response immediately before its checkpoint.
+    // That response is internal input for the replacement history, not a chat reply.
+    const std::string text = Trim(message.content);
+    if (text != Trim(summary) &&
+        (summary.compare(0, prefix.size(), prefix) != 0 || text != Trim(summary.substr(prefix.size()))))
+        return false;
+    steps.pop_back();
+    return true;
+}
+
 bool IsCodexContextualUserMessage(const nlohmann::json& payload) {
     const auto metadata = payload.find("internal_chat_message_metadata_passthrough");
     if (metadata == payload.end() || !metadata->is_object()) return false;
@@ -453,9 +473,15 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
             continue;
         }
         if (type == "compacted") {
+            const std::string summary = payload.value("message", std::string{});
+            if (RemoveCodexCompactionOutput(import_steps, summary)) {
+                --visible_message_count;
+                --response_messages;
+            }
+            if (RemoveCodexCompactionOutput(fallback_steps, summary)) --fallback_message_count;
             nlohmann::json compacted_payload = {
                 {"trigger", "codex_import"},
-                {"summary", payload.value("message", std::string{})},
+                {"summary", summary},
                 {"message_count", visible_message_count},
             };
             const nlohmann::json replacement_history =
