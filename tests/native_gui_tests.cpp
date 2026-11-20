@@ -329,8 +329,13 @@ int main(int argc, char** argv) {
     fs::create_directories(temporary / "data" / "sessions");
     fs::create_directories(temporary / "data" / "archive");
     std::ofstream(temporary / "data" / "cache" / "stale.bin") << "stale";
-    std::ofstream(temporary / "data" / "sessions" / "keep.jsonl") << "session";
-    std::ofstream(temporary / "data" / "archive" / "keep.jsonl") << "archive";
+    const auto retained_session = [&](const char* id) {
+        return nlohmann::json({{"type", "session.created"}, {"payload", {
+            {"session_id", id}, {"title", "Preserved conversation"},
+            {"workspace", config.workspace.path}}}}).dump() + '\n';
+    };
+    std::ofstream(temporary / "data" / "sessions" / "keep.jsonl") << retained_session("keep-session");
+    std::ofstream(temporary / "data" / "archive" / "keep.jsonl") << retained_session("keep-archive");
     std::cout << "Constructing isolated frame" << std::endl;
     auto* frame = new NativeFrame(config);
     frame->SetSize(900, 650);
@@ -946,7 +951,7 @@ int main(int argc, char** argv) {
     const auto write_archive = [&](const char* filename, const char* title, const char* scope) {
         std::ofstream stream(archive_data / "archive" / filename);
         stream << nlohmann::json({{"type", "session.created"},
-            {"payload", {{"title", title}, {"workspace", project_path}}}}).dump() << '\n';
+            {"payload", {{"session_id", filename}, {"title", title}, {"workspace", project_path}}}}).dump() << '\n';
         stream << nlohmann::json({{"type", "session.scope"}, {"payload", {{"scope", scope}}}}).dump() << '\n';
     };
     write_archive("project.jsonl", "Project chat", "project");
@@ -1012,7 +1017,7 @@ int main(int argc, char** argv) {
     const auto write_session = [&](const char* filename, const char* title, const char* scope) {
         std::ofstream stream(sidebar_data / "sessions" / filename);
         stream << nlohmann::json({{"type", "session.created"},
-            {"payload", {{"title", title}, {"workspace", second_folder}}}}).dump() << '\n';
+            {"payload", {{"session_id", filename}, {"title", title}, {"workspace", second_folder}}}}).dump() << '\n';
         stream << nlohmann::json({{"type", "session.scope"}, {"payload", {{"scope", scope}}}}).dump() << '\n';
         stream << nlohmann::json({{"type", "message"}, {"payload", {{"role", "user"}, {"content", "fixture"}}}}).dump() << '\n';
     };
