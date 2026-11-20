@@ -15,6 +15,7 @@ CMakeUserPresets.json
 .env.*
 AGENTS.md
 AGENTS.override.md
+CHANGELOG.local.md
 .codex/
 .spark/
 tmp/

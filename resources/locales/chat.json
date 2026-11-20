@@ -682,5 +682,29 @@
     "es-ES": "Mostrar en el Explorador",
     "pt-BR": "Mostrar no Explorador",
     "ru-RU": "Показать в проводнике"
+  },
+  "Load earlier messages": {
+    "zh-CN": "加载更早的消息",
+    "en-US": "Load earlier messages",
+    "zh-TW": "載入較早的訊息",
+    "ja-JP": "以前のメッセージを読み込む",
+    "ko-KR": "이전 메시지 불러오기",
+    "de-DE": "Frühere Nachrichten laden",
+    "fr-FR": "Charger les messages précédents",
+    "es-ES": "Cargar mensajes anteriores",
+    "pt-BR": "Carregar mensagens anteriores",
+    "ru-RU": "Загрузить предыдущие сообщения"
+  },
+  "Loading earlier messages...": {
+    "zh-CN": "正在加载更早的消息…",
+    "en-US": "Loading earlier messages...",
+    "zh-TW": "正在載入較早的訊息…",
+    "ja-JP": "以前のメッセージを読み込み中…",
+    "ko-KR": "이전 메시지 불러오는 중…",
+    "de-DE": "Frühere Nachrichten werden geladen…",
+    "fr-FR": "Chargement des messages précédents…",
+    "es-ES": "Cargando mensajes anteriores…",
+    "pt-BR": "Carregando mensagens anteriores…",
+    "ru-RU": "Загрузка предыдущих сообщений…"
   }
 }

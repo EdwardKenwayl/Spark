@@ -49,6 +49,8 @@ API keys can be plaintext or environment-variable references.
   multiple providers and per-model settings.
 - Concurrent chats, projects, drafts, interruption and continuation, archives
   and Codex conversation branch import/export.
+- Compact live reasoning and command progress; recent chat history loads first,
+  with earlier turns loaded on demand.
 - Markdown, expandable tool activity, durations, usage statistics, file/image
   attachments, clipboard images and window snapshots.
 - Local file and command tools, public web search, automatic context compaction,
