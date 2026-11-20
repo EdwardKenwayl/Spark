@@ -1,5 +1,6 @@
 #include "platform/clock.h"
 #include "gui/app.h"
+#include "gui/history_window.h"
 #include "gui/compaction_boundary.h"
 #include "gui/localization.h"
 #include "gui/model_picker.h"
@@ -1157,6 +1158,13 @@ void AppWindow::AttachTurnUi(const std::shared_ptr<TurnRuntime>& runtime) {
     active_assistant_entry_ = static_cast<size_t>(-1);
     assistant_stream_started_ = false;
     if (chat_view_ != nullptr) {
+        // Replay restores committed messages. The current summary is transient and may
+        // only exist in the running turn, particularly after switching conversations.
+        if (current_phase_ == AgentPhase::WaitingModel && runtime->phase_detail == "thinking" &&
+            !reasoning_preview_.empty()) {
+            active_reasoning_entry_ = chat_view_->AddReasoning(WideToUtf8(reasoning_preview_));
+            latest_reasoning_entry_ = active_reasoning_entry_;
+        }
         chat_view_->SetActivityState(IsActiveSessionRunning() && ActivityRowVisible(), phase_text_, runtime->started_tick);
     }
 }
@@ -1420,6 +1428,7 @@ void AppWindow::CreateControls() {
                            [this](size_t index) { CopyChatItem(index); },
                            [this](size_t index) { EditChatItem(index); });
     chat_view_->SetGroupAction([this](size_t index) { ToggleToolGroupEntry(index); });
+    chat_view_->SetHistoryAction([this] { LoadEarlierHistory(); });
     side_chat_view_ = std::make_unique<ChatView>();
     if (!side_chat_view_->Create(window_, instance_, kSideChat, chat_font_, mono_font_)) {
         side_chat_view_.reset();
@@ -4823,7 +4832,17 @@ void AppWindow::UpdateEmptyState() {
     }
 }
 
-void AppWindow::ReloadSessionIntoView() {
+void AppWindow::LoadEarlierHistory() {
+    if (SessionLoading() || history_first_message_ == 0 || chat_view_ == nullptr) return;
+    const ChatItem* first = chat_view_->Item(0);
+    const std::string anchor = first == nullptr ? std::string{} : first->text;
+    const uint64_t timestamp = first == nullptr ? 0 : first->timestamp;
+    const size_t before = history_first_message_;
+    ReloadSessionIntoView(before);
+    chat_view_->PreserveHistoryAnchor(anchor, timestamp);
+}
+
+void AppWindow::ReloadSessionIntoView(size_t before_message) {
     if (!active_subagent_id_.empty()) {
         const auto child = subagents_ui_.find(active_subagent_id_);
         if (child == subagents_ui_.end() || NormalizePathForComparison(child->second.info.parent_session_key) !=
@@ -4898,10 +4917,10 @@ void AppWindow::ReloadSessionIntoView() {
     const uint64_t paused_elapsed_ms =
         paused_tail ? metadata["paused_turn"].value("elapsed_ms", uint64_t{0}) : uint64_t{0};
     const auto& messages = journal_.State().messages;
-    const size_t total_turns =
-        static_cast<size_t>(std::count_if(messages.begin(), messages.end(), [](const ChatMessage& message) {
-            return message.role == MessageRole::User;
-        }));
+    const auto history = SelectHistoryWindow(messages, before_message);
+    history_first_message_ = history.first_message;
+    chat_view_->SetEarlierHistory(history_first_message_ > 0);
+    const size_t total_turns = history.total_turns;
     struct ReplayProgress {
         size_t message_index = 0;
         size_t turn_index = 0;
@@ -4913,6 +4932,8 @@ void AppWindow::ReloadSessionIntoView() {
         std::map<std::string, size_t> pending_tools;
     };
     auto progress = std::make_shared<ReplayProgress>();
+    progress->message_index = history.first_message;
+    progress->turn_index = history.first_turn;
     session_replay_step_ = [this, progress, running, durations, usages, compactions, tool_durations, turn_errors,
                             total_turns, paused_tail, paused_elapsed_ms, external_running, external_start_tick,
                             external_phase, external_output, external_reasoning, external_tool_name,

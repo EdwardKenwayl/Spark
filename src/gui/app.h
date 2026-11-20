@@ -360,7 +360,8 @@ private:
     std::string ComposerText() const;
     void ClearComposer();
     void RefreshContextLabel();
-    void ReloadSessionIntoView();
+    void ReloadSessionIntoView(size_t before_message = static_cast<size_t>(-1));
+    void LoadEarlierHistory();
     void RestoreComposerState();
     void SaveComposerState();
     void ClearComposerState();
@@ -432,6 +433,7 @@ private:
     bool session_view_loading_ = false;
     uint64_t session_load_started_tick_ = 0;
     std::function<bool()> session_replay_step_;
+    size_t history_first_message_ = 0;
     std::vector<std::unique_ptr<UiEvent>> session_deferred_events_;
     size_t session_deferred_bytes_ = 0;
     bool session_deferred_overflow_ = false;

@@ -207,6 +207,7 @@ struct GroupInfo {
     bool hidden = false;
     bool indented = false;
     bool active = false;
+    size_t reasoning = static_cast<size_t>(-1);
 };
 
 bool LooksLikeImageTool(const std::string& name) {
@@ -265,15 +266,8 @@ std::string GroupKey(const std::string& tool_name) {
     return "tool:" + LowerAscii(tool_name);
 }
 
-bool CanJoinActivityGroup(const ChatItem& previous, const ChatItem& next) {
-    const ToolCategory previous_category = CategoryOf(previous.tool_name);
-    const ToolCategory next_category = CategoryOf(next.tool_name);
-    const bool previous_exploration = previous_category == ToolCategory::Command ||
-                                      previous_category == ToolCategory::Read || previous_category == ToolCategory::Search;
-    const bool next_exploration =
-        next_category == ToolCategory::Command || next_category == ToolCategory::Read || next_category == ToolCategory::Search;
-    if (previous_exploration && next_exploration) return true;
-    return GroupKey(previous.tool_name) == GroupKey(next.tool_name);
+bool CanJoinActivityGroup(const ChatItem&, const ChatItem&) {
+    return true;
 }
 
 std::wstring JoinFragments(const std::vector<std::wstring>& fragments) {
@@ -288,6 +282,9 @@ std::wstring JoinFragments(const std::vector<std::wstring>& fragments) {
 
 std::wstring GroupLabel(const GroupInfo& group, const std::string& key) {
     const std::wstring count = std::to_wstring(group.size);
+    if (group.read_count + group.search_count + group.command_count < group.size) {
+        return i18n::Format(group.active ? L"Running {n} tools" : L"Ran {n} tools", {{L"n", count}});
+    }
     if (group.read_count == 0 && group.search_count == 0 && group.command_count == 0) {
         const wchar_t* msgid = group.active ? L"Running {n} tools" : L"Ran {n} tools";
         if (key == "command") msgid = group.active ? L"Running {n} commands" : L"Ran {n} commands";
@@ -479,62 +476,41 @@ std::vector<GroupInfo> ComputeGroups(const std::vector<ChatItem>& items) {
     std::vector<GroupInfo> groups(items.size());
     size_t index = 0;
     while (index < items.size()) {
-        if (items[index].kind != ChatItemKind::Tool) {
-            ++index;
-            continue;
-        }
+        if (items[index].kind != ChatItemKind::Tool) { ++index; continue; }
         size_t end = index;
-        size_t count = 1;
-        // Codex keeps one exploration cell alive across hidden reasoning. Treat a
-        // reasoning row as transparent here as well, while every real transcript
-        // item (reply, compaction, error, user turn) still ends the activity group.
-        while (end + 1 < items.size()) {
-            size_t next = end + 1;
-            while (next < items.size() && items[next].kind == ChatItemKind::Reasoning) ++next;
-            if (next >= items.size() || items[next].kind != ChatItemKind::Tool ||
-                !CanJoinActivityGroup(items[end], items[next])) {
-                break;
-            }
-            end = next;
-            ++count;
-        }
-        if (count > 1) {
-            groups[index].leader = true;
-            groups[index].size = count;
-            groups[index].last_member = end;
-            for (size_t member = index; member <= end; ++member) {
-                if (items[member].kind != ChatItemKind::Tool) continue;
-                if (items[member].finished) {
-                    ++groups[index].finished;
-                    groups[index].elapsed_ms += items[member].elapsed_ms;
-                } else {
-                    groups[index].active = true;
-                    groups[index].elapsed_ms += items[member].start_tick_ms == 0
-                                                   ? 0
-                                                   : MonotonicMillis() - items[member].start_tick_ms;
-                }
-                switch (CategoryOf(items[member].tool_name)) {
-                    case ToolCategory::Read:
-                        ++groups[index].read_count;
-                        break;
-                    case ToolCategory::Search:
-                        ++groups[index].search_count;
-                        break;
-                    case ToolCategory::Command:
-                        ++groups[index].command_count;
-                        break;
+        GroupInfo group;
+        for (size_t member = index; member < items.size(); ++member) {
+            const auto& item = items[member];
+            if (item.kind == ChatItemKind::Reasoning) {
+                if (item.visible && !item.finished) group.reasoning = member;
+            } else if (item.kind == ChatItemKind::Tool) {
+                ++group.size;
+                group.finished += item.finished ? 1 : 0;
+                group.active = group.active || !item.finished;
+                group.elapsed_ms += ToolElapsed(item);
+                switch (CategoryOf(item.tool_name)) {
+                    case ToolCategory::Read: ++group.read_count; break;
+                    case ToolCategory::Search: ++group.search_count; break;
+                    case ToolCategory::Command: ++group.command_count; break;
                     case ToolCategory::Image:
                     case ToolCategory::Write:
-                    case ToolCategory::Other:
-                        break;
+                    case ToolCategory::Other: break;
+                }
+            } else break;
+            end = member;
+        }
+        group.leader = group.size > 1 || group.reasoning != static_cast<size_t>(-1);
+        group.active = group.active || group.reasoning != static_cast<size_t>(-1);
+        group.last_member = end;
+        if (group.leader) {
+            groups[index] = group;
+            for (size_t member = index + 1; member <= end; ++member) {
+                if (items[member].kind == ChatItemKind::Tool) {
+                    groups[member].hidden = items[index].group_collapsed;
+                    groups[member].indented = true;
                 }
             }
-            const bool collapsed = items[index].group_collapsed;
-            for (size_t member = index + 1; member <= end; ++member) {
-                if (items[member].kind != ChatItemKind::Tool) continue;
-                groups[member].hidden = collapsed;
-                groups[member].indented = true;
-            }
+            if (group.reasoning != static_cast<size_t>(-1)) groups[group.reasoning].hidden = true;
         }
         index = end + 1;
     }
@@ -1566,12 +1542,13 @@ void ChatView::SetActivityFrame(int frame) {
     activity_frame_ = frame;
     if (loading_) return;
     // Active group elapsed times are refreshed on the existing live animation.
-    if (layout_cache_ != nullptr) layout_cache_->groups_dirty = true;
     if (activity_visible_) {
         if (window_ != nullptr) InvalidateRect(window_, nullptr, FALSE);
         return;
     }
-    for (const ChatItem& item : items_) {
+    const size_t first = LastUserIndex() == static_cast<size_t>(-1) ? 0 : LastUserIndex();
+    for (size_t index = items_.size(); index > first; --index) {
+        const ChatItem& item = items_[index - 1];
         if (item.kind == ChatItemKind::Tool && !item.finished) {
             if (window_ != nullptr) InvalidateRect(window_, nullptr, FALSE);
             return;
@@ -1619,11 +1596,32 @@ void ChatView::SetActions(Action toggle_tool, Action copy_item, Action edit_item
 
 void ChatView::SetGroupAction(Action toggle_group) { toggle_group_ = std::move(toggle_group); }
 
+void ChatView::SetHistoryAction(std::function<void()> load_earlier) {
+    load_earlier_ = std::move(load_earlier);
+}
+
+int ChatView::ContentTop() const { return 18 + (earlier_history_ ? Scale(36) : 0); }
+
+void ChatView::SetEarlierHistory(bool available) {
+    earlier_history_ = available;
+    heights_dirty_ = true;
+    rail_dirty_ = true;
+    hit_areas_dirty_ = true;
+}
+
+void ChatView::PreserveHistoryAnchor(const std::string& text, uint64_t timestamp) {
+    history_anchor_text_ = text;
+    history_anchor_timestamp_ = timestamp;
+    auto_scroll_enabled_ = false;
+}
+
 void ChatView::Clear() {
     CancelRestore();
     if (window_ != nullptr) KillTimer(window_, kStreamRenderTimer);
     stream_render_pending_ = false;
     items_.clear();
+    earlier_history_ = false;
+    history_anchor_text_.clear();
     item_heights_.clear();
     item_text_heights_.clear();
     streaming_markdown_.clear();
@@ -1928,7 +1926,7 @@ void ChatView::MarkTurnPaused(size_t index, uint64_t elapsed_ms, uint64_t timest
 void ChatView::AppendReasoning(size_t index, const std::string& text) {
     if (index >= items_.size() || items_[index].kind != ChatItemKind::Reasoning) return;
     items_[index].text = NormalizeReasoningBuffer(items_[index].text + text);
-    InvalidateItemHeight(index);
+    // Reasoning always occupies one line; a new delta changes pixels, not layout.
     if (loading_) return;
     if (window_ != nullptr && !stream_render_pending_) {
         stream_render_pending_ = true;
@@ -2147,7 +2145,8 @@ void ChatView::InvalidateItemHeight(size_t index) {
     heights_dirty_ = true;
     if (layout_cache_ != nullptr) {
         if (index == static_cast<size_t>(-1) ||
-            (index < items_.size() && items_[index].kind == ChatItemKind::Tool)) {
+            (index < items_.size() && (items_[index].kind == ChatItemKind::Tool ||
+                                      items_[index].kind == ChatItemKind::Reasoning))) {
             layout_cache_->groups_dirty = true;
         }
         if (loading_ && !restoring_) layout_cache_->restart_heights = true;
@@ -2168,6 +2167,15 @@ void ChatView::InvalidateItemHeight(size_t index) {
     if (index < item_heights_.size()) {
         item_heights_[index] = -1;
         item_text_heights_[index] = -1;
+        if (items_[index].kind == ChatItemKind::Tool || items_[index].kind == ChatItemKind::Reasoning) {
+            size_t first = index;
+            while (first > 0 && (items_[first - 1].kind == ChatItemKind::Tool ||
+                                 items_[first - 1].kind == ChatItemKind::Reasoning)) --first;
+            for (size_t member = first; member < items_.size(); ++member) {
+                if (items_[member].kind != ChatItemKind::Tool && items_[member].kind != ChatItemKind::Reasoning) break;
+                item_heights_[member] = -1;
+            }
+        }
     }
 }
 
@@ -2191,6 +2199,10 @@ void ChatView::PrepareAssistantMarkdown(size_t index) {
 
 void ChatView::PrepareItemHeight(HDC device, size_t index) {
     if (item_heights_[index] >= 0) return;
+    if (!items_[index].visible || (layout_cache_->groups[index].hidden && !layout_cache_->groups[index].leader)) {
+        item_heights_[index] = 0;
+        return;
+    }
     PrepareAssistantMarkdown(index);
     const int known_text_height =
         items_[index].kind == ChatItemKind::Assistant ? item_text_heights_[index] : -1;
@@ -2215,8 +2227,9 @@ void ChatView::PrepareRestoreRows() {
     const auto begin_heights = [&] {
         cache.stage = LayoutCache::Stage::Heights;
         cache.cursor = 0;
-        cache.content_y = 18;
+        cache.content_y = ContentTop();
         cache.turns.clear();
+        if (earlier_history_) cache.turns.emplace_back(static_cast<size_t>(-1), 0);
         cache.restart_heights = false;
     };
     const auto begin_rails = [&] {
@@ -2293,7 +2306,16 @@ void ChatView::PrepareRestoreRows() {
                 }
                 cache.group_previous = index;
                 item_heights_[index] = -1;
-            } else if (item.kind != ChatItemKind::Reasoning) {
+            } else if (item.kind == ChatItemKind::Reasoning) {
+                if (cache.group_first != static_cast<size_t>(-1) && item.visible && !item.finished) {
+                    auto& group = cache.groups[cache.group_first];
+                    group.leader = true;
+                    group.active = true;
+                    group.reasoning = index;
+                    group.last_member = index;
+                    cache.groups[index].hidden = true;
+                }
+            } else {
                 if (cache.group_first != static_cast<size_t>(-1) && !cache.groups[cache.group_first].leader) {
                     cache.groups[cache.group_first] = {};
                 }
@@ -2323,6 +2345,19 @@ void ChatView::PrepareRestoreRows() {
                 rail_dirty_ = false;
                 const int content_height = content_height_ + Scale(kContentBottomPadding) +
                                            (activity_visible_ ? Scale(30) : 0);
+                if (!history_anchor_text_.empty()) {
+                    int top = ContentTop();
+                    for (size_t index = 0; index < items_.size(); ++index) {
+                        if (items_[index].kind == ChatItemKind::User &&
+                            items_[index].timestamp == history_anchor_timestamp_ &&
+                            items_[index].text == history_anchor_text_) {
+                            scroll_y_ = std::max(0, top - Scale(12));
+                            break;
+                        }
+                        top += item_heights_[index];
+                    }
+                    history_anchor_text_.clear();
+                }
                 if (auto_scroll_enabled_) scroll_y_ = std::max(0, content_height - viewport);
                 else ClampScroll(content_height, viewport);
                 CancelRestore();
@@ -2360,7 +2395,7 @@ void ChatView::EnsureItemHeights(HDC device) {
     }
     if (!heights_dirty_) return;
     EnsureGroups();
-    content_height_ = 18;
+    content_height_ = ContentTop();
     for (size_t index = 0; index < items_.size(); ++index) {
         PrepareItemHeight(device, index);
         content_height_ += item_heights_[index];
@@ -2390,7 +2425,11 @@ std::vector<ChatView::HitArea> ChatView::CalculateHitAreas(HDC device) {
     const ChatFonts fonts{text_font_, bold_font_, italic_font_, bold_italic_font_, mono_font_, heading_font_};
     EnsureItemHeights(device);
     const std::vector<GroupInfo>& groups = EnsureGroups().groups;
-    int y = 18 - scroll_y_;
+    int y = ContentTop() - scroll_y_;
+    if (earlier_history_) {
+        areas.push_back(HitArea{HitArea::Type::EarlierHistory, static_cast<size_t>(-1),
+            RECT{Scale(40), 18 - scroll_y_, client.right - Scale(40), y}});
+    }
     for (size_t index = 0; index < items_.size(); ++index) {
         const int item_height = item_heights_[index];
         if (!items_[index].visible || y + item_height < 0 || y > client.bottom ||
@@ -2491,8 +2530,9 @@ void ChatView::UpdateRail(HDC device) {
     if (width <= 0 || viewport <= 0) return;
 
     std::vector<std::pair<size_t, int>> turns;
+    if (earlier_history_) turns.emplace_back(static_cast<size_t>(-1), 0);
     EnsureItemHeights(device);
-    int y = 18;
+    int y = ContentTop();
     for (size_t index = 0; index < items_.size(); ++index) {
         if (items_[index].kind == ChatItemKind::User) turns.emplace_back(index, y);
         y += item_heights_[index];
@@ -2547,8 +2587,11 @@ void ChatView::DrawScrollRail(HDC device, const RECT& client) {
         if (hovered) hovered_y = dash.rail_y;
     }
 
-    if (hovered_y < 0 || hover_item_ >= items_.size()) return;
-    const std::wstring preview = RailPreview(items_[hover_item_].text);
+    if (hovered_y < 0) return;
+    const std::wstring preview = hover_item_ == static_cast<size_t>(-1)
+        ? std::wstring(i18n::Text(L"Load earlier messages"))
+        : hover_item_ < items_.size() ? RailPreview(items_[hover_item_].text) : std::wstring{};
+    if (preview.empty()) return;
     HFONT previous_font = static_cast<HFONT>(SelectObject(device, text_font_));
     const int max_text_width = Scale(320);
     RECT measured{0, 0, max_text_width, 0};
@@ -2603,7 +2646,7 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                     const int center_x = (client.left + client.right) / 2;
                     const int center_y = (client.top + client.bottom) / 2;
                     const RECT spinner{center_x - extent, center_y - extent, center_x + extent, center_y + extent};
-                    InvalidateRect(window_, &spinner, FALSE);
+                    InvalidateRect(window_, history_anchor_text_.empty() ? &spinner : nullptr, FALSE);
                 }
                 return 0;
             }
@@ -2641,6 +2684,15 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             if (loading_) {
                 if (MonotonicMillis() - restore_started_tick_ >= kRestoreSpinnerRevealDelayMs) {
                     DrawRestoreLoader(buffer, client, restore_frame_);
+                    if (!history_anchor_text_.empty()) {
+                        HGDIOBJ font = SelectObject(buffer, text_font_);
+                        SetTextColor(buffer, kMuted);
+                        RECT label{Scale(24), client.bottom / 2 + Scale(32),
+                                   client.right - Scale(24), client.bottom / 2 + Scale(64)};
+                        DrawTextW(buffer, i18n::Text(L"Loading earlier messages..."), -1, &label,
+                                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                        SelectObject(buffer, font);
+                    }
                 }
                 BitBlt(target, redraw.left, redraw.top, redraw.right - redraw.left, redraw.bottom - redraw.top,
                        buffer, redraw.left, redraw.top, SRCCOPY);
@@ -2653,7 +2705,15 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             const std::vector<GroupInfo>& groups = EnsureGroups().groups;
             const wchar_t* toolbar_tooltip = nullptr;
             RECT toolbar_anchor{};
-            int y = 18 - scroll_y_;
+            int y = ContentTop() - scroll_y_;
+            if (earlier_history_ && y > 0) {
+                HGDIOBJ font = SelectObject(buffer, text_font_);
+                SetTextColor(buffer, hover_type_ == HitArea::Type::EarlierHistory ? kText : kMuted);
+                RECT earlier{Scale(40), 18 - scroll_y_, client.right - Scale(40), y};
+                DrawTextW(buffer, i18n::Text(L"Load earlier messages"), -1, &earlier,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                SelectObject(buffer, font);
+            }
             for (size_t index = 0; index < items_.size(); ++index) {
                 const ChatItem& item = items_[index];
                 const int item_height = item_heights_[index];
@@ -2710,30 +2770,40 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                         const RECT header = layout.group_header;
                         const int glyph_x = header.left + Scale(18);
                         const int glyph_y = (header.top + header.bottom) / 2;
-                        const bool command_group = GroupKey(item.tool_name) == "command";
-                        const bool show_group_icon = command_group || groups[index].active;
+                        const bool has_reasoning = groups[index].reasoning != static_cast<size_t>(-1);
+                        const bool command_group = !has_reasoning && GroupKey(item.tool_name) == "command";
+                        const bool show_group_icon = command_group || (groups[index].active && !has_reasoning);
                         const COLORREF group_color = hovered ? kText : kMuted;
                         if (command_group) {
                             const RECT icon_rect{header.left + Scale(9), header.top, header.left + Scale(30), header.bottom};
                             DrawTerminalIcon(buffer, text_font_, icon_rect, group_color);
-                        } else if (groups[index].active) {
+                        } else if (groups[index].active && !has_reasoning) {
                             DrawActivityGlyph(buffer, glyph_x, glyph_y, Scale(5), activity_frame_, kText);
                         }
                         HFONT group_font = static_cast<HFONT>(SelectObject(buffer, text_font_));
                         SetTextColor(buffer, group_color);
                         RECT group_title{header.left + Scale(show_group_icon ? 34 : 12), header.top,
                                          header.right - Scale(94), header.bottom};
-                        std::wstring group_text = GroupLabel(groups[index], GroupKey(item.tool_name));
-                        if (groups[index].active) {
+                        std::wstring group_text = has_reasoning
+                            ? CurrentReasoningSentence(items_[groups[index].reasoning].text)
+                            : GroupLabel(groups[index], GroupKey(item.tool_name));
+                        if (groups[index].active && !has_reasoning) {
                             const std::wstring active_summary =
                                 ActiveToolSummary(items_, groups[index], static_cast<size_t>(index));
                             if (!active_summary.empty()) group_text += L"  ·  " + active_summary;
                         }
-                        if (groups[index].elapsed_ms > 0) group_text += L"  ·  " + FormatDuration(groups[index].elapsed_ms);
+                        uint64_t elapsed_ms = groups[index].elapsed_ms;
+                        if (groups[index].active) {
+                            elapsed_ms = 0;
+                            for (size_t member = index; member <= groups[index].last_member; ++member) {
+                                if (items_[member].kind == ChatItemKind::Tool) elapsed_ms += ToolElapsed(items_[member]);
+                            }
+                        }
+                        if (elapsed_ms > 0 && !has_reasoning) group_text += L"  ·  " + FormatDuration(elapsed_ms);
                         if (groups[index].active) {
                             // The collapsed header of a still-running batch carries the sweep.
                             const std::wstring live = FitText(buffer, group_text, group_title.right - group_title.left, false);
-                            DrawShimmerText(buffer, live, group_title, group_color, RGB(255, 255, 255));
+                            DrawShimmerText(buffer, live, group_title, group_color, kText);
                         } else {
                             DrawTextW(buffer, group_text.c_str(), -1, &group_title,
                                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
@@ -2771,7 +2841,7 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                             // A tool that is still running keeps the left-to-right sweep on
                             // its own row, which is where Codex shows live command output.
                             const std::wstring live = FitText(buffer, title, title_rect.right - title_rect.left, false);
-                            DrawShimmerText(buffer, live, title_rect, tool_color, RGB(255, 255, 255));
+                            DrawShimmerText(buffer, live, title_rect, tool_color, kText);
                         } else {
                             DrawTextW(buffer, title.c_str(), -1, &title_rect,
                                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
@@ -2805,7 +2875,7 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                         DrawTextW(buffer, label.c_str(), -1, &text_rect,
                                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
                     } else {
-                        DrawShimmerText(buffer, label, layout.text, kMuted, RGB(255, 255, 255));
+                        DrawShimmerText(buffer, label, layout.text, kMuted, kText);
                     }
                     SelectObject(buffer, reasoning_font);
                 } else if (item.kind == ChatItemKind::Compaction) {
@@ -2898,7 +2968,7 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                     old_font = static_cast<HFONT>(SelectObject(buffer, text_font_));
                     RECT activity_text{activity_rect.left + Scale(18), activity_rect.top, text_right, activity_rect.bottom};
                     const std::wstring label = FitText(buffer, activity_label_, activity_text.right - activity_text.left, true);
-                    DrawShimmerText(buffer, label, activity_text, kMuted, RGB(255, 255, 255));
+                    DrawShimmerText(buffer, label, activity_text, kMuted, kText);
                     SelectObject(buffer, old_font);
                 }
             }
@@ -2935,7 +3005,7 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                                      area.type == HitArea::Type::ToolHeader || area.type == HitArea::Type::ToolGroup ||
                                      area.type == HitArea::Type::Link || area.type == HitArea::Type::Copy ||
                                      area.type == HitArea::Type::Edit ||
-                                     area.type == HitArea::Type::Rail;
+                                     area.type == HitArea::Type::Rail || area.type == HitArea::Type::EarlierHistory;
             SetCursor(LoadCursorW(nullptr, interactive ? IDC_HAND : IDC_ARROW));
             return TRUE;
         }
@@ -2943,7 +3013,10 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             return 0;
         case WM_LBUTTONUP: {
             const HitArea area = HitTest(POINT{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
-            if (area.type == HitArea::Type::Rail) {
+            if (area.type == HitArea::Type::EarlierHistory ||
+                (area.type == HitArea::Type::Rail && area.item == static_cast<size_t>(-1))) {
+                if (load_earlier_) load_earlier_();
+            } else if (area.type == HitArea::Type::Rail) {
                 for (size_t rail_index = 0; rail_index < rail_dashes_.size(); ++rail_index) {
                     const RailDash& dash = rail_dashes_[rail_index];
                     if (dash.item != area.item) continue;
@@ -2973,6 +3046,10 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
         case WM_MOUSEWHEEL: {
             if (loading_) return 0;
             const int delta = GET_WHEEL_DELTA_WPARAM(wparam);
+            if (delta > 0 && scroll_y_ <= 0 && earlier_history_ && load_earlier_) {
+                load_earlier_();
+                return 0;
+            }
             if (delta > 0) auto_scroll_enabled_ = false;
             const int wheel_steps = delta == 0 ? 0 : std::max(1, std::abs(delta) / WHEEL_DELTA);
             scroll_y_ -= (delta > 0 ? wheel_steps : -wheel_steps) * Scale(54);

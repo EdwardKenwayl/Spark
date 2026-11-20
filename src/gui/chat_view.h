@@ -31,6 +31,9 @@ public:
 
     void SetActions(Action toggle_tool, Action copy_item, Action edit_item);
     void SetGroupAction(Action toggle_group);
+    void SetHistoryAction(std::function<void()> load_earlier);
+    void SetEarlierHistory(bool available);
+    void PreserveHistoryAnchor(const std::string& text, uint64_t timestamp);
 
     void Clear();
     // Replay only updates rows until EndRestore schedules bounded layout work.
@@ -87,6 +90,7 @@ private:
             Copy,
             Edit,
             Rail,
+            EarlierHistory,
         };
 
         Type type = Type::None;
@@ -109,6 +113,7 @@ private:
     LRESULT HandleMessage(UINT message, WPARAM wparam, LPARAM lparam);
 
     int ContentWidth() const;
+    int ContentTop() const;
     int CalculateContentHeight(HDC device);
     std::vector<HitArea> CalculateHitAreas(HDC device);
     HitArea HitTest(POINT point);
@@ -144,6 +149,10 @@ private:
     Action toggle_group_;
     Action copy_item_;
     Action edit_item_;
+    std::function<void()> load_earlier_;
+    bool earlier_history_ = false;
+    std::string history_anchor_text_;
+    uint64_t history_anchor_timestamp_ = 0;
     std::vector<RailDash> rail_dashes_;
     std::vector<HitArea> hit_areas_;
     bool hit_areas_dirty_ = true;

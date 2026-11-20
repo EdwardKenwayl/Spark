@@ -261,6 +261,11 @@ struct ChatViewLoadTest {
                                                 [](int height) { return height >= 0; }));
     }
 
+    static void RequestEarlier(ChatView& view) {
+        view.scroll_y_ = 0;
+        SendMessageW(view.hwnd(), WM_MOUSEWHEEL, MAKEWPARAM(0, WHEEL_DELTA), 0);
+    }
+
     static void CheckCircle(ChatView& view, bool dark) {
         PrintedClient image(view.hwnd());
         Check(image.pixels != nullptr && image.dc != nullptr, "loading paint has a valid DIB target");
@@ -339,6 +344,32 @@ struct ChatViewLoadTest {
                   "fast restoration completes without ever animating a circle");
         }
 
+        view.Clear();
+        view.AddUser("activity fixture");
+        const size_t command = view.AddTool("run_command", "{\"command\":\"echo fixture\"}");
+        view.FinishTool(command, true, "fixture", 0, 12);
+        const size_t reasoning = view.AddReasoning("Review the command result.");
+        {
+            PrintedClient image(view.hwnd());
+            Check(view.item_heights_[reasoning] == 0 && view.item_heights_[command] > 0,
+                  "a following reasoning summary uses the previous command's compact activity header");
+            image.SaveOptional(L"compact-activity.jpg");
+        }
+        const auto activity_heights = view.item_heights_;
+        for (int frame = 1; frame < 8; ++frame) view.SetActivityFrame(frame);
+        Check(!view.heights_dirty_ && view.item_heights_ == activity_heights,
+              "animation frames repaint without invalidating transcript layout");
+        view.AppendReasoning(reasoning, " Continue with the next file.");
+        view.HideReasoning(reasoning);
+        const size_t write = view.AddTool("apply_patch", "{\"patch\":\"fixture\"}");
+        {
+            PrintedClient image(view.hwnd());
+            Check(view.item_heights_[reasoning] == 0 && view.item_heights_[write] == 0 &&
+                      view.item_heights_[command] > 0,
+                  "the next mixed tool replaces the summary in one collapsed activity group");
+        }
+        view.FinishTool(write, true, "done", 0, 7);
+        view.Clear();
         view.BeginRestore();
         for (size_t turn = 0; turn < kLongTurns && GetTickCount64() < deadline; ++turn) {
             view.AddUser("restored question " + std::to_string(turn));
@@ -640,6 +671,21 @@ struct AppWindowSessionLoadTest {
                   last != nullptr && last->text == final.content &&
                   app_timers > timers_before && max_probe_delay < 500,
               "completion rereads final output, removes the spinner and keeps the pump responsive");
+        const size_t recent_rows = app.chat_view_->Count();
+        const auto* first_recent = app.chat_view_->Item(0);
+        Check(recent_rows < 100 && first_recent != nullptr &&
+                  first_recent->text == a.messages[(kLongTurns - 8) * 2].content &&
+                  app.journal_.State().messages.size() == a.messages.size() + 1,
+              "long sessions initially render only eight recent turns and preserve the complete journal");
+        ChatViewLoadTest::RequestEarlier(*app.chat_view_);
+        if (!WaitUntil([&] { return !app.SessionLoading(); }, "earlier history restores",
+                       [&] { PostProbe(app.window_); })) return;
+        Check(app.chat_view_->Count() > recent_rows && app.chat_view_->Count() < 150 &&
+                  app.chat_view_->Item(0)->text == a.messages[(kLongTurns - 16) * 2].content &&
+                  app.journal_.State().messages.back().content == final.content,
+              "scrolling above the loaded window adds eight earlier turns without changing the journal");
+        std::cout << "history_probe total_turns=" << kLongTurns << " recent_rows=" << recent_rows
+                  << " expanded_rows=" << app.chat_view_->Count() << '\n';
         app.QueueSessionLoad(a.path);
         if (!WaitUntil([&] { return app.journal_.State().id == a.id &&
                                     app.session_load_path_.empty() && app.chat_view_->Count() > 0; },
