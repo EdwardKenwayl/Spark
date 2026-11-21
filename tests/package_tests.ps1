@@ -56,7 +56,7 @@ try {
         Assert-True (-not (Compare-Object $before $after)) 'Private files changed.'
         $archive = [IO.Compression.ZipFile]::OpenRead($result.Zip)
         try {
-            Assert-True ($archive.Entries.Count -eq 9) 'Unexpected archive contents.'
+            Assert-True ($archive.Entries.Count -eq 10) 'Unexpected archive contents.'
             Assert-True (-not ($archive.Entries.FullName -match '(^|/)(config\.json|data|workspace)(/|$)')) `
                 'Private state leaked into the archive.'
         } finally { $archive.Dispose() }
@@ -109,7 +109,7 @@ try {
                 'XP packaging changed the Win7 configuration.'
             $xpArchive = [IO.Compression.ZipFile]::OpenRead($xpResult.Zip)
             try {
-                Assert-True ($xpArchive.Entries.Count -eq 13) 'XP dependencies are missing from the archive.'
+                Assert-True ($xpArchive.Entries.Count -eq 14) 'XP dependencies are missing from the archive.'
                 Assert-True ($xpArchive.Entries.FullName -contains 'cacert.pem') 'XP CA bundle is missing.'
             } finally { $xpArchive.Dispose() }
         }

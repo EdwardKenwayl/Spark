@@ -61,7 +61,9 @@ $files = @(
     'third_party/nlohmann/json.hpp', 'third_party/nlohmann/LICENSE.MIT',
     'third_party/md4c/md4c.c', 'third_party/md4c/md4c.h',
     'third_party/md4c/LICENSE.md', 'third_party/md4c/README.md',
-    'third_party/ghc/filesystem.hpp', 'third_party/ghc/LICENSE'
+    'third_party/ghc/filesystem.hpp', 'third_party/ghc/LICENSE',
+    'third_party/stb/stb_image.h', 'third_party/stb/stb_image_write.h',
+    'third_party/stb/LICENSE', 'third_party/stb/README.md'
 )
 $files += @(Get-ChildItem -LiteralPath (Join-Path $root 'resources\locales') -File -Filter '*.json' |
     ForEach-Object { $_.FullName.Substring($root.Length + 1) })

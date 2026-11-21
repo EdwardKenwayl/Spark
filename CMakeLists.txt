@@ -105,6 +105,7 @@ endif()
 
 add_library(spark_provider STATIC
     src/core/provider.cpp
+    src/core/prompt_image.cpp
     src/core/provider_models.cpp
     src/core/provider_probe.cpp
     src/platform/binary_io.cpp
@@ -205,6 +206,17 @@ if(SPARK_BUILD_TESTS)
     endif()
     add_test(NAME spark_image_compaction_tests COMMAND spark_image_compaction_tests)
     set_tests_properties(spark_image_compaction_tests PROPERTIES TIMEOUT 20)
+    add_executable(spark_prompt_image_tests tests/prompt_image_tests.cpp)
+    target_link_libraries(spark_prompt_image_tests PRIVATE spark_core)
+    if(WIN32)
+        target_link_libraries(spark_prompt_image_tests PRIVATE ws2_32)
+    endif()
+    add_test(NAME spark_prompt_image_tests COMMAND spark_prompt_image_tests)
+    set_tests_properties(spark_prompt_image_tests PROPERTIES TIMEOUT 40)
+    add_executable(spark_prompt_image_preparation_tests tests/prompt_image_preparation_tests.cpp)
+    target_link_libraries(spark_prompt_image_preparation_tests PRIVATE spark_core)
+    add_test(NAME spark_prompt_image_preparation_tests COMMAND spark_prompt_image_preparation_tests)
+    set_tests_properties(spark_prompt_image_preparation_tests PROPERTIES TIMEOUT 40)
     add_executable(spark_agent_loop_tests tests/agent_loop_tests.cpp)
     target_link_libraries(spark_agent_loop_tests PRIVATE spark_core)
     if(WIN32)
@@ -523,6 +535,7 @@ install(FILES config.example.json README.md README.zh-CN.md CONFIGURATION.md THI
     resources/spark_agent.ico DESTINATION "${SPARK_INSTALL_DATA}")
 install(FILES third_party/nlohmann/LICENSE.MIT DESTINATION "${SPARK_INSTALL_DATA}" RENAME THIRD_PARTY_NLOHMANN_JSON_LICENSE.txt)
 install(FILES third_party/md4c/LICENSE.md DESTINATION "${SPARK_INSTALL_DATA}" RENAME THIRD_PARTY_MD4C_LICENSE.txt)
+install(FILES third_party/stb/LICENSE DESTINATION "${SPARK_INSTALL_DATA}" RENAME THIRD_PARTY_STB_LICENSE.txt)
 if(SPARK_WINDOWS_XP)
     install(FILES third_party/ghc/LICENSE DESTINATION "${SPARK_INSTALL_DATA}" RENAME THIRD_PARTY_GHC_FILESYSTEM_LICENSE.txt)
 endif()

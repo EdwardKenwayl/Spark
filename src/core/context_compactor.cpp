@@ -280,6 +280,23 @@ std::vector<ChatMessage> BuildCompactedHistory(const std::vector<ChatMessage>& m
         compacted.push_back(std::move(tail));
     }
 
+    // Keep the latest visual evidence within a separate 16K provisional token budget.
+    // Older images remain in the transcript/on disk and can be reopened explicitly.
+    size_t remaining_images = 4;
+    size_t remaining_notes = 4096;
+    for (auto message = compacted.rbegin(); message != compacted.rend(); ++message) {
+        const size_t removed = message->image_paths.size() > remaining_images
+            ? message->image_paths.size() - remaining_images : 0;
+        for (size_t index = 0; index < removed && remaining_notes; ++index) {
+            const auto note = TruncateUtf8(
+                "\n[Earlier image summarized; use view_image if needed: " +
+                TruncateUtf8(message->image_paths[index], 1024) + "]", remaining_notes);
+            message->content += note;
+            remaining_notes -= note.size();
+        }
+        message->image_paths.erase(message->image_paths.begin(), message->image_paths.begin() + removed);
+        remaining_images -= message->image_paths.size();
+    }
     return NormalizeToolCallHistory(compacted);
 }
 

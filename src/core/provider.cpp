@@ -1,4 +1,5 @@
 #include "core/provider.h"
+#include "core/prompt_image.h"
 
 #include "platform/binary_io.h"
 #include "platform/http.h"
@@ -286,21 +287,10 @@ std::string Base64Encode(std::string_view bytes) {
     return encoded;
 }
 
-std::string ImageMimeType(std::string_view path) {
-    std::string extension = LowerAscii(PathToUtf8(NativePath(path).extension()));
-    if (extension == ".jpg") extension = ".jpeg";
-    if (extension == ".jpeg") return "image/jpeg";
-    if (extension == ".png") return "image/png";
-    if (extension == ".gif") return "image/gif";
-    if (extension == ".webp") return "image/webp";
-    if (extension == ".bmp") return "image/bmp";
-    return "application/octet-stream";
-}
-
 std::optional<std::string> ImageDataUrl(std::string_view path) {
-    const auto bytes = ReadAttachmentBytes(path);
-    if (!bytes.has_value()) return std::nullopt;
-    return "data:" + ImageMimeType(path) + ";base64," + Base64Encode(*bytes);
+    const auto image = LoadPromptImage(path);
+    if (!image) return std::nullopt;
+    return "data:" + image->mime + ";base64," + Base64Encode(image->bytes);
 }
 
 nlohmann::json OpenAiContent(const ChatMessage& message) {
@@ -322,13 +312,13 @@ nlohmann::json AnthropicContent(const ChatMessage& message) {
     nlohmann::json content = nlohmann::json::array();
     if (!message.content.empty()) content.push_back({{"type", "text"}, {"text", message.content}});
     for (const std::string& path : message.image_paths) {
-        const auto bytes = ReadAttachmentBytes(path);
-        if (bytes.has_value()) {
+        const auto image = LoadPromptImage(path);
+        if (image) {
             content.push_back({{"type", "image"},
                                {"source",
                                 {{"type", "base64"},
-                                 {"media_type", ImageMimeType(path)},
-                                 {"data", Base64Encode(*bytes)}}}});
+                                  {"media_type", image->mime},
+                                  {"data", Base64Encode(image->bytes)}}}});
         } else {
             content.push_back({{"type", "text"}, {"text", "[image unavailable: " + path + "]"}});
         }
@@ -371,11 +361,14 @@ public:
             {"messages", nlohmann::json::array()},
         };
         if (!request.reasoning_effort.empty()) payload["reasoning_effort"] = request.reasoning_effort;
-        for (const ChatMessage& message : request.messages) {
+        for (const ChatMessage& message : PreparePromptImageHistory(request.messages)) {
             nlohmann::json entry = {
                 {"role", MessageRoleToString(message.role)},
             };
-            if (!message.content.empty() || !message.image_paths.empty()) entry["content"] = OpenAiContent(message);
+            if (!message.content.empty() || !message.image_paths.empty()) {
+                entry["content"] = message.role == MessageRole::Tool
+                    ? nlohmann::json(message.content) : OpenAiContent(message);
+            }
             if (!message.name.empty()) entry["name"] = message.name;
             if (!message.tool_call_id.empty()) entry["tool_call_id"] = message.tool_call_id;
             if (!message.tool_calls.empty()) {
@@ -586,7 +579,7 @@ public:
         };
         if (use_thinking) payload["thinking"] = {{"type", "enabled"}, {"budget_tokens", thinking_budget}};
         std::string system_prompt;
-        for (const ChatMessage& message : request.messages) {
+        for (const ChatMessage& message : PreparePromptImageHistory(request.messages)) {
             if (message.role == MessageRole::System) {
                 if (!system_prompt.empty()) system_prompt += "\n\n";
                 system_prompt += message.content;
@@ -787,8 +780,9 @@ public:
         // same way, and compaction is what keeps the request from growing without bound.
         size_t replayed_reasoning = 0;
         size_t replayed_reasoning_bytes = 0;
-        for (size_t message_index = 0; message_index < request.messages.size(); ++message_index) {
-            const ChatMessage& message = request.messages[message_index];
+        const auto prepared_messages = PreparePromptImageHistory(request.messages);
+        for (size_t message_index = 0; message_index < prepared_messages.size(); ++message_index) {
+            const ChatMessage& message = prepared_messages[message_index];
             if (message.role == MessageRole::System) {
                 if (!instructions.empty()) instructions += "\n\n";
                 instructions += message.content;

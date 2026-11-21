@@ -37,6 +37,17 @@ Distributions that bundle this header must retain its MIT notice and license.
 Portable releases include the nlohmann/json and md4c license texts alongside the
 executables.
 
+## stb
+
+- Files: `third_party/stb/stb_image.h`, `third_party/stb/stb_image_write.h`
+- License: MIT OR public domain; Spark uses the MIT option.
+- Copyright (c) 2017 Sean Barrett
+- Full license: `third_party/stb/LICENSE`
+- Pinned revision and source checksums: `third_party/stb/README.md`
+
+The shared image preparation code uses these unmodified headers to resize and
+encode request copies in memory. Binary packages include `THIRD_PARTY_STB_LICENSE.txt`.
+
 ## libcurl
 
 Linux and macOS link against the operating system's libcurl. Windows 7 and

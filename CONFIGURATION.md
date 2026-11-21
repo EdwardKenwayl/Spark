@@ -56,6 +56,18 @@ permissions or give an upstream model capabilities it does not support.
 
 ## Automatic Compaction
 
+Image request copies use a longest edge of 2048 pixels and at most 2500
+32-by-32 patches. PNG is preferred for screenshot text; larger encodings use
+JPEG and further resizing to fit 1 MiB per supported image. Originals remain
+unchanged. Preparation uses a shared cache capped at 16 MiB and 16 entries.
+Each request retains the latest images within 16 images and 16 MiB of base64
+image data; compaction retains the latest four. Earlier image paths remain
+available for `view_image`. Omission notes share a 4096-byte text budget.
+WebP and other undecoded formats pass through under the request budget.
+Decoded images above 32 megapixels are unavailable in the request to bound
+memory use. Actual visual token usage depends on the model and provider;
+smaller encoded files do not imply proportionally fewer visual tokens.
+
 Automatic compaction is always enabled and defaults to 90% of the current
 model window. The editor's **Default (90%)** shows the current global percentage;
 an advanced override changes that displayed value. Selecting the default does

@@ -64,6 +64,8 @@ API keys can be plaintext or environment-variable references.
 Images attach only to the message being sent. Window snapshots can be previewed
 and removed before sending; background capture depends on system support and
 permissions. Wayland capture is currently unavailable.
+Request copies of supported images are resized and compressed; original files
+stay unchanged. Compaction retains only the four most recent images.
 
 Context compaction defaults to 90% of the model window; unknown windows use
 272000 tokens. `/compact` triggers compaction and `/context` shows usage.

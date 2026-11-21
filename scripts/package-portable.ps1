@@ -107,11 +107,13 @@ try {
         -Destination (Join-Path $stage 'THIRD_PARTY_NLOHMANN_JSON_LICENSE.txt')
     Copy-Item -LiteralPath (Join-Path $root 'third_party\md4c\LICENSE.md') `
         -Destination (Join-Path $stage 'THIRD_PARTY_MD4C_LICENSE.txt')
+    Copy-Item -LiteralPath (Join-Path $root 'third_party\stb\LICENSE') `
+        -Destination (Join-Path $stage 'THIRD_PARTY_STB_LICENSE.txt')
 
     [IO.Compression.ZipFile]::CreateFromDirectory($stage, $temporaryZip, [IO.Compression.CompressionLevel]::Optimal, $false)
     $archive = [IO.Compression.ZipFile]::OpenRead($temporaryZip)
     try {
-        if ($archive.Entries.Count -ne ($binaries.Count + $additionalFiles.Count + $documents.Count + 3)) {
+        if ($archive.Entries.Count -ne ($binaries.Count + $additionalFiles.Count + $documents.Count + 4)) {
             throw 'Unexpected release archive contents.'
         }
         foreach ($entry in $archive.Entries) {
