@@ -241,7 +241,10 @@ void ClearLiveTurn(SessionState& state) {
 }
 
 bool ApplyLiveEvent(SessionState& state, const std::string& type, const nlohmann::json& payload) {
-    if (type == "turn.started") RecordTurnStarted(state, payload);
+    if (type == "session.origin") {
+        if (payload.is_object() && payload.contains("kind") && payload["kind"].is_string())
+            state.metadata["origin"] = payload["kind"];
+    } else if (type == "turn.started") RecordTurnStarted(state, payload);
     else if (type == "turn.text_delta") RecordLiveDelta(state, "text", payload);
     else if (type == "turn.reasoning_delta") RecordLiveDelta(state, "reasoning", payload);
     else if (type == "turn.phase") RecordLivePhase(state, payload);

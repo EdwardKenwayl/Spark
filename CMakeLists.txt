@@ -192,7 +192,7 @@ else()
     target_sources(spark_core PRIVATE src/platform/child_process_posix.cpp)
 endif()
 
-add_library(spark_transcript STATIC src/gui/transcript.cpp src/gui/session_loader.cpp
+add_library(spark_transcript STATIC src/gui/transcript.cpp src/gui/session_loader.cpp src/gui/completion_notice.cpp
     src/gui/native/history_loader.cpp)
 target_link_libraries(spark_transcript PUBLIC spark_core)
 add_library(spark_native_runtime STATIC src/gui/native/runtime.cpp)
@@ -200,6 +200,10 @@ target_link_libraries(spark_native_runtime PUBLIC spark_transcript)
 if(SPARK_BUILD_TESTS)
     add_executable(spark_native_runtime_tests tests/native_runtime_tests.cpp)
     target_link_libraries(spark_native_runtime_tests PRIVATE spark_native_runtime)
+    add_executable(spark_completion_notice_tests tests/completion_notice_tests.cpp)
+    target_link_libraries(spark_completion_notice_tests PRIVATE spark_transcript)
+    add_test(NAME spark_completion_notice_tests COMMAND spark_completion_notice_tests)
+    set_tests_properties(spark_completion_notice_tests PROPERTIES TIMEOUT 10)
     if(WIN32)
         target_link_libraries(spark_native_runtime_tests PRIVATE ws2_32)
     endif()
@@ -220,6 +224,8 @@ if(WIN32)
 add_library(spark_gui STATIC
     src/gui/localization.cpp
     src/gui/app_shell.cpp
+    src/gui/app_notifications.cpp
+    src/gui/completion_notification.cpp
     src/gui/chat_view.cpp
     src/gui/settings_window.cpp
     src/gui/settings_providers.cpp
@@ -273,6 +279,7 @@ else()
         src/gui/native/chat_usage.cpp
         src/gui/native/controls.cpp
         src/gui/native/app.cpp
+        src/gui/native/completion_notification.cpp
         src/gui/native/sidebar.cpp
         src/gui/native/sidebar_layout.cpp
         src/gui/native/shell_layout.cpp

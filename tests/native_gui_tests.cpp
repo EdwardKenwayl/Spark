@@ -14,6 +14,7 @@
 #include "gui/native/approval_prompt.h"
 #include "gui/native/summary_panel.h"
 #include "gui/native/summary_popup.h"
+#include "gui/native/completion_notification.h"
 #include "gui/history_window.h"
 #include "platform/clock.h"
 
@@ -119,6 +120,12 @@ struct NativeGuiTestAccess {
     }
     static NativeChatSurface* SideSurface(NativeFrame& frame) { return frame.side_chat_; }
     static size_t SideFirst(NativeFrame& frame) { return frame.side_transcript_->HistoryFirstMessage(); }
+    static NativeCompletionNotifications& Notifications(NativeFrame& frame) { return *frame.notifications_; }
+    static const std::string& NotificationPath(NativeFrame& frame) { return frame.active_; }
+    static void SeedNotification(NativeFrame& frame, const std::string& path) {
+        frame.views_[path] = std::make_unique<NativeFrame::View>();
+        frame.views_[path]->journal.MutableState().title = path;
+    }
 };
 }  // namespace spark
 namespace {
@@ -142,6 +149,110 @@ void Events() {
         return;
     }
     for (int count = 0; count < 5; ++count) { wxYield(); wxMilliSleep(20); }
+}
+void CheckCompletionNotifications(spark::AppConfig config) {
+    using namespace spark;
+    Check(!NativeCompletionNotifications::ShouldNotify(true, false, true),
+          "foreground completion suppresses both the card and its bell");
+    Check(NativeCompletionNotifications::ShouldNotify(false, false, true) &&
+              NativeCompletionNotifications::ShouldNotify(true, true, true) &&
+              NativeCompletionNotifications::ShouldNotify(true, false, false),
+          "hidden, minimized and inactive main windows permit completion notifications");
+    Check(NativeCompletionNotifications::IsUserSession(
+              JoinPath(config.storage.data_dir, "sessions/subagent-named-user.jsonl"), config.storage.data_dir) &&
+              !NativeCompletionNotifications::IsUserSession(
+                  JoinPath(config.storage.data_dir, "subagents/child-id/sessions/session.jsonl"),
+                  config.storage.data_dir),
+          "native completion eligibility follows the actual journal storage root, not conversation names");
+    SessionState state;
+    state.title = "Native notification";
+    ChatMessage user; user.role = MessageRole::User; user.content = "fixture question";
+    ChatMessage tool; tool.role = MessageRole::Tool; tool.content = "private tool result";
+    ChatMessage reply; reply.role = MessageRole::Assistant;
+    reply.reasoning_text = "private reasoning";
+    reply.content = "**Finished** native work.";
+    state.messages = {user, tool, reply};
+    const auto notice = MakeCompletionNotice("notification-first", state);
+    Check(notice && notice->title == L"Native notification" && notice->body == L"Finished native work.",
+          "native notices use the session title and final reply without reasoning or tool output");
+    if (!notice) return;
+    state.metadata["paused_turn"] = nlohmann::json::object();
+    Check(!MakeCompletionNotice(notice->path, state), "paused native turns produce no notice");
+    state.metadata.erase("paused_turn");
+    state.messages.back().content.clear();
+    Check(!MakeCompletionNotice(notice->path, state), "empty final replies produce no native notice");
+
+    auto* frame = new NativeFrame(std::move(config));
+    NativeGuiTestAccess::SeedNotification(*frame, notice->path);
+    NativeGuiTestAccess::SeedNotification(*frame, "notification-second");
+    auto& notifications = NativeGuiTestAccess::Notifications(*frame);
+    auto* other = new wxFrame(nullptr, wxID_ANY, "Notification focus fixture");
+    other->Show(); other->Raise(); other->SetFocus(); Events();
+    wxWeakRef<wxWindow> focused(wxWindow::FindFocus());
+    const auto cards = [&] {
+        std::vector<wxFrame*> result;
+        for (auto* child : wxTopLevelWindows) {
+            auto* card = dynamic_cast<wxFrame*>(child);
+            if (card && card->GetName() == "spark.completion.notification" && card->IsShown())
+                result.push_back(card);
+        }
+        return result;
+    };
+    const auto click = [](wxWindow* card, wxPoint point) {
+        for (const auto type : {wxEVT_LEFT_DOWN, wxEVT_LEFT_UP}) {
+            wxMouseEvent event(type);
+            event.SetEventObject(card); event.SetPosition(point);
+            card->GetEventHandler()->ProcessEvent(event);
+        }
+    };
+    Check(notifications.Show(*notice), "background native completion opens a card");
+    CompletionNotice second{"notification-second", L"Second task", L"Second final reply"};
+    Check(notifications.Show(second), "concurrent native completion opens an independent card");
+    Check(notifications.Show({"dismiss-only", L"Close only", L"Do not navigate"}),
+          "a third native completion fits in the stack");
+    Events();
+    auto visible = cards();
+    Check(visible.size() == 3, "native completion stack displays three cards");
+    Check(!focused || wxWindow::FindFocus() == focused.get(),
+          "showing native completion cards preserves keyboard focus");
+    if (visible.size() == 3) {
+        Check(visible[0]->GetTitle() == wxString(notice->title) &&
+                  visible[0]->GetHelpText() == wxString(notice->body),
+              "native card retains the title and final reply it paints");
+        Check(!visible[0]->AcceptsFocus() && !visible[0]->AcceptsFocusFromKeyboard(),
+              "native completion cards do not accept focus");
+        Check(!visible[0]->GetParent() && visible[0]->IsShownOnScreen(),
+              "native completion cards remain visible with a hidden main window");
+        const auto previous = NativeGuiTestAccess::NotificationPath(*frame);
+        click(visible[2], wxPoint(visible[2]->GetClientSize().x - visible[2]->FromDIP(22),
+                                 visible[2]->FromDIP(22)));
+        Check(NativeGuiTestAccess::NotificationPath(*frame) == previous && !frame->IsShown(),
+              "native card X dismisses without navigating or restoring the main window");
+        click(visible[1], visible[1]->FromDIP(wxPoint(30, 65)));
+        Check(frame->IsShown() && NativeGuiTestAccess::NotificationPath(*frame) == second.path,
+              "second completion restores the main window and opens its own conversation");
+        click(visible[0], visible[0]->FromDIP(wxPoint(30, 65)));
+        Check(NativeGuiTestAccess::NotificationPath(*frame) == notice->path,
+              "first completion keeps its target after another completion was activated");
+    }
+    frame->Hide(); Events();
+    for (int index = 0; index < 4; ++index)
+        notifications.Show({"bounded-" + std::to_string(index), L"Bounded task", L"Final reply"});
+    Events(); visible = cards();
+    Check(visible.size() == 3, "native completion overflow dismisses the oldest card");
+    if (!visible.empty()) {
+        wxTimer expiry(visible.back());
+        wxTimerEvent event(expiry);
+        visible.back()->GetEventHandler()->ProcessEvent(event);
+        Check(cards().size() == 2, "native completion expiry dismisses without navigation");
+    }
+    notifications.DismissAll(); Events();
+    Check(cards().empty(), "native completion cleanup closes the whole stack");
+    notifications.Show(*notice); Events();
+    wxWeakRef<wxFrame> pending(cards().empty() ? nullptr : cards().front());
+    frame->Destroy(); Events();
+    Check(!pending, "destroying the native owner releases outstanding cards and timer callbacks");
+    other->Destroy(); Events();
 }
 void CheckNativeHistoryActivity(spark::AppConfig config) {
     using namespace spark;
@@ -453,9 +564,11 @@ void Capture(wxWindow* window, const spark::fs::path& path, wxSize minimum = wxS
 int main(int argc, char** argv) {
     using namespace spark;
     bool summary_only = false, history_only = false;
+    bool notifications_only = false;
     for (int index = 1; index < argc; ++index) {
         if (std::string(argv[index]) == "--summary") summary_only = true;
         if (std::string(argv[index]) == "--history-activity") history_only = true;
+        if (std::string(argv[index]) == "--notifications") notifications_only = true;
     }
     wxSetAssertHandler([](const wxString&, int line, const wxString& function,
                          const wxString& condition, const wxString& message) {
@@ -465,10 +578,10 @@ int main(int argc, char** argv) {
     if (!wxEntryStart(argc, argv) || !wxTheApp->CallOnInit()) return 2;
     const auto temporary = fs::temp_directory_path() / NativePath("spark-gui-" + NewSessionId());
     fs::create_directories(temporary);
-    const auto output_root = !summary_only && !history_only && argc > 1 ?
+    const auto output_root = !summary_only && !history_only && !notifications_only && argc > 1 ?
         NativePath(AbsolutePath(argv[1])) : temporary / "screenshots";
     const auto output = output_root / NativePath("run-" + NewSessionId());
-    if (!summary_only && !history_only) {
+    if (!summary_only && !history_only && !notifications_only) {
         fs::create_directories(output);
         std::cout << "Screenshot run: " << PathToUtf8(output) << std::endl;
     }
@@ -491,6 +604,15 @@ int main(int argc, char** argv) {
     }
     config.providers.push_back(std::move(provider));
     config.active = {"fixture", "test-model-0", "medium"};
+    if (notifications_only) {
+        CheckCompletionNotifications(config);
+        wxTheApp->OnExit();
+        wxEntryCleanup();
+        std::error_code error;
+        fs::remove_all(temporary, error);
+        std::cout << "Native notification regression failures: " << failures << std::endl;
+        return failures ? 1 : 0;
+    }
     if (history_only) {
         history_trace = true;
         std::promise<void> completed;

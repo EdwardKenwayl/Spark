@@ -706,5 +706,17 @@
     "es-ES": "Cargando mensajes anteriores…",
     "pt-BR": "Carregando mensagens anteriores…",
     "ru-RU": "Загрузка предыдущих сообщений…"
+  },
+  "Task completed": {
+    "zh-CN": "任务已完成",
+    "en-US": "Task completed",
+    "zh-TW": "任務已完成",
+    "ja-JP": "タスクが完了しました",
+    "ko-KR": "작업 완료",
+    "de-DE": "Aufgabe abgeschlossen",
+    "fr-FR": "Tâche terminée",
+    "es-ES": "Tarea completada",
+    "pt-BR": "Tarefa concluída",
+    "ru-RU": "Задача завершена"
   }
 }

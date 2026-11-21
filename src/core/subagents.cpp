@@ -280,6 +280,8 @@ Result<std::string> SubAgentManager::Spawn(const AppConfig& config, McpManager* 
     const auto opened = run->journal.Open(root, workspace);
     if (!opened.ok) return Result<std::string>::Failure("could not create child session: " + opened.error);
     run->info.session_path = run->journal.Path();
+    const auto origin = run->journal.Append("session.origin", {{"kind", "subagent"}});
+    if (!origin.ok) return Result<std::string>::Failure(origin.error);
 
     {
         std::lock_guard<std::mutex> lock(mutex_);

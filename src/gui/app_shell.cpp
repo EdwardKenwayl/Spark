@@ -4378,6 +4378,10 @@ void AppWindow::FinishTurn(const std::shared_ptr<TurnRuntime>& runtime, bool suc
     } else {
         ClearPausedTurn(runtime->journal);
     }
+    if (success && reason.empty() && runtime->timed_turn && !runtime->cancelled.load() &&
+        runtime->pending_archive_path.empty() && runtime->pending_delete_path.empty()) {
+        NotifyTurnCompletion(runtime->path, runtime->journal.State());
+    }
 
     if (attached && chat_view_ != nullptr) {
         FinishActiveReasoning(false);
@@ -6752,6 +6756,7 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             ShowWindow(window_, SW_HIDE);
             return 0;
         case WM_DESTROY:
+            completion_notifications_.Close();
             SaveWindowsWindowGeometry(window_, DataDirectory());
             session_loader_.Stop();
             session_replay_step_ = {};

@@ -1131,6 +1131,10 @@ void TestExternalApprovalQueue() {
         const auto created = manager.Create("read both files", "approval queue", "", "", "", workspace, "full_access");
         Check(created.ok, "parallel approval session starts");
         if (created.ok) {
+            spark::SessionJournal external_journal;
+            Check(external_journal.Resume(created.value.session_path).ok &&
+                      external_journal.State().metadata.value("origin", "") == "mcp",
+                  "MCP origin is durable before the session is published");
             const auto first = manager.Wait(created.value.id, 2000);
             Check(first.ok && first.value.awaiting_approval, "first parallel request waits for approval");
             if (first.ok && first.value.awaiting_approval) {
@@ -1640,6 +1644,12 @@ void TestSubAgentManagerRun() {
     const auto children = manager.List("parent-session");
     Check(children.size() == 1 && children[0].session_path.find("subagents") != std::string::npos,
           "subagent owns an independent journal");
+    if (children.size() == 1) {
+        spark::SessionJournal child_journal;
+        Check(child_journal.Resume(children[0].session_path).ok &&
+                  child_journal.State().metadata.value("origin", "") == "subagent",
+              "child origin is durable for silent GUI completion");
+    }
     {
         std::lock_guard<std::mutex> lock(callback_mutex);
         Check(created_ids.size() == 1 && created_ids[0] == spawned.value,

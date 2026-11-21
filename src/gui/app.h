@@ -7,6 +7,7 @@
 #include "gui/session_loader.h"
 #include "gui/summary_view.h"
 #include "gui/add_menu.h"
+#include "gui/completion_notification.h"
 #include "platform/smart_snapshot.h"
 
 #include <atomic>
@@ -349,6 +350,8 @@ private:
     void BeginActivityAnimation();
     bool RefreshExternalRuns();
     void PollExternalRuns();
+    void NotifyTurnCompletion(const std::string& path, const SessionState& state);
+    void OpenCompletedConversation(const std::string& path);
     bool RouteMouseWheelToChat(WPARAM wparam, LPARAM lparam);
     void StopActivityAnimation();
     void TickActivity();
@@ -425,6 +428,7 @@ private:
     HBRUSH panel_brush_ = nullptr;
     HBRUSH input_brush_ = nullptr;
     HICON tray_icon_ = nullptr;
+    CompletionNotifications completion_notifications_;
     AppConfig config_;
     SessionJournal journal_;
     SessionLoader session_loader_;

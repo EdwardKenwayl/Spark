@@ -601,6 +601,8 @@ Result<ExternalAgentInfo> ExternalAgentManager::Create(const std::string& task, 
     run->info.permission_mode = NormalizePermissionMode(permission_mode);
     run->info.scope = ResolveExternalAgentScope(config_, config_path_, target_workspace);
     run->info.started_at = UnixTimeSeconds();
+    const auto origin = run->journal.Append("session.origin", {{"kind", "mcp"}});
+    if (!origin.ok) return Result<ExternalAgentInfo>::Failure(origin.error);
     run->journal.Append("session.title", {{"title", run->info.name}});
     run->journal.Append("session.scope", {{"scope", run->info.scope}});
     run->journal.Append("session.permission", {{"mode", run->info.permission_mode}});

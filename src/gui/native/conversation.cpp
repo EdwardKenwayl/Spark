@@ -61,7 +61,11 @@ bool LiveProcess(uint64_t id) {
 }  // namespace
 
 bool NativeFrame::Pause() {
-    if (runtime_.Running(active_)) { runtime_.Pause(active_); return true; }
+    if (runtime_.Running(active_)) {
+        cancelled_completion_paths_.insert(active_);
+        runtime_.Pause(active_);
+        return true;
+    }
     const auto remote = external_.find(active_);
     if (remote != external_.end()) {
         const nlohmann::json command = {{"action", "cancel"}, {"id", remote->second.value("id", std::string{})},
@@ -149,6 +153,7 @@ void NativeFrame::Send() {
     }
     const auto started = runtime_.Start(run_config, view->journal, message, resume, images, options);
     if (!started.ok) { Error(started.error); return; }
+    cancelled_completion_paths_.erase(active_);
     if (!resume) {
         Add(view->transcript, ChatItemKind::User, message);
         view->status = Add(view->transcript, ChatItemKind::TurnStatus);
@@ -234,6 +239,7 @@ void NativeFrame::Consume(const NativeEvent& event) {
         if (event.phase == AgentPhase::WaitingModel && !view.transcript.NeedsAnimation())
             view.status = Add(view.transcript, ChatItemKind::TurnStatus);
     } else if (event.kind == NativeEvent::Kind::Done) {
+        const bool cancelled = cancelled_completion_paths_.erase(event.path) != 0;
         if (event.path == active_) RefreshSummary();
         const auto completed = runtime_.FinishedJournal(event.path);
         if (completed.ok) {
@@ -271,6 +277,11 @@ void NativeFrame::Consume(const NativeEvent& event) {
                 view.context = row.context_tokens;
                 view.limit = row.context_limit_tokens;
                 view.transcript.Apply({TranscriptEventKind::Add, kNoChatItem, row}, Now());
+            }
+            if (notifications_ && event.success && !paused && !cancelled &&
+                NativeCompletionNotifications::IsUserSession(event.path, config_.storage.data_dir)) {
+                if (const auto notice = MakeCompletionNotice(event.path, view.journal.State()))
+                    notifications_->Show(*notice);
             }
         }
         RefreshSidebar();

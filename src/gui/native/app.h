@@ -10,6 +10,7 @@
 #include "gui/native/thumbnail_cache.h"
 #include "gui/session_loader.h"
 #include "gui/native/history_loader.h"
+#include "gui/native/completion_notification.h"
 
 #include <wx/choice.h>
 #include <wx/button.h>
@@ -112,6 +113,7 @@ private:
     NativeThumbnailCache summary_thumbnails_;
     wxTimer timer_;
     std::unique_ptr<Tray> tray_;
+    std::unique_ptr<NativeCompletionNotifications> notifications_;
     wxPanel *shell_ = nullptr, *sidebar_ = nullptr, *chat_page_ = nullptr;
     NativeAttachmentStrip* attachment_panel_ = nullptr;
     NativeSummaryPanel* side_panel_ = nullptr;
@@ -147,6 +149,7 @@ private:
     std::string active_, project_workspace_, project_name_, goal_, side_path_;
     std::vector<std::string> attachments_;
     std::map<std::string, nlohmann::json> external_;
+    std::set<std::string> cancelled_completion_paths_;
     std::set<std::string> external_approvals_;
     std::map<std::string, std::pair<uintmax_t, spark::fs::file_time_type>> stamps_;
     std::map<std::string, std::pair<spark::fs::file_time_type, TranscriptHistory>> summaries_;

@@ -717,6 +717,76 @@ struct AppWindowSessionLoadTest {
         app.ClearChatView();
     }
 
+    static void TestCompletionNotifications(Fixture& fixture) {
+        auto& app = fixture.app;
+        const auto cards = [] {
+            std::vector<HWND> windows;
+            EnumThreadWindows(GetCurrentThreadId(), [](HWND window, LPARAM parameter) -> BOOL {
+                wchar_t cls[80]{};
+                GetClassNameW(window, cls, 80);
+                if (std::wstring(cls) == L"SparkCompletionNotification")
+                    reinterpret_cast<std::vector<HWND>*>(parameter)->push_back(window);
+                return TRUE;
+            }, reinterpret_cast<LPARAM>(&windows));
+            return windows;
+        };
+        for (HWND window : cards()) SendMessageW(window, WM_CLOSE, 0, 0);
+        const auto first = MakeJournal(fixture.directory.Utf8(), "Notify A", 1);
+        const auto second = MakeJournal(fixture.directory.Utf8(), "Notify B", 1);
+        const auto finish = [&](const JournalFixture& journal, bool success, const std::string& reason,
+                                const char* origin = "") {
+            auto runtime = std::make_shared<AppWindow::TurnRuntime>();
+            runtime->path = journal.path;
+            runtime->session_key = NormalizePathForComparison(journal.path);
+            runtime->config = app.config_;
+            runtime->timed_turn = true;
+            runtime->started_tick = GetTickCount64();
+            runtime->journal.Resume(journal.path);
+            if (*origin) runtime->journal.Append("session.origin", {{"kind", origin}});
+            app.active_turns_[runtime->session_key] = runtime;
+            app.FinishTurn(runtime, success, reason);
+        };
+        ShowWindow(app.window_, SW_HIDE);
+        const HWND foreground = GetForegroundWindow();
+        finish(first, true, {});
+        finish(second, true, {});
+        auto windows = cards();
+        std::cout << "notification_probe background_cards=" << windows.size() << '\n';
+        Check(windows.size() == 2, "two background completions create two independently routed notices");
+        Check(GetForegroundWindow() == foreground, "completion notices do not steal focus");
+        finish(second, false, {});
+        finish(second, true, "cancelled");
+        finish(second, true, {}, "mcp");
+        finish(second, true, {}, "subagent");
+        Check(cards().size() == windows.size(), "failed, cancelled, MCP and child turns do not announce completion");
+        HWND first_card = nullptr, second_card = nullptr;
+        for (HWND window : windows) {
+            wchar_t text[600]{};
+            GetWindowTextW(window, text, 600);
+            const std::wstring label = text;
+            if (label.find(L"Notify A answer") != std::wstring::npos) first_card = window;
+            if (label.find(L"Notify B answer") != std::wstring::npos) second_card = window;
+        }
+        Check(first_card != nullptr && second_card != nullptr, "notification preview contains each final reply");
+        if (first_card != nullptr) {
+            SendMessageW(first_card, WM_LBUTTONUP, 0, MAKELPARAM(20, 60));
+            Check(app.session_load_path_ == first.path && IsWindowVisible(app.window_),
+                  "clicking the first notice restores the app and queues its own conversation");
+            WaitUntil([&] { return !app.SessionLoading(); }, "notification target finishes normal session loading");
+        }
+        if (second_card != nullptr) {
+            RECT client{}; GetClientRect(second_card, &client);
+            SendMessageW(second_card, WM_LBUTTONUP, 0, MAKELPARAM(client.right - 8, 12));
+            Check(!IsWindow(second_card) && app.journal_.Path() != second.path,
+                  "closing another notice does not navigate to that conversation");
+        }
+        // The foreground check is tested without requiring focus permission from
+        // a locked desktop or taking focus from the user running the suite.
+        for (HWND window : cards()) SendMessageW(window, WM_TIMER, 1, 0);
+        Check(cards().empty(), "notification expiry removes its window");
+        ShowWindow(app.window_, SW_HIDE);
+    }
+
     static int Run() {
         deadline = GetTickCount64() + 12000;
         INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_STANDARD_CLASSES};
@@ -735,6 +805,7 @@ struct AppWindowSessionLoadTest {
                 ChatViewLoadTest::Run(fixture.app.window_);
                 TestSwitchPainting(fixture.app);
                 RunIntegration(fixture, a, b);
+                TestCompletionNotifications(fixture);
             }
         } catch (const std::exception& exception) {
             ++failures;

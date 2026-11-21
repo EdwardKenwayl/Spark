@@ -45,6 +45,8 @@ API keys can be plaintext or environment-variable references.
 
 ## Features
 
+- Background completion cards preview the final reply and open its chat when clicked, with a completion sound. MCP sessions and subagents stay silent.
+
 - OpenAI Responses, Chat Completions and Anthropic Messages, with streaming,
   multiple providers and per-model settings.
 - Concurrent chats, projects, drafts, interruption and continuation, archives

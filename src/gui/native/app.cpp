@@ -70,6 +70,12 @@ NativeFrame::NativeFrame(AppConfig config)
     CreateChat();
     LoadProjects();
     NewConversation();
+    notifications_ = std::make_unique<NativeCompletionNotifications>(this, [this](const std::string& path) {
+        RestoreWindow();
+        if (settings_) settings_->Hide();
+        shell_->Show(); Layout();
+        OpenConversation(path);
+    });
     ApplyConfig(config_);
     RefreshSidebar();
     tray_ = std::make_unique<Tray>(this);
@@ -96,7 +102,10 @@ NativeFrame::NativeFrame(AppConfig config)
     });
     timer_.Start(50);
 }
-NativeFrame::~NativeFrame() { timer_.Stop(); loader_.Stop(); side_loader_.Stop(); history_loader_.Stop(); runtime_.Stop(); }
+NativeFrame::~NativeFrame() {
+    notifications_.reset();
+    timer_.Stop(); loader_.Stop(); side_loader_.Stop(); history_loader_.Stop(); runtime_.Stop();
+}
 
 void NativeFrame::CreateChat() {
     shell_ = new wxPanel(this);
@@ -245,6 +254,7 @@ void NativeFrame::ApplyConfig(const AppConfig& config) {
     const bool dark = config_.ui.theme == "dark" ||
         (config_.ui.theme != "light" && wxSystemSettings::GetAppearance().IsDark());
     const auto palette = NativeColors(dark);
+    if (notifications_) notifications_->SetDark(dark);
     ApplyNativeColors(shell_, dark);
     sidebar_->SetBackgroundColour(palette.sidebar);
     if (auto* divider = wxWindow::FindWindowByName("spark.sidebar.divider", shell_))
@@ -329,6 +339,7 @@ void NativeFrame::OnClose(wxCloseEvent& event) {
         return;
     }
     SaveDraft();
+    notifications_.reset();
     timer_.Stop();
     loader_.Stop();
     side_loader_.Stop();
