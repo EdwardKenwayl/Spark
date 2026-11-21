@@ -147,6 +147,7 @@ private:
     HFONT time_font_ = nullptr;
     std::vector<ChatItem> items_;
     ChatImageCache image_cache_;
+    bool image_timer_armed_ = false;
     std::wstring link_base_directory_;
     Action toggle_tool_;
     Action toggle_group_;

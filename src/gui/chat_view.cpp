@@ -1640,7 +1640,10 @@ void ChatView::PreserveHistoryAnchor(const std::string& text, uint64_t timestamp
 void ChatView::Clear() {
     CancelRestore();
     image_cache_.Clear();
-    if (window_ != nullptr && !image_cache_.Pending()) KillTimer(window_, kImageRenderTimer);
+    if (window_ != nullptr && !image_cache_.Pending()) {
+        KillTimer(window_, kImageRenderTimer);
+        image_timer_armed_ = false;
+    }
     if (window_ != nullptr) KillTimer(window_, kStreamRenderTimer);
     stream_render_pending_ = false;
     items_.clear();
@@ -2674,7 +2677,10 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
         case WM_TIMER:
             if (wparam == kImageRenderTimer) {
                 if (image_cache_.Poll()) InvalidateRect(window_, nullptr, FALSE);
-                if (!image_cache_.Pending()) KillTimer(window_, kImageRenderTimer);
+                if (!image_cache_.Pending()) {
+                    KillTimer(window_, kImageRenderTimer);
+                    image_timer_armed_ = false;
+                }
                 return 0;
             }
             if (restore_spinner_timer_ != 0 && wparam == restore_spinner_timer_) {
@@ -2782,7 +2788,8 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                         DrawRoundPanel(buffer, image.first, kUserBubble, kUserBubble, 8);
                         image_cache_.Paint(buffer, image.first, image.second);
                     }
-                    if (image_cache_.Pending()) SetTimer(window_, kImageRenderTimer, 40, nullptr);
+                    if (image_cache_.Pending() && !image_timer_armed_)
+                        image_timer_armed_ = SetTimer(window_, kImageRenderTimer, 40, nullptr) != 0;
                     DrawRoundPanel(buffer, layout.bubble, kUserBubble, kUserBubble, 12);
                     DrawWrappedText(buffer, text_font_, Utf8ToWide(item.text), layout.text, kText);
                 } else if (item.kind == ChatItemKind::UsageStats) {
@@ -3158,6 +3165,7 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             CancelRestore();
             KillTimer(window_, kStreamRenderTimer);
             KillTimer(window_, kImageRenderTimer);
+            image_timer_armed_ = false;
             image_cache_.Drain();
             stream_render_pending_ = false;
             ReleaseBackBuffer();

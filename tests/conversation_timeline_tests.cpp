@@ -33,6 +33,12 @@ template <class T> size_t AddImageUser(T& view, const std::string&, long) {
 }
 
 struct ChatViewLoadTest {
+    template <class T>
+    static auto PollingSettled(const T& view, int) -> decltype(view.image_cache_.Pending(), bool{}) {
+        return !view.image_cache_.Pending();
+    }
+    template <class T> static bool PollingSettled(const T&, long) { return false; }
+
     static void CheckSentImage() {
         Gdiplus::GdiplusStartupInput input;
         ULONG_PTR token = 0;
@@ -58,6 +64,19 @@ struct ChatViewLoadTest {
             HDC screen = GetDC(nullptr), dc = CreateCompatibleDC(screen);
             HBITMAP bitmap = CreateCompatibleBitmap(screen, 640, 480);
             auto old = SelectObject(dc, bitmap);
+            // Streaming can repaint faster than the thumbnail polling interval.
+            // Paint must not reset that timer's deadline on each frame.
+            const DWORD repaint_start = GetTickCount();
+            while (GetTickCount() - repaint_start < 400) {
+                MSG message{};
+                while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+                SendMessageW(view.hwnd(), WM_PRINTCLIENT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT);
+                Sleep(5);
+            }
+            Check(PollingSettled(view, 0), "continuous repaint does not starve thumbnail polling");
             bool painted = false;
             const DWORD start = GetTickCount();
             while (GetTickCount() - start < 2000 && !painted) {
