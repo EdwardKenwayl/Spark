@@ -240,6 +240,14 @@ void NativeFrame::Consume(const NativeEvent& event) {
     } else if (event.kind == NativeEvent::Kind::Phase) {
         if (event.phase == AgentPhase::WaitingModel && !view.transcript.NeedsAnimation())
             view.status = Add(view.transcript, ChatItemKind::TurnStatus);
+        if (event.phase == AgentPhase::Compacting)
+            HideReasoning(view.transcript, view.reasoning);
+        if (view.status != kNoChatItem) {
+            ChatItem status;
+            if (event.phase == AgentPhase::Compacting)
+                status.text = WideToUtf8(i18n::Text(L"Compacting context..."));
+            view.transcript.Apply({TranscriptEventKind::SetTurnStatus, view.status, status}, Now());
+        }
     } else if (event.kind == NativeEvent::Kind::Done) {
         const bool cancelled = cancelled_completion_paths_.erase(event.path) != 0;
         if (event.path == active_) RefreshSummary();

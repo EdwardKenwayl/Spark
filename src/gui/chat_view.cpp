@@ -4,6 +4,7 @@
 #include "gui/localization.h"
 #include "gui/theme.h"
 #include "gui/chat_timeline.h"
+#include "gui/chat_ui_helpers.h"
 #include "platform/clock.h"
 #include "render/markdown.h"
 
@@ -1095,19 +1096,20 @@ ResolvedMarkdownLink ResolveMarkdownLink(const std::wstring& raw_target, const s
     if (StartsWithInsensitive(raw_target, L"http://") || StartsWithInsensitive(raw_target, L"https://")) {
         return {MarkdownLinkKind::Web, raw_target};
     }
-    if (StartsWithInsensitive(raw_target, L"file://")) {
-        std::wstring path = FileUriToPath(raw_target);
+    const auto file_target = ui::FileLinkTarget(raw_target);
+    if (StartsWithInsensitive(file_target, L"file://")) {
+        std::wstring path = FileUriToPath(file_target);
         if (path.empty()) return {};
         if (!IsAbsoluteWindowsPath(path) && !base_directory.empty()) {
             path = Utf8ToWide(AbsolutePath(WideToUtf8(path), WideToUtf8(base_directory)));
         }
         return {MarkdownLinkKind::File, std::move(path)};
     }
-    if (raw_target.empty() || raw_target[0] == L'#') return {};
+    if (file_target.empty() || file_target[0] == L'#') return {};
 
-    std::wstring path = raw_target;
+    std::wstring path = file_target;
     std::replace(path.begin(), path.end(), L'/', L'\\');
-    if (!IsAbsoluteWindowsPath(path) && raw_target.find(L':') != std::wstring::npos) return {};
+    if (!IsAbsoluteWindowsPath(path) && file_target.find(L':') != std::wstring::npos) return {};
     if (!IsAbsoluteWindowsPath(path) && !base_directory.empty()) {
         path = Utf8ToWide(AbsolutePath(WideToUtf8(path), WideToUtf8(base_directory)));
     }
@@ -1166,8 +1168,7 @@ void ShowMarkdownLinkMenu(HWND owner, const std::wstring& raw_target, const std:
     } else if (command == kCopyLink) {
         CopyTextToClipboard(owner, link.target);
     } else if (command == kShowFile && link.kind == MarkdownLinkKind::File) {
-        const std::wstring arguments = L"/select,\"" + link.target + L"\"";
-        ShellExecuteW(owner, L"open", L"explorer.exe", arguments.c_str(), nullptr, SW_SHOWNORMAL);
+        ui::RevealFileInManager(owner, link.target);
     }
 }
 
@@ -1295,7 +1296,7 @@ ItemLayout LayoutItem(HDC device, const std::vector<ChatItem>& items, const std:
             top += static_cast<int>((item.image_paths.size() + columns - 1) / columns) * (tile_height + gap);
         }
         const int text_width = std::max(80, bubble_max - kUserPaddingX * 2);
-        const std::wstring text = Utf8ToWide(item.text);
+        const std::wstring text = Utf8ToWide(ui::UserMessageText(item.text));
         const int text_height = std::max(20, MeasureTextHeight(device, fonts.text, text, text_width));
         const int measured_width = std::max(80, std::min(bubble_max, MeasureTextWidth(device, fonts.text, text) + 2));
         const int bubble_width = std::min(bubble_max, std::max(120, measured_width + kUserPaddingX * 2));
@@ -1908,6 +1909,16 @@ void ChatView::FinishAssistant(size_t index, uint64_t timestamp) {
     }
     rail_dirty_ = true;
     ScrollToBottom();
+}
+
+void ChatView::SetTurnStatusLabel(size_t index, const std::string& text) {
+    if (index >= items_.size()) return;
+    auto& item = items_[index];
+    if (item.kind != ChatItemKind::TurnStatus || item.finished || item.text == text) return;
+    item.text = text;
+    ++item.revision;
+    // The status is a single line: repaint without changing layout or scroll position.
+    if (window_ != nullptr) InvalidateRect(window_, nullptr, FALSE);
 }
 
 void ChatView::FinishTurnStatus(size_t index, uint64_t elapsed_ms, uint64_t timestamp) {
@@ -2791,7 +2802,7 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                     if (image_cache_.Pending() && !image_timer_armed_)
                         image_timer_armed_ = SetTimer(window_, kImageRenderTimer, 40, nullptr) != 0;
                     DrawRoundPanel(buffer, layout.bubble, kUserBubble, kUserBubble, 12);
-                    DrawWrappedText(buffer, text_font_, Utf8ToWide(item.text), layout.text, kText);
+                    DrawWrappedText(buffer, text_font_, Utf8ToWide(ui::UserMessageText(item.text)), layout.text, kText);
                 } else if (item.kind == ChatItemKind::UsageStats) {
                     DrawRoundPanel(buffer, layout.bubble, kBackground, kSuccess, 8);
                     DrawWrappedText(buffer, text_font_, FormatUsageStats(item), layout.text, kMuted);
@@ -2809,6 +2820,7 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                                            : (item.finished ? L"Processed {elapsed}" : L"Processing {elapsed}");
                         label = i18n::Format(msgid, {{L"elapsed", FormatTurnDuration(elapsed)}});
                     }
+                    if (!item.finished && !item.text.empty()) label = Utf8ToWide(item.text);
                     RECT status_rect = layout.text;
                     DrawTextW(buffer, label.c_str(), -1, &status_rect,
                               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);

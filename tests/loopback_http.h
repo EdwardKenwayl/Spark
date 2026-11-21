@@ -97,8 +97,9 @@ public:
 
     using Handler = std::function<void(Connection&, size_t attempt)>;
 
-    explicit LoopbackHttpServer(Handler handler, size_t max_requests = 8)
-        : handler_(std::move(handler)), max_requests_(max_requests) {
+    explicit LoopbackHttpServer(Handler handler, size_t max_requests = 8,
+                               size_t max_request_bytes = 128 * 1024)
+        : handler_(std::move(handler)), max_requests_(max_requests), max_request_bytes_(max_request_bytes) {
 #ifdef _WIN32
         WSADATA data{};
         if (WSAStartup(MAKEWORD(2, 2), &data) != 0) throw std::runtime_error("WSAStartup failed");
@@ -225,7 +226,7 @@ private:
     }
 
     bool ReadRequest(Socket socket, Request& request) {
-        constexpr size_t kMaxRequest = 128 * 1024;
+        const size_t kMaxRequest = max_request_bytes_;
         const auto deadline = Clock::now() + Milliseconds(1500);
         std::string bytes;
         size_t body_start = std::string::npos, body_size = 0;
@@ -300,6 +301,7 @@ private:
 
     Handler handler_;
     size_t max_requests_;
+    size_t max_request_bytes_;
     Socket listener_ = kInvalid;
     unsigned short port_ = 0;
     std::atomic<bool> stop_{false};

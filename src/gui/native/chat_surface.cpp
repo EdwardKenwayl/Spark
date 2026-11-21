@@ -2,12 +2,15 @@
 #include "gui/native/chat_usage.h"
 #include "gui/native/popup_menu.h"
 #include "gui/chat_timeline.h"
+#include "gui/chat_ui_helpers.h"
 #include "gui/localization.h"
 #include "core/common.h"
 #include "platform/clock.h"
 #include "nlohmann/json.hpp"
 
 #include <wx/clipbrd.h>
+#include <wx/filename.h>
+#include <wx/uri.h>
 #include <wx/dcbuffer.h>
 #include <wx/menu.h>
 #include <wx/settings.h>
@@ -22,6 +25,48 @@ namespace spark {
 namespace {
 wxString U(const std::string& value) { return wxString::FromUTF8(value.data(), value.size()); }
 wxString T(const wchar_t* text) { return wxString(i18n::Text(text)); }
+struct NativeLink { wxString target; bool web = false; };
+NativeLink ResolveNativeLink(const std::wstring& destination) {
+    const wxString raw(destination);
+    const auto lower = raw.Lower();
+    if (lower.StartsWith("https://") || lower.StartsWith("http://")) return {raw, true};
+    const wxString target(ui::FileLinkTarget(destination));
+    if (target.empty() || target[0] == '#') return {};
+    wxFileName file;
+    if (lower.StartsWith("file://")) file = wxFileName::URLToFileName(target);
+    else {
+        const int colon = target.Find(':');
+        const bool drive = target.length() >= 3 && colon == 1 &&
+            ((target[0] >= 'A' && target[0] <= 'Z') || (target[0] >= 'a' && target[0] <= 'z')) &&
+            (target[2] == '/' || target[2] == '\\');
+        if (colon != wxNOT_FOUND && !drive) return {};
+        file = wxFileName(wxURI::Unescape(target));
+    }
+    if (!file.Normalize(wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE | wxPATH_NORM_TILDE)) return {};
+    const auto path = file.GetFullPath();
+    if (path.empty() || path.find(wxChar(0)) != wxString::npos) return {};
+    return {path, false};
+}
+bool RevealNativeFile(wxWindow* owner, const wxString& path) {
+#ifdef _WIN32
+    return ui::RevealFileInManager(reinterpret_cast<HWND>(owner->GetHandle()), path.ToStdWstring());
+#else
+    (void)owner;
+#ifdef __WXOSX__
+    constexpr auto platform = ui::FileRevealPlatform::MacOS;
+#else
+    constexpr auto platform = ui::FileRevealPlatform::Linux;
+#endif
+    const auto args = ui::FileRevealCommand(platform, path.ToStdString(wxConvUTF8));
+    if (args.empty()) return false;
+    wxArrayString strings;
+    for (const auto& arg : args) strings.Add(U(arg));
+    std::vector<const wxChar*> argv;
+    for (const auto& arg : strings) argv.push_back(arg.c_str());
+    argv.push_back(nullptr);
+    return wxExecute(argv.data(), wxEXEC_ASYNC) > 0;
+#endif
+}
 enum class DurationKind { Tool, Turn };
 wxString Duration(uint64_t ms, DurationKind kind = DurationKind::Tool) {
     const auto seconds = std::to_wstring(ms / 1000);
@@ -222,6 +267,7 @@ void NativeChatSurface::SetLoading(uint64_t started) { loading_ = started; Refre
 void NativeChatSurface::SetTranscript(Transcript* transcript, bool reset_scroll) {
     if (transcript != transcript_) {
         transcript_ = transcript; markdown_.clear(); row_cache_.clear();
+        ui::ClearNativeMarkdownLinks(this);
         ResetThumbnails();
     }
     hovered_ = kNoChatItem;
@@ -264,6 +310,7 @@ void NativeChatSurface::Changed() {
         generation_ = transcript_->Generation();
         markdown_.clear();
         row_cache_.clear();
+        ui::ClearNativeMarkdownLinks(this);
         ResetThumbnails();
     }
     dirty_ = true;
@@ -330,6 +377,8 @@ wxBitmap NativeChatSurface::Thumbnail(const std::string& path, const wxSize& bou
 
 wxString NativeChatSurface::ActivityText() const {
     if (!transcript_) return {};
+    const auto* status = transcript_->Item(activity_status_);
+    if (status && !status->finished && !status->text.empty()) return U(status->text);
     const auto* item = transcript_->Item(activity_item_);
     if (item && item->visible && !item->finished) {
         if (item->kind == ChatItemKind::Reasoning) return ReasoningLine(item->text);
@@ -337,7 +386,6 @@ wxString NativeChatSurface::ActivityText() const {
             return ToolLabel(*item) + "  \u00b7  " + U(ToolText(*item, ToolTextKind::Summary)) +
                 "  \u00b7  " + Duration(Transcript::Elapsed(*item, MonotonicMillis()));
     }
-    const auto* status = transcript_->Item(activity_status_);
     if (status && !status->finished)
         return T(L"Processing") + "  \u00b7  " +
             Duration(Transcript::Elapsed(*status, MonotonicMillis()), DurationKind::Turn);
@@ -349,6 +397,7 @@ void NativeChatSurface::Reflow(wxDC& dc) {
         generation_ = transcript_->Generation();
         row_cache_.clear();
         markdown_.clear();
+        ui::ClearNativeMarkdownLinks(this);
         ResetThumbnails();
     }
     rows_.clear();
@@ -380,7 +429,8 @@ void NativeChatSurface::Reflow(wxDC& dc) {
         for (size_t index = 0; index < items.size(); ++index) {
             const auto& item = items[index];
             if (!item.visible || groups[index].hidden) continue;
-            if (item.kind == ChatItemKind::TurnStatus && !item.finished && activity_item_ != kNoChatItem) continue;
+            if (item.kind == ChatItemKind::TurnStatus && !item.finished && item.text.empty()
+                && activity_item_ != kNoChatItem) continue;
             const auto cached = row_cache_.find(index);
             const bool message = item.kind == ChatItemKind::Assistant || item.kind == ChatItemKind::User;
             const bool editable = item.kind == ChatItemKind::User && index == last_user && edit;
@@ -400,6 +450,7 @@ void NativeChatSurface::Reflow(wxDC& dc) {
                 rows_.push_back(index);
                 continue;
             }
+            ui::ClearNativeMarkdownLinks(this, index);
             Row row;
             row.item = index;
             row.revision = item.revision;
@@ -517,12 +568,13 @@ void NativeChatSurface::Reflow(wxDC& dc) {
                         top += tile_height + gap;
                     }
                 }
+                const auto display_text = row.user ? ui::UserMessageText(item.text) : std::string{};
                 const int message_top = top;
                 int message_width = width;
                 if (row.user) {
                     dc.SetFont(body_);
                     int measured = 0;
-                    for (const auto& part : wxSplit(U(item.text), '\n'))
+                    for (const auto& part : wxSplit(U(display_text), '\n'))
                         measured = std::max(measured, dc.GetTextExtent(part).x);
                     const int maximum = std::min(width, std::max(FromDIP(180), width * 78 / 100));
                     message_width = std::min(maximum, std::max(FromDIP(120), measured + FromDIP(30)));
@@ -530,7 +582,7 @@ void NativeChatSurface::Reflow(wxDC& dc) {
                 }
                 const int message_left = row.user ? left + width - message_width : left;
                 if (row.user) {
-                    LayoutText(dc, row, PlainLines(item.text, markdown::MarkdownStyle::Body),
+                    LayoutText(dc, row, PlainLines(display_text, markdown::MarkdownStyle::Body),
                                message_left + FromDIP(14), std::max(1, message_width - FromDIP(28)), top, false);
                     top = std::max(top, message_top + FromDIP(31)) + FromDIP(11);
                     row.bubble = wxRect(message_left, message_top, message_width, top - message_top);
@@ -986,6 +1038,30 @@ void NativeChatSurface::Context(wxContextMenuEvent& event) {
         auto* const transcript = transcript_;
         const bool editable = item->kind == ChatItemKind::User
             && item_index == transcript_->LastUserIndex() && edit;
+        const auto destination = row.fragments.empty() ? std::wstring{} :
+            ui::NativeMarkdownLinkAt(this, row.item, point.x, point.y, row.fragments.front().origin.y);
+        const auto link = ResolveNativeLink(destination);
+        if (!link.target.empty()) {
+            constexpr int open_link = wxID_HIGHEST + 601, copy_link = wxID_HIGHEST + 602,
+                          show_file = wxID_HIGHEST + 603;
+            wxMenu menu;
+            menu.Append(open_link, T(link.web ? L"Open link" : L"Open file"));
+            menu.Append(copy_link, T(link.web ? L"Copy link address" : L"Copy file path"));
+            if (!link.web) {
+                menu.AppendSeparator();
+                menu.Append(show_file, T(L"Show in Explorer"));
+            }
+            const int choice = ShowNativeMenu(this, menu, anchor);
+            if (transcript_ != transcript || transcript_->Generation() != generation || !transcript_->Item(item_index)) return;
+            if (choice == open_link) {
+                if (link.web) wxLaunchDefaultBrowser(link.target);
+                else wxLaunchDefaultApplication(link.target);
+            } else if (choice == copy_link && wxTheClipboard && wxTheClipboard->Open()) {
+                wxTheClipboard->SetData(new wxTextDataObject(link.target));
+                wxTheClipboard->Close();
+            } else if (choice == show_file && !link.web) RevealNativeFile(this, link.target);
+            return;
+        }
         wxMenu menu;
         menu.Append(wxID_COPY, T(item->kind == ChatItemKind::Assistant ? L"Copy reply" : L"Copy message"));
         if (editable) menu.Append(wxID_EDIT, T(L"Edit message"));

@@ -17,6 +17,7 @@
 #include "gui/native/completion_notification.h"
 #include "gui/history_window.h"
 #include "gui/chat_timeline.h"
+#include "gui/chat_ui_helpers.h"
 #include "platform/clock.h"
 
 #include <wx/app.h>
@@ -74,6 +75,19 @@ struct NativeGuiTestAccess {
     }
     static wxString Activity(NativeChatSurface& surface) { return surface.ActivityText(); }
     static bool Dirty(const NativeChatSurface& surface) { return surface.dirty_; }
+    static wxString RenderedText(const NativeChatSurface& surface, size_t index) {
+        wxString result;
+        for (const auto& part : surface.row_cache_.at(index).fragments) result += part.text;
+        return result;
+    }
+    static bool LinkHit(NativeChatSurface& surface, size_t index, const std::wstring& destination) {
+        const auto& row = surface.row_cache_.at(index);
+        if (row.fragments.empty()) return false;
+        for (const auto& part : row.fragments)
+            if (ui::NativeMarkdownLinkAt(&surface, index, part.origin.x, part.origin.y,
+                row.fragments.front().origin.y) == destination) return true;
+        return false;
+    }
     static bool ImageAboveText(const NativeChatSurface& surface, size_t index) {
         const auto& row = surface.row_cache_.at(index);
         return row.images.size() == 2 && !row.fragments.empty() &&
@@ -422,16 +436,26 @@ void CheckNativeChatTimeline(const spark::fs::path& temporary) {
         ChatItem user; user.kind = ChatItemKind::User; user.text = "User turn " + std::to_string(turn);
         user.timestamp = timestamp + (turn == 7 ? 3600 : turn * 60);
         user.timeline_separator = turn == 0 || turn == 7;
-        if (turn == 0) user.image_paths = {picture, empty_picture};
+        if (turn == 0) {
+            user.image_paths = {picture, empty_picture};
+            user.text = u8"[附件引用]\n- " + picture + "\n- " + empty_picture + "\n\nUser turn 0";
+        }
         if (turn == 7) user.image_paths = {last_picture};
         transcript.Apply({TranscriptEventKind::Add, kNoChatItem, user}, {user.timestamp, 1});
         ChatItem reply; reply.kind = ChatItemKind::Assistant; reply.text = "A short reply.";
+        if (turn == 0) reply.text = "[source](file:///tmp/example.cpp:12)";
         if (turn == 0) for (int line = 0; line < 40; ++line) reply.text += "\n\nReply paragraph.";
         transcript.Apply({TranscriptEventKind::Add, kNoChatItem, reply}, {user.timestamp, 1});
     }
     surface->SetTranscript(&transcript, true); host->Show(); Events();
     surface->Scroll(0, 0); surface->Refresh(false); Events();
     Check(NativeGuiTestAccess::ImageAboveText(*surface, 0), "sent image tiles occupy a row ABOVE user text");
+    Check(NativeGuiTestAccess::RenderedText(*surface, 0) == "User turn 0" &&
+          transcript.Item(0)->text.find(u8"[附件引用]") == 0 &&
+          transcript.Item(0)->image_paths == std::vector<std::string>{picture, empty_picture},
+          "user display hides generated paths while transcript text and image paths remain intact");
+    Check(NativeGuiTestAccess::LinkHit(*surface, 1, L"file:///tmp/example.cpp:12"),
+          "Markdown link destination is hit-testable without opening a file manager");
     Check(NativeGuiTestAccess::TimelineRow(*surface, 0, timestamp),
           "persisted user date/time is centered in a separate row without hover");
     Check(NativeGuiTestAccess::NoTimelineRow(*surface, 2), "ungrouped user turns omit the timeline row");

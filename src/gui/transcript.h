@@ -11,7 +11,7 @@ namespace spark {
 inline constexpr size_t kNoChatItem = static_cast<size_t>(-1);
 struct TranscriptTime { uint64_t timestamp = 0; uint64_t tick_ms = 0; };
 struct TranscriptRun { bool active = false; uint64_t started_tick_ms = 0; };
-enum class TranscriptEventKind { Add, AppendText, Finish, Hide, FinishTurn, PauseTurn, ResumeTurn };
+enum class TranscriptEventKind { Add, AppendText, Finish, Hide, FinishTurn, PauseTurn, ResumeTurn, SetTurnStatus };
 struct TranscriptEvent {
     TranscriptEventKind kind = TranscriptEventKind::Add;
     size_t index = kNoChatItem;

@@ -178,6 +178,10 @@ size_t Transcript::Apply(const TranscriptEvent& event, TranscriptTime now) {
     ChatItem& item = items_[event.index];
     ++item.revision;
     switch (event.kind) {
+        case TranscriptEventKind::SetTurnStatus:
+            if (item.kind == ChatItemKind::TurnStatus && !item.finished)
+                item.text = SanitizeDisplayText(value.text);
+            break;
         case TranscriptEventKind::Add: break;
         case TranscriptEventKind::AppendText:
             if (item.kind == ChatItemKind::Assistant) item.text += SanitizeDisplayText(value.text);
@@ -210,6 +214,7 @@ size_t Transcript::Apply(const TranscriptEvent& event, TranscriptTime now) {
             if (item.kind != ChatItemKind::TurnStatus) break;
             item.finished = true;
             item.paused = event.kind == TranscriptEventKind::PauseTurn;
+            item.text.clear();
             item.expanded = item.paused;
             item.elapsed_ms = value.elapsed_ms;
             item.timestamp = timestamp;

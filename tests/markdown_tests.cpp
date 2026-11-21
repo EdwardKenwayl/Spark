@@ -1,4 +1,5 @@
 #include "render/markdown.h"
+#include "gui/chat_ui_helpers.h"
 
 #include <algorithm>
 #include <iostream>
@@ -65,6 +66,38 @@ bool SameRendering(const std::vector<spark::markdown::MarkdownLine>& left,
 int main() {
     using spark::markdown::MarkdownLine;
     using spark::markdown::MarkdownStyle;
+
+    using namespace spark::ui;
+    const std::string original = u8"[附件引用]\n- C:\\work\\photo.png\n- /tmp/notes.md\n\n保留正文\nsecond line";
+    std::string source = original;
+    Check(UserMessageText(source) == u8"保留正文\nsecond line" && source == original,
+          "display filters generated attachments without modifying source");
+    Check(UserMessageText(u8"[附件引用]\r\n- \\\\server\\share\\photo.png\r\n\r\nBody\r\n") == "Body\r\n",
+          "CRLF attachment block retains body newlines");
+    Check(UserMessageText(u8"[智能快照]\nCaptured text\n\n[附件引用]\n- /tmp/a.png\n\nBody") ==
+          u8"[智能快照]\nCaptured text\n\nBody", "snapshot prefix remains visible");
+    for (const auto& literal : {std::string(u8"[附件引用]\nnot generated\n\nBody"),
+             std::string(u8"[附件引用]\n- relative.txt\n\nBody"),
+             std::string(u8"[附件引用]\n- /tmp/a.png\nno blank terminator"),
+             std::string(u8"Intro\n[附件引用]\n- /tmp/a.png\n\nBody"),
+             std::string(u8"[智能快照]literal\n\n[附件引用]\n- /tmp/a.png\n\nBody")})
+        Check(UserMessageText(literal) == literal, "literal heading and incomplete blocks are preserved");
+    Check(UserMessageText(u8"[附件引用]\n- /tmp/a.png\n\n").empty(), "attachment-only display has no path block");
+    Check(FileLinkTarget(L"C:\\work\\source.cpp:17:4") == L"C:\\work\\source.cpp" &&
+          FileLinkTarget(L"file:///tmp/My%20File.cpp#L17-L20") == L"file:///tmp/My%20File.cpp" &&
+          FileLinkTarget(L"/tmp/file%3A17") == L"/tmp/file%3A17", "source locations strip before URI decoding");
+    Check(FileUri(u8"/tmp/a b,#中文.txt") == "file:///tmp/a%20b%2C%23%E4%B8%AD%E6%96%87.txt",
+          "file URI escapes spaces commas hashes and UTF-8 bytes");
+    const std::string unusual = "/tmp/a b,'$;.md";
+    Check(FileRevealCommand(FileRevealPlatform::Linux, unusual) == std::vector<std::string>{
+          "dbus-send", "--session", "--type=method_call", "--dest=org.freedesktop.FileManager1",
+          "/org/freedesktop/FileManager1", "org.freedesktop.FileManager1.ShowItems",
+          "array:string:file:///tmp/a%20b%2C%27%24%3B.md", "string:"},
+          "Linux ShowItems uses one encoded URI argument without a shell");
+    Check(FileRevealCommand(FileRevealPlatform::MacOS, unusual) ==
+          std::vector<std::string>{"open", "-R", "--", unusual}, "macOS reveal preserves a separate path argument");
+    Check(FileRevealCommand(FileRevealPlatform::Linux, std::string("/tmp/a\0b", 8)).empty() &&
+          FileRevealCommand(FileRevealPlatform::MacOS, "").empty(), "invalid reveal inputs produce no command");
 
     const auto headings = spark::markdown::ParseMarkdown(L"# Title\n\nBody");
     Check(HasRun(headings, L"Title", spark::markdown::MarkdownStyle::Heading), "heading style");

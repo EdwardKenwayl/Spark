@@ -1158,6 +1158,10 @@ void AppWindow::AttachTurnUi(const std::shared_ptr<TurnRuntime>& runtime) {
     active_assistant_entry_ = static_cast<size_t>(-1);
     assistant_stream_started_ = false;
     if (chat_view_ != nullptr) {
+        if (active_turn_entry_ != static_cast<size_t>(-1))
+            chat_view_->SetTurnStatusLabel(active_turn_entry_,
+                current_phase_ == AgentPhase::Compacting
+                    ? WideToUtf8(i18n::Text(L"Compacting context...")) : std::string{});
         // Replay restores committed messages. The current summary is transient and may
         // only exist in the running turn, particularly after switching conversations.
         if (current_phase_ == AgentPhase::WaitingModel && runtime->phase_detail == "thinking" &&
@@ -4693,6 +4697,8 @@ void AppWindow::SetPhase(const std::shared_ptr<TurnRuntime>& runtime, AgentPhase
             text = runtime->reasoning_preview;
             break;
         case AgentPhase::Compacting:
+            if (attached) FinishActiveReasoning(true);
+            runtime->reasoning_preview.clear();
             text = i18n::Text(L"Compacting context...");
             break;
         case AgentPhase::RunningTool:
@@ -4723,6 +4729,9 @@ void AppWindow::SetPhase(const std::shared_ptr<TurnRuntime>& runtime, AgentPhase
     current_phase_ = phase;
     phase_text_ = text;
     reasoning_preview_ = runtime->reasoning_preview;
+    if (chat_view_ != nullptr && active_turn_entry_ != static_cast<size_t>(-1))
+        chat_view_->SetTurnStatusLabel(active_turn_entry_,
+            phase == AgentPhase::Compacting ? WideToUtf8(i18n::Text(L"Compacting context...")) : std::string{});
     if (chat_view_ != nullptr) chat_view_->SetActivityState(ActivityRowVisible(), text, runtime->started_tick);
 }
 

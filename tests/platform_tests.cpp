@@ -40,13 +40,6 @@ int main() {
         Check(ReadFileUtf8(path).value_or("") == std::string("a\0b", 3), "binary NUL survives a file read");
         Check(WriteFileUtf8Atomic(path, "\xef\xbb\xbf" + contents, &error) &&
                   ReadFileUtf8(path).value_or("") == contents, "UTF-8 BOM is stripped only when reading");
-        ChatMessage attachment;
-        attachment.role = MessageRole::User;
-        attachment.image_paths = {path};
-        const auto small_image_tokens = EstimateMessageTokens(attachment);
-        Check(WriteFileUtf8Atomic(path, std::string(30000, 'x'), &error), "grow the Unicode attachment fixture");
-        Check(EstimateMessageTokens(attachment) > small_image_tokens + 9000,
-              "context estimation reads attachment sizes through native Unicode paths");
         Check(!WriteFileUtf8Atomic(PathToUtf8(root), "must not replace a directory", &error) &&
                   fs::is_directory(root), "failed replacement preserves an existing directory");
         Check(!WriteFileUtf8Atomic(PathToUtf8(root / "missing" / "child"), "no implicit folders", &error),

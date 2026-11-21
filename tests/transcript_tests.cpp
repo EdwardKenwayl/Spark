@@ -92,6 +92,27 @@ void TestEventsAndTimers() {
           "reasoning truncation remains bounded at a UTF-8 scalar boundary");
 }
 
+void TestCompactionActivity() {
+    Transcript transcript;
+    Add(transcript, ChatItemKind::User, "image question");
+    const auto status = Add(transcript, ChatItemKind::TurnStatus);
+    const auto started = transcript.Item(status)->start_tick_ms;
+    ChatItem phase;
+    phase.text = "Compacting context...";
+    transcript.Apply({TranscriptEventKind::SetTurnStatus, status, phase}, {124, 1500});
+    Check(transcript.Item(status)->text == phase.text && !transcript.Item(status)->finished &&
+              transcript.Item(status)->start_tick_ms == started,
+          "compaction updates the existing activity line without resetting its timer");
+    transcript.Apply({TranscriptEventKind::SetTurnStatus, status, {}}, {125, 2000});
+    Check(transcript.Item(status)->text.empty() && transcript.NeedsAnimation(),
+          "the next request clears the transient compaction label and keeps running");
+    transcript.Apply({TranscriptEventKind::SetTurnStatus, status, phase}, {126, 2500});
+    transcript.Apply({TranscriptEventKind::FinishTurn, status, {}}, {127, 3000});
+    transcript.Apply({TranscriptEventKind::SetTurnStatus, status, phase}, {128, 3500});
+    Check(transcript.Item(status)->text.empty() && transcript.Item(status)->finished,
+          "completed turns never keep or reacquire a stale compaction label");
+}
+
 void TestJournalReplay(const spark::fs::path& root) {
     SessionJournal journal;
     Check(journal.Open(PathToUtf8(root / "data"), PathToUtf8(root)).ok, "fixture journal opens");
@@ -782,6 +803,7 @@ int main() {
     spark::fs::create_directories(root);
     try {
         TestEventsAndTimers();
+        TestCompactionActivity();
         TestJournalReplay(root);
         TestTurnBoundaries();
         TestCompactionFolding();

@@ -63,18 +63,12 @@ uint64_t EstimateMessageTokens(const ChatMessage& message) {
     uint64_t tokens = 4 + EstimateTextTokens(message.content) + EstimateTextTokens(message.name) +
                       EstimateTextTokens(message.tool_call_id);
     for (const std::string& path : message.image_paths) {
-        uint64_t image_tokens = 256;
-        std::error_code error;
-        const uint64_t image_bytes = spark::fs::file_size(NativePath(path), error);
-        if (!error && image_bytes > 0) {
-            // Images are sent as base64 in the request. Base64 text is roughly
-            // one token per three source bytes, so the old fixed 32-token estimate
-            // could miss a very large request by hundreds of thousands of tokens.
-            image_tokens += std::min<uint64_t>(image_bytes / 3, 500000);
-        } else {
-            image_tokens += 4096;
-        }
-        tokens += image_tokens + EstimateTextTokens(path);
+        // Vision inputs are decoded images, not tokenized base64 text. BMP and PNG
+        // of the same picture must not differ by hundreds of thousands of tokens.
+        // Use a provisional allowance until the provider reports actual usage;
+        // image pricing varies by model. Avoid filesystem I/O in this hot estimate.
+        constexpr uint64_t kProvisionalImageTokens = 4096;
+        tokens += kProvisionalImageTokens + EstimateTextTokens(path);
     }
     for (const ToolCall& call : message.tool_calls) {
         tokens += 6 + EstimateTextTokens(call.id) + EstimateTextTokens(call.name) +

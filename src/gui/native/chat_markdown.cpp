@@ -1,11 +1,39 @@
 #include "gui/native/chat_surface.h"
+#include "gui/chat_ui_helpers.h"
 #include "platform/clock.h"
 
 #include <wx/dc.h>
+#include <wx/clntdata.h>
 #include <algorithm>
 #include <cwctype>
 
 namespace spark {
+namespace {
+struct NativeMarkdownLinks : wxClientData {
+    struct Link { wxRect bounds; std::wstring destination; };
+    std::map<size_t, std::vector<Link>> items;
+};
+NativeMarkdownLinks* MarkdownLinks(wxWindow* owner) {
+    return static_cast<NativeMarkdownLinks*>(owner->GetClientObject());
+}
+}  // namespace
+
+void ui::ClearNativeMarkdownLinks(wxWindow* owner, size_t item) {
+    auto* links = MarkdownLinks(owner);
+    if (!links) return;
+    if (item == static_cast<size_t>(-1)) links->items.clear();
+    else links->items.erase(item);
+}
+
+std::wstring ui::NativeMarkdownLinkAt(wxWindow* owner, size_t item, int x, int y, int row_anchor_y) {
+    const auto* links = MarkdownLinks(owner);
+    if (!links) return {};
+    const auto found = links->items.find(item);
+    if (found == links->items.end()) return {};
+    for (const auto& link : found->second)
+        if (link.bounds.Contains(x, y - row_anchor_y)) return link.destination;
+    return {};
+}
 
 void NativeChatSurface::LayoutText(wxDC& dc, Row& row, const std::vector<markdown::MarkdownLine>& lines,
                                   int left, int width, int& top, bool muted) {
@@ -80,6 +108,12 @@ void NativeChatSurface::LayoutMarkdown(wxDC& dc, Row& row,
                 if (!line.code && run.style == Style::Code)
                     row.panels.push_back({wxRect(x - FromDIP(2), top, token_width + FromDIP(4), height), PanelKind::InlineCode});
                 row.fragments.push_back({token, wxPoint(x, top), font, ink});
+                if (!line.code && !run.destination.empty()) {
+                    auto* links = MarkdownLinks(this);
+                    if (!links) { links = new NativeMarkdownLinks; SetClientObject(links); }
+                    links->items[row.item].push_back({wxRect(x, top - row.fragments.front().origin.y,
+                        token_width, std::max(FromDIP(14), text_height + leading)), run.destination});
+                }
                 x += token_width;
                 height = std::max(height, std::max(FromDIP(14), text_height + leading));
             };
