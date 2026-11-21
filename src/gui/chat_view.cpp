@@ -3,6 +3,7 @@
 #include "core/common.h"
 #include "gui/localization.h"
 #include "gui/theme.h"
+#include "gui/chat_timeline.h"
 #include "platform/clock.h"
 #include "render/markdown.h"
 
@@ -49,6 +50,7 @@ constexpr int kToolHeaderHeight = 28;
 constexpr int kToolGap = 8;
 constexpr int kContentBottomPadding = 28;
 constexpr UINT_PTR kStreamRenderTimer = 2;
+constexpr UINT_PTR kImageRenderTimer = 3;
 constexpr UINT kRestoreSpinnerDelayMs = 50;
 constexpr uint64_t kRestoreSpinnerRevealDelayMs = 200;
 constexpr UINT kRestorePrepareDelayMs = 10;
@@ -193,6 +195,8 @@ struct ItemLayout {
     RECT copy{};
     RECT edit{};
     RECT time{};
+    RECT timeline{};
+    std::vector<std::pair<RECT, std::string>> images;
 };
 
 struct GroupInfo {
@@ -1271,7 +1275,25 @@ ItemLayout LayoutItem(HDC device, const std::vector<ChatItem>& items, const std:
     const int max_text_width = std::max(120, content_width);
 
     if (item.kind == ChatItemKind::User) {
+        if (item.timeline_separator) {
+            layout.timeline = RECT{content_left, top, content_right, top + DpiScale(30)};
+            top += DpiScale(38);
+        }
         const int bubble_max = std::max(180, std::min(max_text_width, static_cast<int>(content_width * 0.78)));
+        if (!item.image_paths.empty()) {
+            const int tile_width = std::min(bubble_max, DpiScale(144));
+            const int tile_height = DpiScale(108), gap = DpiScale(8);
+            const size_t columns = std::max(1, (bubble_max + gap) / (tile_width + gap));
+            for (size_t i = 0; i < item.image_paths.size(); ++i) {
+                const size_t row_start = i / columns * columns;
+                const int count = static_cast<int>(std::min(columns, item.image_paths.size() - row_start));
+                const int left = content_right - count * (tile_width + gap) + gap +
+                                 static_cast<int>(i % columns) * (tile_width + gap);
+                const int y = top + static_cast<int>(i / columns) * (tile_height + gap);
+                layout.images.push_back({RECT{left, y, left + tile_width, y + tile_height}, item.image_paths[i]});
+            }
+            top += static_cast<int>((item.image_paths.size() + columns - 1) / columns) * (tile_height + gap);
+        }
         const int text_width = std::max(80, bubble_max - kUserPaddingX * 2);
         const std::wstring text = Utf8ToWide(item.text);
         const int text_height = std::max(20, MeasureTextHeight(device, fonts.text, text, text_width));
@@ -1617,6 +1639,8 @@ void ChatView::PreserveHistoryAnchor(const std::string& text, uint64_t timestamp
 
 void ChatView::Clear() {
     CancelRestore();
+    image_cache_.Clear();
+    if (window_ != nullptr && !image_cache_.Pending()) KillTimer(window_, kImageRenderTimer);
     if (window_ != nullptr) KillTimer(window_, kStreamRenderTimer);
     stream_render_pending_ = false;
     items_.clear();
@@ -1680,6 +1704,9 @@ void ChatView::EndRestore() {
 }
 
 void ChatView::PushItem(ChatItem item) {
+    if (item.kind == ChatItemKind::User) {
+        item.timeline_separator = StartsTimelineGroup(PreviousTimelineTime(items_), item.timestamp);
+    }
     const bool assistant = item.kind == ChatItemKind::Assistant;
     items_.push_back(std::move(item));
     item_heights_.push_back(-1);
@@ -1695,10 +1722,12 @@ void ChatView::PushItem(ChatItem item) {
     }
 }
 
-size_t ChatView::AddUser(const std::string& text, uint64_t timestamp) {
+size_t ChatView::AddUser(const std::string& text, uint64_t timestamp,
+                         const std::vector<std::string>& image_paths) {
     ChatItem item;
     item.kind = ChatItemKind::User;
     item.text = SanitizeDisplayText(text);
+    item.image_paths = image_paths;
     item.timestamp = timestamp == 0 ? UnixTimeSeconds() : timestamp;
     PushItem(std::move(item));
     rail_dirty_ = true;
@@ -2476,6 +2505,14 @@ std::vector<ChatView::HitArea> ChatView::CalculateHitAreas(HDC device) {
                 }
                 areas.push_back(HitArea{HitArea::Type::ToolHeader, index, layout.tool_header});
             } else if (items_[index].kind == ChatItemKind::User) {
+                for (const auto& image : layout.images) {
+                    HitArea area;
+                    area.type = HitArea::Type::Link;
+                    area.item = index;
+                    area.rect = image.first;
+                    area.destination = Utf8ToWide(image.second);
+                    areas.push_back(std::move(area));
+                }
                 areas.push_back(HitArea{HitArea::Type::Copy, index, layout.copy});
                 if (index == last_user) areas.push_back(HitArea{HitArea::Type::Edit, index, layout.edit});
             } else if (items_[index].kind == ChatItemKind::Assistant && IsCopyableAssistant(items_, index)) {
@@ -2569,15 +2606,13 @@ void ChatView::DrawScrollRail(HDC device, const RECT& client) {
     const int active_length = Scale(13);
     const int hover_length = Scale(18);
 
-    size_t current = rail_dashes_.front().item;
-    for (const RailDash& dash : rail_dashes_) {
-        if (dash.content_top <= scroll_y_ + Scale(24)) current = dash.item;
-    }
-
     int hovered_y = -1;
-    for (const RailDash& dash : rail_dashes_) {
+    for (size_t index = 0; index < rail_dashes_.size(); ++index) {
+        const auto& dash = rail_dashes_[index];
+        const int end = index + 1 < rail_dashes_.size() ? rail_dashes_[index + 1].content_top : content_height_;
         const bool hovered = hover_type_ == HitArea::Type::Rail && hover_item_ == dash.item;
-        const bool active = !hovered && dash.item == current;
+        const bool active = !hovered && ConversationTurnVisible(dash.content_top, end, scroll_y_,
+                                                               client.bottom - client.top);
         const int length = hovered ? hover_length : (active ? active_length : idle_length);
         const COLORREF color = hovered ? kRailHover : (active ? kRailActive : kRailIdle);
         HBRUSH brush = CreateSolidBrush(color);
@@ -2637,6 +2672,11 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             Rebuild();
             return 0;
         case WM_TIMER:
+            if (wparam == kImageRenderTimer) {
+                if (image_cache_.Poll()) InvalidateRect(window_, nullptr, FALSE);
+                if (!image_cache_.Pending()) KillTimer(window_, kImageRenderTimer);
+                return 0;
+            }
             if (restore_spinner_timer_ != 0 && wparam == restore_spinner_timer_) {
                 if (loading_ && MonotonicMillis() - restore_started_tick_ >= kRestoreSpinnerRevealDelayMs) {
                     restore_frame_ = (restore_frame_ + 1) % 24;
@@ -2729,6 +2769,20 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                                                      client.right - client.left, fonts, time_font_, known_text_height);
 
                 if (item.kind == ChatItemKind::User) {
+                    if (!IsRectEmpty(&layout.timeline)) {
+                        auto font = SelectObject(buffer, time_font_);
+                        SetTextColor(buffer, kMuted);
+                        RECT rect = layout.timeline;
+                        const auto label = FormatTimelineTime(item.timestamp);
+                        DrawTextW(buffer, label.c_str(), -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                        SelectObject(buffer, font);
+                    }
+                    for (const auto& image : layout.images) {
+                        if (image.first.bottom < 0 || image.first.top > client.bottom) continue;
+                        DrawRoundPanel(buffer, image.first, kUserBubble, kUserBubble, 8);
+                        image_cache_.Paint(buffer, image.first, image.second);
+                    }
+                    if (image_cache_.Pending()) SetTimer(window_, kImageRenderTimer, 40, nullptr);
                     DrawRoundPanel(buffer, layout.bubble, kUserBubble, kUserBubble, 12);
                     DrawWrappedText(buffer, text_font_, Utf8ToWide(item.text), layout.text, kText);
                 } else if (item.kind == ChatItemKind::UsageStats) {
@@ -3103,6 +3157,8 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
         case WM_DESTROY:
             CancelRestore();
             KillTimer(window_, kStreamRenderTimer);
+            KillTimer(window_, kImageRenderTimer);
+            image_cache_.Drain();
             stream_render_pending_ = false;
             ReleaseBackBuffer();
             window_ = nullptr;

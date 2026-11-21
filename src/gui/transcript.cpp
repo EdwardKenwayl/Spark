@@ -1,4 +1,5 @@
 #include "gui/transcript.h"
+#include "gui/chat_timeline.h"
 #include "gui/compaction_boundary.h"
 
 #include <algorithm>
@@ -166,6 +167,9 @@ size_t Transcript::Apply(const TranscriptEvent& event, TranscriptTime now) {
                 items_[index - 1] = std::move(value);
                 return index - 1;
             }
+        }
+        if (value.kind == ChatItemKind::User) {
+            value.timeline_separator = StartsTimelineGroup(PreviousTimelineTime(items_), value.timestamp);
         }
         items_.push_back(std::move(value));
         return items_.size() - 1;
@@ -381,6 +385,7 @@ bool Transcript::ReplayStep(uint64_t generation, size_t max_messages) {
             replay.FinishPending(*this);
             replay.turn_tools.clear();
             item.kind = ChatItemKind::User; item.text = message.content;
+            item.image_paths = message.image_paths;
             Apply({TranscriptEventKind::Add, kNoChatItem, item}, replay.now);
             item = {}; item.kind = ChatItemKind::TurnStatus;
             if (replay.run.active && replay.turn + 1 == replay.total_turns) item.start_tick_ms = replay.run.started_tick_ms;

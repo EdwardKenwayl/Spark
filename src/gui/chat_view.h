@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include "gui/chat_items.h"
+#include "gui/chat_image_cache.h"
 #include "render/markdown.h"
 
 #include <cstdint>
@@ -42,7 +43,8 @@ public:
     void BeginRestore(uint64_t started_tick_ms = 0);
     void EndRestore();
     bool Loading() const { return loading_; }
-    size_t AddUser(const std::string& text, uint64_t timestamp = 0);
+    size_t AddUser(const std::string& text, uint64_t timestamp = 0,
+                   const std::vector<std::string>& image_paths = {});
     size_t AddTurnStatus(uint64_t timestamp = 0, uint64_t start_tick_ms = 0);
     size_t AddAssistant(const std::string& text = {}, uint64_t timestamp = 0);
     size_t AddReasoning(const std::string& text = {}, uint64_t timestamp = 0);
@@ -144,6 +146,7 @@ private:
     HFONT mono_font_ = nullptr;
     HFONT time_font_ = nullptr;
     std::vector<ChatItem> items_;
+    ChatImageCache image_cache_;
     std::wstring link_base_directory_;
     Action toggle_tool_;
     Action toggle_group_;

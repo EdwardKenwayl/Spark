@@ -155,7 +155,9 @@ void NativeFrame::Send() {
     if (!started.ok) { Error(started.error); return; }
     cancelled_completion_paths_.erase(active_);
     if (!resume) {
-        Add(view->transcript, ChatItemKind::User, message);
+        ChatItem user; user.kind = ChatItemKind::User; user.text = message;
+        user.image_paths = images;
+        view->transcript.Apply({TranscriptEventKind::Add, kNoChatItem, std::move(user)}, Now());
         view->status = Add(view->transcript, ChatItemKind::TurnStatus);
     } else {
         ChatItem status;

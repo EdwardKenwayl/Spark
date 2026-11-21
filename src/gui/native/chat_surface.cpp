@@ -1,7 +1,9 @@
 #include "gui/native/chat_surface.h"
 #include "gui/native/chat_usage.h"
 #include "gui/native/popup_menu.h"
+#include "gui/chat_timeline.h"
 #include "gui/localization.h"
+#include "core/common.h"
 #include "platform/clock.h"
 #include "nlohmann/json.hpp"
 
@@ -218,7 +220,10 @@ void NativeChatSurface::SetDark(bool dark) { dark_ = dark; row_cache_.clear(); d
 void NativeChatSurface::SetEmptyTitle(const wxString& title) { empty_title_ = title; Refresh(false); }
 void NativeChatSurface::SetLoading(uint64_t started) { loading_ = started; Refresh(false); }
 void NativeChatSurface::SetTranscript(Transcript* transcript, bool reset_scroll) {
-    if (transcript != transcript_) { transcript_ = transcript; markdown_.clear(); row_cache_.clear(); }
+    if (transcript != transcript_) {
+        transcript_ = transcript; markdown_.clear(); row_cache_.clear();
+        ResetThumbnails();
+    }
     hovered_ = kNoChatItem;
     hovered_action_ = Action::None;
     UnsetToolTip();
@@ -259,6 +264,7 @@ void NativeChatSurface::Changed() {
         generation_ = transcript_->Generation();
         markdown_.clear();
         row_cache_.clear();
+        ResetThumbnails();
     }
     dirty_ = true;
     Refresh(false);
@@ -282,12 +288,44 @@ void NativeChatSurface::ScrollBy(int pixels) {
     if (pixels < 0 && next == 0) RequestEarlier();
 }
 void NativeChatSurface::Tick() {
+    if (PollThumbnails()) Refresh(false);
     const auto now = MonotonicMillis();
     if (((loading_ && now - loading_ >= 150) || (transcript_ && transcript_->NeedsAnimation()) || earlier_loading_) &&
         now / 100 != elapsed_frame_) {
         elapsed_frame_ = now / 100;
         Refresh(false);
     }
+}
+
+void NativeChatSurface::ResetThumbnails() {
+    thumbnails_.Clear(); thumbnail_paths_.clear();
+    thumbnail_bitmaps_.clear(); thumbnail_lru_.clear();
+}
+
+bool NativeChatSurface::PollThumbnails() {
+    if (!thumbnails_.Poll()) return false;
+    for (const auto& path : thumbnail_paths_) {
+        const auto bitmap = thumbnails_.Get(path, thumbnail_edge_);
+        if (!bitmap.IsOk() || thumbnail_bitmaps_.count(path)) continue;
+        if (thumbnail_lru_.size() >= 32) {
+            thumbnail_bitmaps_.erase(thumbnail_lru_.front());
+            thumbnail_lru_.pop_front();
+        }
+        thumbnail_bitmaps_[path] = bitmap;
+        thumbnail_lru_.push_back(path);
+    }
+    return true;
+}
+
+wxBitmap NativeChatSurface::Thumbnail(const std::string& path, const wxSize& bounds) const {
+    const auto found = thumbnail_bitmaps_.find(path);
+    if (found == thumbnail_bitmaps_.end() || bounds.x <= 0 || bounds.y <= 0) return {};
+    const auto& bitmap = found->second;
+    const double scale = std::min({1.0, static_cast<double>(bounds.x) / bitmap.GetWidth(),
+                                  static_cast<double>(bounds.y) / bitmap.GetHeight()});
+    if (scale >= 1.0) return bitmap;
+    return wxBitmap(bitmap.ConvertToImage().Scale(std::max(1, static_cast<int>(bitmap.GetWidth() * scale)),
+        std::max(1, static_cast<int>(bitmap.GetHeight() * scale)), wxIMAGE_QUALITY_NORMAL));
 }
 
 wxString NativeChatSurface::ActivityText() const {
@@ -311,6 +349,7 @@ void NativeChatSurface::Reflow(wxDC& dc) {
         generation_ = transcript_->Generation();
         row_cache_.clear();
         markdown_.clear();
+        ResetThumbnails();
     }
     rows_.clear();
     rail_.clear();
@@ -351,8 +390,9 @@ void NativeChatSurface::Reflow(wxDC& dc) {
                 const int offset = top - row.bounds.y;
                 if (offset != 0) {
                     for (auto* rect : {&row.bounds, &row.message, &row.bubble, &row.header,
-                                       &row.group_header, &row.copy, &row.edit, &row.time})
+                                       &row.group_header, &row.copy, &row.edit, &row.time, &row.separator})
                         if (!rect->IsEmpty()) rect->Offset(0, offset);
+                    for (auto& image : row.images) image.Offset(0, offset);
                     for (auto& part : row.fragments) part.origin.y += offset;
                     for (auto& panel : row.panels) panel.bounds.Offset(0, offset);
                 }
@@ -367,6 +407,11 @@ void NativeChatSurface::Reflow(wxDC& dc) {
             const bool status = item.kind == ChatItemKind::TurnStatus;
             const bool tool = item.kind == ChatItemKind::Tool;
             row.user = item.kind == ChatItemKind::User;
+            if (row.user && item.timeline_separator && item.timestamp) {
+                row.timeline = wxString(FormatTimelineTime(item.timestamp));
+                row.separator = wxRect(left, top, width, FromDIP(24));
+                top += FromDIP(34);
+            }
             if (status || tool || item.kind == ChatItemKind::Reasoning) {
                 dc.SetFont(body_);
                 row.expanded = item.expanded;
@@ -460,6 +505,19 @@ void NativeChatSurface::Reflow(wxDC& dc) {
                 row.message = wxRect(left, top, width, height);
                 top += height + FromDIP(6);
             } else {
+                if (row.user && !item.image_paths.empty()) {
+                    const int tile_width = std::min(width, FromDIP(144)), tile_height = FromDIP(108), gap = FromDIP(8);
+                    const size_t columns = std::max(1, (width + gap) / (tile_width + gap));
+                    for (size_t start = 0; start < item.image_paths.size(); start += columns) {
+                        const size_t count = std::min(columns, item.image_paths.size() - start);
+                        const int image_left = left + width - static_cast<int>(count) * (tile_width + gap) + gap;
+                        for (size_t image = 0; image < count; ++image)
+                            row.images.emplace_back(image_left + static_cast<int>(image) * (tile_width + gap),
+                                                    top, tile_width, tile_height);
+                        top += tile_height + gap;
+                    }
+                }
+                const int message_top = top;
                 int message_width = width;
                 if (row.user) {
                     dc.SetFont(body_);
@@ -474,8 +532,8 @@ void NativeChatSurface::Reflow(wxDC& dc) {
                 if (row.user) {
                     LayoutText(dc, row, PlainLines(item.text, markdown::MarkdownStyle::Body),
                                message_left + FromDIP(14), std::max(1, message_width - FromDIP(28)), top, false);
-                    top = std::max(top, before + FromDIP(31)) + FromDIP(11);
-                    row.bubble = wxRect(message_left, before, message_width, top - before);
+                    top = std::max(top, message_top + FromDIP(31)) + FromDIP(11);
+                    row.bubble = wxRect(message_left, message_top, message_width, top - message_top);
                 } else {
                     auto& message = markdown_[index];
                     if (message.source_bytes > item.text.size() ||
@@ -515,7 +573,7 @@ void NativeChatSurface::Reflow(wxDC& dc) {
                     row.time = wxRect(time_right - time_width, meta_top, time_width, FromDIP(18));
                     top = meta_top + FromDIP(18);
                 }
-                row.message = wxRect(message_left, before, message_width, top - before);
+                row.message = wxRect(message_left, message_top, message_width, top - message_top);
                 top += FromDIP(18);
             }
             if (row.message.IsEmpty()) row.message = wxRect(left, before, width, top - before);
@@ -540,8 +598,11 @@ void NativeChatSurface::UpdateRail(int content_height) {
     for (const auto index : rows_) {
         const auto* item = transcript_->Item(index);
         const auto cached = row_cache_.find(index);
-        if (item && item->kind == ChatItemKind::User && cached != row_cache_.end())
-            rail_.push_back({index, cached->second.bounds.y, 0});
+        if (item && item->kind == ChatItemKind::User && cached != row_cache_.end()) {
+            const int start = cached->second.bounds.y;
+            if (!rail_.empty()) rail_.back().content_end = start;
+            rail_.push_back({index, start, content_height, 0});
+        }
     }
     if (rail_.empty()) return;
     const int margin = FromDIP(10);
@@ -560,19 +621,19 @@ void NativeChatSurface::UpdateRail(int content_height) {
     }
 }
 
+bool NativeChatSurface::IsTurnVisible(const RailDash& dash) const {
+    return ConversationTurnVisible(dash.content_top, dash.content_end, GetViewStart().y, GetClientSize().y);
+}
+
 void NativeChatSurface::DrawRail(wxDC& dc) {
     if (rail_.empty()) return;
     const auto saved_origin = dc.GetDeviceOrigin();
     dc.SetDeviceOrigin(0, 0);
-    size_t current = rail_.front().item;
-    for (const auto& dash : rail_)
-        if (dash.content_top <= GetViewStart().y + FromDIP(24)) current = dash.item;
-    if (follow_ && transcript_ && transcript_->NeedsAnimation()) current = transcript_->LastUserIndex();
     int hovered_y = -1;
     dc.SetPen(*wxTRANSPARENT_PEN);
     for (const auto& dash : rail_) {
         const bool hovered = hovered_action_ == Action::Rail && hovered_ == dash.item;
-        const bool active = !hovered && dash.item == current;
+        const bool active = !hovered && IsTurnVisible(dash);
         const int length = FromDIP(hovered ? 18 : active ? 13 : 8);
         const int thickness = std::max(1, FromDIP(2));
         dc.SetBrush(wxBrush(hovered ? (dark_ ? wxColour(244, 245, 248) : wxColour(72, 74, 79))
@@ -660,6 +721,40 @@ void NativeChatSurface::Paint(wxPaintEvent&) {
     PrepareDC(dc);
     const wxPoint origin = CalcUnscrolledPosition(wxPoint(0, 0));
     const wxRect viewport(origin, GetClientSize());
+    // Retain 32 decoded previews independently of the decoder's request generation.
+    // Navigation cancels stale queued work without discarding already displayed images.
+    const int thumbnail_edge = std::min(240, FromDIP(144));
+    if (thumbnail_edge_ != thumbnail_edge) {
+        ResetThumbnails();
+        thumbnail_edge_ = thumbnail_edge;
+    }
+    std::set<std::string> visible_images;
+    for (const auto index : rows_) {
+        const auto& row = row_cache_.at(index);
+        const auto* item = transcript_ ? transcript_->Item(index) : nullptr;
+        if (!item || !row.bounds.Intersects(viewport)) continue;
+        for (size_t image_index = 0; image_index < row.images.size(); ++image_index) {
+            const auto& image = row.images[image_index];
+            if (image.Intersects(viewport) && image_index < item->image_paths.size())
+                visible_images.insert(item->image_paths[image_index]);
+        }
+    }
+    if (visible_images != thumbnail_paths_) {
+        PollThumbnails();
+        thumbnails_.Clear();
+        thumbnail_paths_ = std::move(visible_images);
+        for (const auto& path : thumbnail_paths_) {
+            if (thumbnail_bitmaps_.count(path)) {
+                thumbnail_lru_.erase(std::remove(thumbnail_lru_.begin(), thumbnail_lru_.end(), path), thumbnail_lru_.end());
+                thumbnail_lru_.push_back(path);
+                continue;
+            }
+            std::error_code error;
+            const auto bytes = fs::file_size(NativePath(path), error);
+            // Avoid wxImage's empty-stream diagnostics and consequent idle repaint.
+            if (!error && bytes != 0) thumbnails_.Request(path, thumbnail_edge_);
+        }
+    }
     if (earlier_bounds_.Intersects(viewport)) {
         dc.SetFont(body_);
         dc.SetTextForeground(earlier_loading_ ? Muted() : Foreground());
@@ -674,6 +769,20 @@ void NativeChatSurface::Paint(wxPaintEvent&) {
         const auto* item = transcript_ ? transcript_->Item(row.item) : nullptr;
         if (!item) continue;
         if (row.user) {
+            dc.SetFont(time_); dc.SetTextForeground(Muted());
+            if (!row.separator.IsEmpty()) dc.DrawLabel(row.timeline, row.separator, wxALIGN_CENTER);
+            for (size_t image = 0; image < row.images.size() && image < item->image_paths.size(); ++image) {
+                const auto& bounds = row.images[image];
+                if (!bounds.Intersects(viewport)) continue;
+                dc.SetBrush(wxBrush(dark_ ? wxColour(52, 53, 57) : wxColour(232, 233, 235)));
+                dc.SetPen(*wxTRANSPARENT_PEN);
+                dc.DrawRoundedRectangle(bounds, FromDIP(8));
+                const auto bitmap = Thumbnail(item->image_paths[image], bounds.GetSize());
+                if (bitmap.IsOk())
+                    dc.DrawBitmap(bitmap, bounds.x + (bounds.width - bitmap.GetWidth()) / 2,
+                                  bounds.y + (bounds.height - bitmap.GetHeight()) / 2, true);
+                else dc.DrawLabel("...", bounds, wxALIGN_CENTER);
+            }
             dc.SetBrush(wxBrush(dark_ ? wxColour(52, 53, 57) : wxColour(232, 233, 235)));
             dc.SetPen(*wxTRANSPARENT_PEN);
             dc.DrawRoundedRectangle(row.bubble, FromDIP(12));
@@ -793,6 +902,8 @@ NativeChatSurface::Hit NativeChatSurface::HitAt(const wxPoint& client_point) con
         const auto cached = row_cache_.find(index);
         if (cached == row_cache_.end()) continue;
         const auto& row = cached->second;
+        for (size_t image = 0; image < row.images.size(); ++image)
+            if (row.images[image].Contains(point)) return {row.item, Action::Image, image};
         if (!row.message.Contains(point)) continue;
         if (row.copy.Contains(point)) return {row.item, Action::Copy};
         if (row.edit.Contains(point)) return {row.item, Action::Edit};
@@ -815,6 +926,15 @@ void NativeChatSurface::Click(wxMouseEvent& event) {
     switch (hit.action) {
         case Action::None: return;
         case Action::Earlier: return;
+        case Action::Image: {
+            const auto* item = transcript_->Item(hit.item);
+            if (hit.image < item->image_paths.size()) {
+                const auto path = item->image_paths[hit.image];
+                if (open_image) open_image(path);
+                else wxLaunchDefaultApplication(U(path));
+            }
+            return;
+        }
         case Action::Copy: Copy(hit.item); return;
         case Action::Edit:
             if (edit && hit.item == transcript_->LastUserIndex()) edit(hit.item);

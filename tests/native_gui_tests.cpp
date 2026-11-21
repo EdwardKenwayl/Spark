@@ -16,6 +16,7 @@
 #include "gui/native/summary_popup.h"
 #include "gui/native/completion_notification.h"
 #include "gui/history_window.h"
+#include "gui/chat_timeline.h"
 #include "platform/clock.h"
 
 #include <wx/app.h>
@@ -73,6 +74,54 @@ struct NativeGuiTestAccess {
     }
     static wxString Activity(NativeChatSurface& surface) { return surface.ActivityText(); }
     static bool Dirty(const NativeChatSurface& surface) { return surface.dirty_; }
+    static bool ImageAboveText(const NativeChatSurface& surface, size_t index) {
+        const auto& row = surface.row_cache_.at(index);
+        return row.images.size() == 2 && !row.fragments.empty() &&
+            row.images.back().GetBottom() < row.bubble.y &&
+            row.bubble.y <= row.fragments.front().origin.y;
+    }
+    static bool TimelineRow(const NativeChatSurface& surface, size_t index, uint64_t timestamp) {
+        const auto& row = surface.row_cache_.at(index);
+        return !row.separator.IsEmpty() && row.timeline == wxString(FormatTimelineTime(timestamp)) &&
+            row.separator.x == row.bounds.x && row.separator.width == row.bounds.width &&
+            row.separator.GetBottom() < row.bubble.y;
+    }
+    static bool NoTimelineRow(const NativeChatSurface& surface, size_t index) {
+        return surface.row_cache_.at(index).separator.IsEmpty();
+    }
+    static std::vector<size_t> VisibleTurns(const NativeChatSurface& surface) {
+        std::vector<size_t> result;
+        for (const auto& dash : surface.rail_)
+            if (surface.IsTurnVisible(dash)) result.push_back(dash.item);
+        return result;
+    }
+    static void ScrollIntoReply(NativeChatSurface& surface) {
+        surface.follow_ = false;
+        surface.Scroll(0, surface.row_cache_.at(0).bounds.GetBottom() + surface.FromDIP(20));
+        surface.Refresh(false);
+    }
+    static void ClickImage(NativeChatSurface& surface, size_t index, size_t image) {
+        const auto& rect = surface.row_cache_.at(index).images.at(image);
+        wxMouseEvent event(wxEVT_LEFT_UP);
+        event.SetPosition(surface.CalcScrolledPosition({rect.x + rect.width / 2, rect.y + rect.height / 2}));
+        surface.Click(event);
+    }
+    static bool PreviewReady(const NativeChatSurface& surface, const std::string& path) {
+        return surface.thumbnail_bitmaps_.count(path) != 0;
+    }
+    static bool PollPreview(NativeChatSurface& surface) { return surface.PollThumbnails(); }
+    static bool ThumbnailFits(const NativeChatSurface& surface, const std::string& path) {
+        const auto& row = surface.row_cache_.at(0);
+        const auto& tile = row.images.front();
+        const auto bitmap = surface.Thumbnail(path, tile.GetSize());
+        return tile.GetSize() == surface.FromDIP(wxSize(144, 108)) &&
+            row.images.back().GetRight() == row.bounds.GetRight() && bitmap.IsOk() &&
+            bitmap.GetWidth() <= tile.width && bitmap.GetHeight() <= tile.height &&
+            std::abs(bitmap.GetHeight() - bitmap.GetWidth() * 2) <= 1;
+    }
+    static const std::set<std::string>& RequestedImages(const NativeChatSurface& surface) {
+        return surface.thumbnail_paths_;
+    }
     static void ClickEarlier(NativeChatSurface& surface) {
         const auto& bounds = surface.earlier_bounds_;
         wxMouseEvent click(wxEVT_LEFT_UP);
@@ -352,6 +401,73 @@ void CheckNativeHistoryActivity(spark::AppConfig config) {
     Events();
     std::cout << "history stage: destroy processed" << std::endl;
 }
+void CheckNativeChatTimeline(const spark::fs::path& temporary) {
+    using namespace spark;
+    const auto picture = PathToUtf8(temporary / "chat-image.png");
+    const auto last_picture = PathToUtf8(temporary / "latest-image.png");
+    const auto empty_picture = PathToUtf8(temporary / "empty-image.png");
+    std::ofstream(NativePath(empty_picture), std::ios::binary).close();
+    wxImage image(480, 960);
+    image.SetRGB(wxRect(0, 0, 480, 960), 200, 80, 100);
+    Check(image.SaveFile(wxString::FromUTF8(picture), wxBITMAP_TYPE_PNG) &&
+          image.SaveFile(wxString::FromUTF8(last_picture), wxBITMAP_TYPE_PNG), "chat fixture images saved");
+    auto* host = new wxFrame(nullptr, wxID_ANY, "Chat timeline fixture");
+    auto* surface = new NativeChatSurface(host);
+    auto* sizer = new wxBoxSizer(wxVERTICAL);
+    sizer->Add(surface, 1, wxEXPAND); host->SetSizer(sizer);
+    host->SetClientSize(host->FromDIP(wxSize(900, 480)));
+    Transcript transcript;
+    constexpr uint64_t timestamp = 1700000000;
+    for (int turn = 0; turn < 8; ++turn) {
+        ChatItem user; user.kind = ChatItemKind::User; user.text = "User turn " + std::to_string(turn);
+        user.timestamp = timestamp + (turn == 7 ? 3600 : turn * 60);
+        user.timeline_separator = turn == 0 || turn == 7;
+        if (turn == 0) user.image_paths = {picture, empty_picture};
+        if (turn == 7) user.image_paths = {last_picture};
+        transcript.Apply({TranscriptEventKind::Add, kNoChatItem, user}, {user.timestamp, 1});
+        ChatItem reply; reply.kind = ChatItemKind::Assistant; reply.text = "A short reply.";
+        if (turn == 0) for (int line = 0; line < 40; ++line) reply.text += "\n\nReply paragraph.";
+        transcript.Apply({TranscriptEventKind::Add, kNoChatItem, reply}, {user.timestamp, 1});
+    }
+    surface->SetTranscript(&transcript, true); host->Show(); Events();
+    surface->Scroll(0, 0); surface->Refresh(false); Events();
+    Check(NativeGuiTestAccess::ImageAboveText(*surface, 0), "sent image tiles occupy a row ABOVE user text");
+    Check(NativeGuiTestAccess::TimelineRow(*surface, 0, timestamp),
+          "persisted user date/time is centered in a separate row without hover");
+    Check(NativeGuiTestAccess::NoTimelineRow(*surface, 2), "ungrouped user turns omit the timeline row");
+    std::string opened;
+    surface->open_image = [&](const std::string& path) { opened = path; };
+    NativeGuiTestAccess::ClickImage(*surface, 0, 0);
+    Check(opened == picture, "clicking a sent image opens that image path");
+    for (int attempt = 0; attempt < 50 && !NativeGuiTestAccess::PreviewReady(*surface, picture); ++attempt) {
+        surface->Tick(); wxMilliSleep(10);
+    }
+    Check(NativeGuiTestAccess::PreviewReady(*surface, picture), "visible sent images decode via async thumbnail cache");
+    Check(NativeGuiTestAccess::ThumbnailFits(*surface, picture),
+          "144x108 logical tiles align right and fit portrait thumbnails without overflow or distortion");
+    Check(!NativeGuiTestAccess::PollPreview(*surface), "settled thumbnails do not trigger repeated idle redraws");
+    Check(!NativeGuiTestAccess::PreviewReady(*surface, empty_picture), "zero-byte images remain placeholders without decoding");
+    Check(NativeGuiTestAccess::RequestedImages(*surface) == std::set<std::string>{picture, empty_picture},
+          "offscreen history images are not requested");
+    NativeGuiTestAccess::ScrollIntoReply(*surface); Events();
+    Check(NativeGuiTestAccess::PreviewReady(*surface, picture), "offscreen decoded thumbnails remain cached");
+    Check(NativeGuiTestAccess::VisibleTurns(*surface) == std::vector<size_t>{0},
+          "the whole reply interval highlights its turn even with its user row above the viewport");
+    surface->ScrollToLatest(); Events();
+    const auto visible = NativeGuiTestAccess::VisibleTurns(*surface);
+    Check(visible.size() > 1 && visible.back() == 14,
+          "multiple intersecting turns highlight together and the latest completed turn is active at bottom");
+    Check(NativeGuiTestAccess::RequestedImages(*surface) == std::set<std::string>{last_picture},
+          "scrolling replaces the bounded image request window");
+    Check(NativeGuiTestAccess::TimelineRow(*surface, 14, timestamp + 3600),
+          "later persisted timeline labels survive row caching and scrolling");
+    surface->Scroll(0, 0); surface->Refresh(false); Events();
+    Check(NativeGuiTestAccess::PreviewReady(*surface, picture),
+          "scrolling back reuses the decoded thumbnail without a placeholder or second decode");
+    surface->SetTranscript(nullptr);
+    Check(NativeGuiTestAccess::RequestedImages(*surface).empty(), "changing conversations invalidates queued thumbnails");
+    host->Destroy(); Events();
+}
 void CheckSummaryHistory() {
     using namespace spark;
     SubAgentInfo orphan;
@@ -575,10 +691,12 @@ int main(int argc, char** argv) {
     using namespace spark;
     bool summary_only = false, history_only = false;
     bool notifications_only = false;
+    bool chat_only = false;
     for (int index = 1; index < argc; ++index) {
         if (std::string(argv[index]) == "--summary") summary_only = true;
         if (std::string(argv[index]) == "--history-activity") history_only = true;
         if (std::string(argv[index]) == "--notifications") notifications_only = true;
+        if (std::string(argv[index]) == "--chat-timeline") chat_only = true;
     }
     wxSetAssertHandler([](const wxString&, int line, const wxString& function,
                          const wxString& condition, const wxString& message) {
@@ -588,6 +706,18 @@ int main(int argc, char** argv) {
     if (!wxEntryStart(argc, argv) || !wxTheApp->CallOnInit()) return 2;
     const auto temporary = fs::temp_directory_path() / NativePath("spark-gui-" + NewSessionId());
     fs::create_directories(temporary);
+    if (chat_only) {
+        history_trace = true;
+        {
+            wxEventLoop event_loop;
+            wxEventLoopActivator activate(&event_loop);
+            CheckNativeChatTimeline(temporary);
+        }
+        wxTheApp->OnExit(); wxEntryCleanup();
+        std::error_code error; fs::remove_all(temporary, error);
+        std::cout << "Native chat timeline regression failures: " << failures << std::endl;
+        return failures ? 1 : 0;
+    }
     const auto output_root = !summary_only && !history_only && !notifications_only && argc > 1 ?
         NativePath(AbsolutePath(argv[1])) : temporary / "screenshots";
     const auto output = output_root / NativePath("run-" + NewSessionId());
@@ -656,6 +786,7 @@ int main(int argc, char** argv) {
         std::cout << "Summary regression failures: " << failures << std::endl;
         return failures ? 1 : 0;
     }
+    CheckNativeChatTimeline(temporary);
     if (argc > 3 && std::string(argv[2]) == "--settings-smoke") {
         const auto existing = LoadConfig(argv[3], false);
         Check(existing.ok, "settings fixture loads the supplied configuration read-only");

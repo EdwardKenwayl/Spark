@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace spark {
 
@@ -20,6 +21,8 @@ enum class ChatItemKind {
 struct ChatItem {
     ChatItemKind kind = ChatItemKind::Assistant;
     std::string text;
+    std::vector<std::string> image_paths;
+    bool timeline_separator = false;
     std::string tool_name;
     std::string arguments;
     std::string result;

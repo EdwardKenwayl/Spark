@@ -1,11 +1,14 @@
 #pragma once
 
 #include "gui/transcript.h"
+#include "gui/native/thumbnail_cache.h"
 #include "render/markdown.h"
 
 #include <wx/scrolwin.h>
+#include <deque>
 #include <functional>
 #include <map>
+#include <set>
 
 namespace spark {
 
@@ -26,13 +29,14 @@ public:
     // Replacing a replay after prepending keeps the old visible row at its screen position.
     void PrependTranscript(Transcript* transcript, size_t added_items);
     std::function<void(size_t)> edit;
+    std::function<void(const std::string&)> open_image;
     std::function<void()> load_earlier;
 
 private:
     friend struct NativeGuiTestAccess;
-    enum class Action { None, Turn, Tool, Group, Copy, Edit, Rail, Earlier };
-    struct Hit { size_t item = kNoChatItem; Action action = Action::None; };
-    struct RailDash { size_t item; int content_top, y; };
+    enum class Action { None, Turn, Tool, Group, Copy, Edit, Rail, Earlier, Image };
+    struct Hit { size_t item = kNoChatItem; Action action = Action::None; size_t image = kNoChatItem; };
+    struct RailDash { size_t item; int content_top, content_end, y; };
     struct Fragment {
         wxString text;
         wxPoint origin;
@@ -45,7 +49,9 @@ private:
     struct Row {
         size_t item = 0;
         wxRect bounds, message, bubble, header, group_header, copy, edit, time;
-        wxString timestamp;
+        wxRect separator;
+        wxString timestamp, timeline;
+        std::vector<wxRect> images;
         bool user = false, expanded = false, group_expanded = false, group_active = false, group_failed = false;
         uint64_t revision = 0;
         size_t reasoning = kNoChatItem, active_tool = kNoChatItem;
@@ -66,6 +72,10 @@ private:
     void ScrollBy(int pixels);
     void UpdateRail(int content_height);
     void DrawRail(wxDC& dc);
+    bool IsTurnVisible(const RailDash& dash) const;
+    void ResetThumbnails();
+    bool PollThumbnails();
+    wxBitmap Thumbnail(const std::string& path, const wxSize& bounds) const;
     void LayoutText(wxDC& dc, Row& row, const std::vector<markdown::MarkdownLine>& lines,
                     int left, int width, int& top, bool muted);
     void LayoutMarkdown(wxDC& dc, Row& row, const std::vector<markdown::MarkdownLine>& lines,
@@ -92,6 +102,11 @@ private:
     std::vector<RailDash> rail_;
     std::map<size_t, Row> row_cache_;
     std::map<size_t, MessageMarkdown> markdown_;
+    NativeThumbnailCache thumbnails_;
+    std::set<std::string> thumbnail_paths_;
+    std::map<std::string, wxBitmap> thumbnail_bitmaps_;
+    std::deque<std::string> thumbnail_lru_;
+    int thumbnail_edge_ = 0;
 };
 
 }  // namespace spark

@@ -249,6 +249,7 @@ add_library(spark_gui STATIC
     src/platform/smart_snapshot.cpp
     src/platform/snapshot_capture.cpp
 )
+target_sources(spark_gui PRIVATE src/gui/chat_image_cache.cpp)
 target_link_libraries(spark_gui PUBLIC spark_transcript imm32 gdiplus uuid)
 target_include_directories(spark_gui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/resources)
 target_sources(spark_gui INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/resources/localization.rc)
@@ -456,6 +457,11 @@ if(WIN32 AND NOT SPARK_CORE_ONLY)
     target_link_libraries(spark_session_loading_tests PRIVATE spark_gui)
     add_test(NAME spark_session_loading_tests COMMAND spark_session_loading_tests)
     set_tests_properties(spark_session_loading_tests PROPERTIES TIMEOUT 15)
+
+    add_executable(spark_conversation_timeline_tests tests/conversation_timeline_tests.cpp)
+    target_link_libraries(spark_conversation_timeline_tests PRIVATE spark_gui)
+    add_test(NAME spark_conversation_timeline_tests COMMAND spark_conversation_timeline_tests)
+    set_tests_properties(spark_conversation_timeline_tests PROPERTIES TIMEOUT 15)
 
     add_executable(spark_settings_provider_tests tests/settings_provider_tests.cpp)
     target_link_libraries(spark_settings_provider_tests PRIVATE spark_gui ws2_32)

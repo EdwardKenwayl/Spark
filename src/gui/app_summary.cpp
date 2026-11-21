@@ -310,7 +310,7 @@ void AppWindow::RefreshSubAgentChat() {
         const auto durations = state.metadata.value("tool_durations_ms", nlohmann::json::object());
         for (const ChatMessage& message : state.messages) {
             if (message.role == MessageRole::User) {
-                side_chat_view_->AddUser(message.content, message.timestamp);
+                side_chat_view_->AddUser(message.content, message.timestamp, message.image_paths);
                 side_turn_entry_ = side_chat_view_->AddTurnStatus(0, running ? info.started_tick_ms : 0);
             } else if (message.role == MessageRole::Assistant) {
                 if (!message.content.empty()) {

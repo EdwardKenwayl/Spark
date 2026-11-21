@@ -3763,7 +3763,7 @@ void AppWindow::StartTurn() {
         if (chat_view_ != nullptr && chat_view_->hwnd() != nullptr) {
             ShowWindow(chat_view_->hwnd(), SW_SHOW);
         }
-        chat_view_->AddUser(text);
+        chat_view_->AddUser(text, 0, turn_image_paths);
         active_turn_entry_ = chat_view_->AddTurnStatus();
     } else {
         active_turn_entry_ = static_cast<size_t>(-1);
@@ -5023,7 +5023,7 @@ void AppWindow::ReloadSessionIntoView(size_t before_message) {
             const ChatMessage& message = transcript[message_index];
             if (message.role == MessageRole::User) {
                 finish_pending_turn();
-                chat_view_->AddUser(message.content, message.timestamp);
+                chat_view_->AddUser(message.content, message.timestamp, message.image_paths);
                 const bool running_turn = (running != nullptr || external_running) && turn_index + 1 == total_turns;
                 const uint64_t running_start_tick = running != nullptr ? running->started_tick : external_start_tick;
                 pending_turn_status = chat_view_->AddTurnStatus(0, running_turn ? running_start_tick : 0);
