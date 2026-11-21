@@ -681,14 +681,14 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
         }
     }
 
-    for (int iteration = 0; iteration < config_.agent.max_iterations; ++iteration) {
+    for (bool first_request = true;; first_request = false) {
         if (cancellation != nullptr && cancellation->IsCancelled()) {
             if (callbacks.on_status) callbacks.on_status("已取消");
             return Result<void>::Failure("cancelled");
         }
         if (ShouldCompactContext(config_.context, *model, estimated_tokens())) {
             if (callbacks.on_status) callbacks.on_status("上下文接近上限，正在生成摘要...");
-            const auto compacted = compact_context(iteration == 0 ? "pre_turn" : "tool_loop");
+            const auto compacted = compact_context(first_request ? "pre_turn" : "tool_loop");
             if (!compacted.ok) {
                 persist_turn_error(compacted.error);
                 if (callbacks.on_error) callbacks.on_error(compacted.error);
@@ -828,42 +828,7 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
             call_index = batch_end;
         }
     }
-    if (cancellation != nullptr && cancellation->IsCancelled()) return Result<void>::Failure("cancelled");
-    if (callbacks.on_status) callbacks.on_status("已达到工具调用轮次上限，正在整理当前进展...");
-    std::vector<ChatMessage> finalization_messages = context_messages();
-    ChatMessage finalization;
-    finalization.role = MessageRole::System;
-    finalization.content =
-        "The tool iteration limit has been reached. Do not call tools. Use the work already completed to "
-        "produce the best possible final response for the user. Clearly list any incomplete work or blockers.";
-    finalization_messages.push_back(std::move(finalization));
-    auto final_reply = complete_request({}, std::move(finalization_messages), "finalization",
-                                        "finalizing after tool limit", false);
-    if (cancellation != nullptr && cancellation->IsCancelled()) return Result<void>::Failure("cancelled");
 
-    ChatMessage answer;
-    answer.role = MessageRole::Assistant;
-    if (final_reply.ok && !Trim(final_reply.value.text).empty()) {
-        answer.content = final_reply.value.text;
-        answer.reasoning_text = final_reply.value.reasoning_text;
-        answer.reasoning_items = final_reply.value.reasoning_items;
-        answer.sources = std::move(final_reply.value.sources);
-    } else {
-        answer.content = "已达到本轮的自动执行上限，已停止继续调用工具。当前进度和工具结果已保留；"
-                         "发送“继续”即可接着处理剩余工作。";
-        if (callbacks.on_text_delta) callbacks.on_text_delta(answer.content);
-    }
-    answer.timestamp = UnixTimeSeconds();
-    if (journal_ != nullptr) {
-        append_message(answer);
-        const auto appended = journal_->Append("message", answer);
-        if (!appended.ok) return Result<void>::Failure(appended.error);
-    } else {
-        append_message(answer);
-    }
-    if (callbacks.on_turn_finished) callbacks.on_turn_finished();
-    NotifyPhase(callbacks, AgentPhase::Completed);
-    return Result<void>::Success();
 }
 
 }  // namespace spark

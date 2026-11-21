@@ -355,7 +355,7 @@ AppConfig ConfigFromJson(const nlohmann::json& document, const std::string& path
     config.context.auto_compact = true;
 
     const auto agent = document.value("agent", nlohmann::json::object());
-    config.agent.max_iterations = IntOr(agent, "max_iterations", config.agent.max_iterations);
+    // Legacy max_iterations is ignored: turns run until completion, cancellation or error.
     config.agent.max_parallel_read_tools =
         IntOr(agent, "max_parallel_read_tools", IntOr(agent, "max_parallel_tools", config.agent.max_parallel_read_tools));
     config.agent.request_timeout_seconds = IntOr(agent, "request_timeout_seconds", config.agent.request_timeout_seconds);
@@ -489,7 +489,6 @@ nlohmann::json ConfigToJson(const AppConfig& config) {
     WriteOverride(context, "manual_compact_command", config.context.manual_compact_command, defaults.context.manual_compact_command);
     document["agent"] = nlohmann::json::object();
     auto& agent = document["agent"];
-    WriteOverride(agent, "max_iterations", config.agent.max_iterations, defaults.agent.max_iterations);
     WriteOverride(agent, "max_parallel_read_tools", config.agent.max_parallel_read_tools, defaults.agent.max_parallel_read_tools);
     WriteOverride(agent, "request_timeout_seconds", config.agent.request_timeout_seconds, defaults.agent.request_timeout_seconds);
     WriteOverride(agent, "response_header_timeout_seconds", config.agent.response_header_timeout_seconds, defaults.agent.response_header_timeout_seconds);
@@ -630,7 +629,7 @@ std::vector<std::string> ValidateConfig(const AppConfig& config, bool require_cr
             errors.push_back("providers." + provider->id + ".api_key: empty");
         }
     }
-    if (config.agent.max_iterations <= 0 || config.agent.max_parallel_read_tools <= 0 ||
+    if (config.agent.max_parallel_read_tools <= 0 ||
         config.agent.request_timeout_seconds <= 0 || config.agent.tool_timeout_seconds <= 0 ||
         config.agent.response_header_timeout_seconds <= 0 ||
         config.agent.max_tool_output_bytes <= 0 || config.agent.max_command_output_bytes <= 0) {

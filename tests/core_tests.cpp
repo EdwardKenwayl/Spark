@@ -305,7 +305,7 @@ void TestProviderSources() {
     Check(uncited.reply.ok && uncited.reply.value.sources.empty(),
           "URLs in ordinary answer text are never invented as source references");
 
-    for (const int iterations : {1, 0}) {
+    for (const bool tool_calls : {true, false}) {
         const std::string directory = spark::JoinPath(spark::CurrentDirectoryUtf8(),
                                                      "spark_sources_test_" + spark::NewSessionId());
         SourceFixtureServer server(body, "text/event-stream");
@@ -315,7 +315,6 @@ void TestProviderSources() {
         config.workspace.path = directory;
         config.storage.data_dir = spark::JoinPath(directory, "data");
         config.skills.enabled = false;
-        config.agent.max_iterations = iterations;
         config.agent.request_timeout_seconds = 5;
         config.agent.response_header_timeout_seconds = 5;
         config.active = {"source-fixture", "source-fixture-model", ""};
@@ -327,7 +326,7 @@ void TestProviderSources() {
         spark::ModelConfig model;
         model.id = "source-fixture-model";
         model.capabilities.streaming = true;
-        model.capabilities.tool_calls = false;
+        model.capabilities.tool_calls = tool_calls;
         provider.models.push_back(model);
         config.providers.push_back(provider);
         spark::SessionJournal journal;
@@ -337,7 +336,7 @@ void TestProviderSources() {
         const auto turn = agent.RunTurn("collect sources", {}, {}, &cancellation);
         Check(turn.ok && !journal.State().messages.empty() &&
                   json(journal.State().messages.back().sources) == expected,
-              "normal and iteration-limit assistant replies receive provider sources");
+              "assistant replies receive provider sources with tools enabled or disabled");
         Check(journal.SaveSnapshot().ok, "source persistence snapshot saves");
         spark::SessionJournal restored;
         Check(restored.Resume(journal.Path()).ok && !restored.State().messages.empty() &&

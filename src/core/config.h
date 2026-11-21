@@ -46,7 +46,6 @@ struct ActiveSelection {
 };
 
 struct AgentLimitsConfig {
-    int max_iterations = 100;
     int max_parallel_read_tools = 4;
     int request_timeout_seconds = 180;
     int response_header_timeout_seconds = 600;

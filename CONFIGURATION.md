@@ -96,9 +96,10 @@ turns, instead of being multiplied into a budget already reduced by headroom.
 These optional fields belong under `agent`. Existing custom timeout and output
 limits remain supported.
 
+Legacy `agent.max_iterations` values are ignored. A turn continues through tool calls and automatic context compaction until the model finishes, the user cancels, or an error occurs; there is no fixed model-call count limit.
+
 | Field | Default | Description |
 | --- | --- | --- |
-| `max_iterations` | `100` | Maximum model-call iterations in a turn |
 | `max_parallel_read_tools` | `4` | Maximum concurrent read tools; the old name `max_parallel_tools` is still accepted |
 | `request_timeout_seconds` | `180` | Maximum idle time without new response stream data |
 | `response_header_timeout_seconds` | `600` | Maximum wait for response headers |

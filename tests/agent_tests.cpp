@@ -190,7 +190,6 @@ spark::AppConfig MakeConfig(int port, const std::string& workspace) {
     config.providers.push_back(provider);
     config.workspace.path = workspace;
     config.storage.data_dir = spark::JoinPath(workspace, "data");
-    config.agent.max_iterations = 8;
     config.agent.request_timeout_seconds = 10;
     config.agent.tool_timeout_seconds = 10;
     return config;
@@ -729,53 +728,6 @@ void TestMidStreamCancellation() {
     callbacks.on_text_delta = [&](const std::string&) { cancellation.Cancel(); };
     const auto response = adapter->Complete(request, callbacks, &cancellation);
     Check(!response.ok && response.error.find("cancel") != std::string::npos, "mid-stream cancellation stops the request");
-    RemoveDirectory(workspace);
-}
-
-void TestMaxIterationsFinalizesGracefully() {
-    FakeServer server;
-    const std::string workspace = TempDirectory("max_iterations");
-    auto config = MakeConfig(server.Port(), workspace);
-    config.agent.max_iterations = 3;
-
-    for (int index = 0; index < config.agent.max_iterations; ++index) {
-        nlohmann::json event;
-        event["choices"] = nlohmann::json::array();
-        event["choices"].push_back({
-            {"delta",
-             {{"tool_calls",
-               nlohmann::json::array({nlohmann::json{
-                   {"index", 0},
-                   {"id", "call-" + std::to_string(index)},
-                   {"type", "function"},
-                   {"function", {{"name", "list_files"}, {"arguments", R"({"path":"."})"}}},
-               }})}}},
-            {"finish_reason", "tool_calls"},
-        });
-        server.Enqueue({200, "text/event-stream", Sse(event) + "data: [DONE]\n\n"});
-    }
-    server.Enqueue({200, "text/event-stream", TextSse("final summary after tool limit")});
-
-    spark::SessionJournal journal;
-    Check(journal.Open(config.storage.data_dir, workspace).ok, "max iteration test session opens");
-    spark::Agent agent(config, &journal, nullptr);
-    spark::AgentCallbacks callbacks;
-    std::string streamed;
-    std::string error;
-    callbacks.on_text_delta = [&](const std::string& text) { streamed += text; };
-    callbacks.on_error = [&](const std::string& text) { error = text; };
-    const auto result = agent.RunTurn("keep working", [](const spark::ApprovalRequest&) { return true; },
-                                      callbacks, nullptr);
-
-    Check(result.ok, "max iteration limit finishes successfully");
-    Check(error.empty(), "max iteration limit does not paint a red error");
-    Check(streamed.find("final summary after tool limit") != std::string::npos,
-          "finalization response is streamed");
-    Check(server.Requests().size() == static_cast<size_t>(config.agent.max_iterations) + 1,
-          "one final no-tools request follows the tool limit");
-    Check(!journal.State().messages.empty() && journal.State().messages.back().role == spark::MessageRole::Assistant &&
-              journal.State().messages.back().content == "final summary after tool limit",
-          "finalization response is persisted in the transcript");
     RemoveDirectory(workspace);
 }
 
@@ -2194,7 +2146,6 @@ int main(int argc, char** argv) {
     TestProviderErrors();
     TestSlowProviderStartup();
     TestMidStreamCancellation();
-    TestMaxIterationsFinalizesGracefully();
     TestAgentToolRoundTripAndContext();
     TestParallelToolCallIDs();
     TestCancellationAndModelSwitch();

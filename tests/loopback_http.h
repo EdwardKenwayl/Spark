@@ -97,7 +97,8 @@ public:
 
     using Handler = std::function<void(Connection&, size_t attempt)>;
 
-    explicit LoopbackHttpServer(Handler handler) : handler_(std::move(handler)) {
+    explicit LoopbackHttpServer(Handler handler, size_t max_requests = 8)
+        : handler_(std::move(handler)), max_requests_(max_requests) {
 #ifdef _WIN32
         WSADATA data{};
         if (WSAStartup(MAKEWORD(2, 2), &data) != 0) throw std::runtime_error("WSAStartup failed");
@@ -284,7 +285,7 @@ private:
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
                     attempt = requests_.size();
-                    if (attempt >= 8) throw std::runtime_error("fixture exceeded eight requests");
+                    if (attempt >= max_requests_) throw std::runtime_error("fixture exceeded request limit");
                     requests_.push_back(std::move(request));
                 }
                 condition_.notify_all();
@@ -298,6 +299,7 @@ private:
     }
 
     Handler handler_;
+    size_t max_requests_;
     Socket listener_ = kInvalid;
     unsigned short port_ = 0;
     std::atomic<bool> stop_{false};
