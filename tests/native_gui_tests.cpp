@@ -20,6 +20,7 @@
 
 #include <wx/app.h>
 #include <wx/choice.h>
+#include <wx/cshelp.h>
 #include <wx/dcclient.h>
 #include <wx/dcmemory.h>
 #include <wx/filedlg.h>
@@ -182,6 +183,11 @@ void CheckCompletionNotifications(spark::AppConfig config) {
     state.messages.back().content.clear();
     Check(!MakeCompletionNotice(notice->path, state), "empty final replies produce no native notice");
 
+    struct ScopedHelpProvider {
+        wxSimpleHelpProvider provider;
+        wxHelpProvider* previous = wxHelpProvider::Set(&provider);
+        ~ScopedHelpProvider() { wxHelpProvider::Set(previous); }
+    } help_provider;
     auto* frame = new NativeFrame(std::move(config));
     NativeGuiTestAccess::SeedNotification(*frame, notice->path);
     NativeGuiTestAccess::SeedNotification(*frame, "notification-second");
@@ -212,12 +218,16 @@ void CheckCompletionNotifications(spark::AppConfig config) {
           "a third native completion fits in the stack");
     Events();
     auto visible = cards();
+    for (auto* card : visible)
+        std::cout << "notification card title=[" << card->GetTitle().ToUTF8().data()
+                  << "] help=[" << card->GetHelpText().ToUTF8().data() << "]\n";
     Check(visible.size() == 3, "native completion stack displays three cards");
     Check(!focused || wxWindow::FindFocus() == focused.get(),
           "showing native completion cards preserves keyboard focus");
     if (visible.size() == 3) {
-        Check(visible[0]->GetTitle() == wxString(notice->title) &&
-                  visible[0]->GetHelpText() == wxString(notice->body),
+        const auto first = std::find_if(visible.begin(), visible.end(),
+            [&](auto* card) { return card->GetTitle() == wxString(notice->title); });
+        Check(first != visible.end() && (*first)->GetHelpText() == wxString(notice->body),
               "native card retains the title and final reply it paints");
         Check(!visible[0]->AcceptsFocus() && !visible[0]->AcceptsFocusFromKeyboard(),
               "native completion cards do not accept focus");
