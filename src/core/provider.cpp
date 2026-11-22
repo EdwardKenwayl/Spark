@@ -5,7 +5,9 @@
 #include "platform/http.h"
 
 #include <algorithm>
+#include <limits>
 #include <map>
+#include <set>
 #include <sstream>
 #include <vector>
 
@@ -815,12 +817,15 @@ public:
                         replayed_reasoning_bytes += message.reasoning_text.size();
                     }
                 }
-                if (!message.content.empty()) {
-                    payload["input"].push_back({
+                const bool known_phase = message.phase == "commentary" || message.phase == "final_answer";
+                if (!message.content.empty() || known_phase) {
+                    nlohmann::json item = {
                         {"type", "message"},
                         {"role", "assistant"},
                         {"content", nlohmann::json::array({{{"type", "output_text"}, {"text", message.content}}})},
-                    });
+                    };
+                    if (known_phase) item["phase"] = message.phase;
+                    payload["input"].push_back(std::move(item));
                 }
                 for (const ToolCall& call : message.tool_calls) {
                     payload["input"].push_back({
@@ -884,6 +889,90 @@ public:
         std::map<std::string, size_t> reasoning_positions;
         std::map<std::pair<std::string, size_t>, std::string> summary_parts;
         std::string raw_prefix;
+        struct TextPart {
+            std::string text;
+            bool done = false;
+            std::set<int64_t> sequences;
+        };
+        struct TextOutput {
+            bool message = false;
+            bool done = false;
+            bool flat = false;
+            std::string id;
+            std::string phase;
+            std::map<size_t, TextPart> parts;
+        };
+        std::map<size_t, TextOutput> text_outputs;
+        std::map<std::string, size_t> output_indices;
+        std::map<std::string, size_t> anonymous_outputs;
+        const size_t unindexed_output = std::numeric_limits<size_t>::max();
+        size_t active_text_output = unindexed_output;
+        size_t next_output_index = 0;
+        std::string response_end_turn = "absent";
+        const auto read_end_turn = [&](const nlohmann::json& response) {
+            const auto end_turn = response.find("end_turn");
+            reply.needs_follow_up = end_turn != response.end() && end_turn->is_boolean() && !end_turn->get<bool>();
+            response_end_turn = end_turn != response.end() && end_turn->is_boolean()
+                                    ? (end_turn->get<bool>() ? "true" : "false") : "absent";
+        };
+        const auto publish_text = [&](bool complete) {
+            std::string available;
+            size_t expected_output = 0;
+            for (const auto& [index, output] : text_outputs) {
+                if (!complete && index != unindexed_output && index != expected_output) break;
+                expected_output = index + 1;
+                if (!output.message) continue;
+                std::string content;
+                size_t expected_part = 0;
+                for (const auto& [part_index, part] : output.parts) {
+                    if (!complete && !output.done && part_index != expected_part) break;
+                    content += part.text;
+                    expected_part = part_index + 1;
+                    if (!complete && !output.done && !part.done) break;
+                }
+                if (!content.empty()) {
+                    if (!available.empty()) available += "\n\n";
+                    available += content;
+                }
+                if (!complete && !output.done) break;
+            }
+            if (available.size() > reply.text.size() && available.compare(0, reply.text.size(), reply.text) == 0) {
+                const auto suffix = available.substr(reply.text.size());
+                reply.text = std::move(available);
+                if (callbacks.on_text_delta) callbacks.on_text_delta(suffix);
+            }
+        };
+        const auto bind_legacy_text = [&](size_t index) {
+            if (index == unindexed_output) return;
+            const auto legacy = text_outputs.find(unindexed_output);
+            if (legacy == text_outputs.end()) return;
+            auto& output = text_outputs[index];
+            output.flat = output.flat || legacy->second.flat;
+            for (auto& [part_index, pending] : legacy->second.parts) {
+                auto& part = output.parts[part_index];
+                if (pending.text.size() > part.text.size() && pending.text.compare(0, part.text.size(), part.text) == 0) {
+                    part.text = std::move(pending.text);
+                }
+                part.done = part.done || pending.done;
+                part.sequences.insert(pending.sequences.begin(), pending.sequences.end());
+            }
+            text_outputs.erase(legacy);
+        };
+        const auto absorb_text = [&](size_t index, size_t content_index, const std::string& text,
+                                     bool delta, bool done, int64_t sequence) {
+            bind_legacy_text(index);
+            auto& output = text_outputs[index];
+            output.message = true;
+            auto& part = output.parts[content_index];
+            if (delta) {
+                if (part.done || (sequence >= 0 && !part.sequences.insert(sequence).second)) return;
+                part.text += text;
+            } else if (text.size() > part.text.size() && text.compare(0, part.text.size(), part.text) == 0) {
+                // Snapshots repeat a prefix already streamed, or fill a missing suffix.
+                part.text = text;
+            }
+            part.done = part.done || done;
+        };
         const auto reasoning_key = [](const std::string& id, size_t output_index) {
             return id.empty() ? "output/" + std::to_string(output_index) : "item/" + id;
         };
@@ -908,6 +997,13 @@ public:
             if (!item.is_object()) return;
             CollectOutputSources(item, reply);
             const std::string item_type = item.value("type", std::string{});
+            text_outputs[output_index];
+            const std::string output_id = item.value("id", std::string{});
+            if (!output_id.empty()) {
+                output_indices[output_id] = output_index;
+                text_outputs[output_index].id = output_id;
+            }
+            next_output_index = std::max(next_output_index, output_index + 1);
             if (item_type == "reasoning") {
                 // Thinking models reject the follow-up request unless the reasoning item
                 // of the previous turn is handed back verbatim, so keep the finished item
@@ -938,15 +1034,49 @@ public:
                 const std::string item_arguments = item.value("arguments", std::string{});
                 if (!item_arguments.empty()) calls_by_id[id].arguments_json = item_arguments;
                 if (!item_id.empty()) call_id_by_item_id[item_id] = id;
-            } else if (item_type == "message" && reply.text.empty()) {
-                // Gateways that do not stream text deltas only publish the finished
-                // text together with the output item.
-                const std::string text = ContentText(item.value("content", nlohmann::json::array()));
-                if (!text.empty()) {
-                    reply.text = text;
-                    if (callbacks.on_text_delta) callbacks.on_text_delta(text);
+            } else if (item_type == "message") {
+                bind_legacy_text(output_index);
+                auto& output = text_outputs[output_index];
+                output.message = true;
+                output.done = output.done || final;
+                const auto phase = item.find("phase");
+                if (phase != item.end() && phase->is_string() && (*phase == "commentary" || *phase == "final_answer")) {
+                    output.phase = phase->get<std::string>();
                 }
+                const auto content = item.find("content");
+                if (output.flat && content != item.end() && content->is_array()) {
+                    const std::string snapshot = ContentText(*content);
+                    const std::string pending = output.parts[0].text;
+                    if (!snapshot.empty() && snapshot.compare(0, pending.size(), pending) == 0) {
+                        // A legacy delta has no content index; repartition its prefix
+                        // before applying a snapshot with several content parts.
+                        output.parts.clear();
+                        size_t offset = 0;
+                        for (size_t index = 0; index < content->size() && offset < pending.size(); ++index) {
+                            const auto& part = (*content)[index];
+                            const std::string type = part.value("type", std::string{});
+                            if (type != "text" && type != "output_text") continue;
+                            const size_t size = std::min(pending.size() - offset, part.value("text", std::string{}).size());
+                            output.parts[index].text = pending.substr(offset, size);
+                            offset += size;
+                        }
+                        output.flat = false;
+                    }
+                }
+                if (content != item.end() && content->is_array()) {
+                    for (size_t index = 0; index < content->size(); ++index) {
+                        const auto& part = (*content)[index];
+                        const std::string type = part.value("type", std::string{});
+                        if (type == "output_text" || type == "text") {
+                            absorb_text(output_index, index, part.value("text", std::string{}), false, final, -1);
+                        }
+                    }
+                } else if (content != item.end() && content->is_string()) {
+                    absorb_text(output_index, 0, content->get<std::string>(), false, final, -1);
+                }
+                active_text_output = final ? unindexed_output : output_index;
             }
+            publish_text(false);
         };
         const auto chunk_callback = [&](const char* data, size_t size) {
             if (!http.stream) return StreamAction::Continue;
@@ -960,18 +1090,28 @@ public:
                     const std::string type = event.value("type", event_name);
                     ++received_events;
                     if (event_type_counts.size() < 12 || event_type_counts.count(type) != 0) ++event_type_counts[type];
-                    if (type == "response.output_text.delta") {
-                        const std::string text = event.value("delta", std::string{});
-                        reply.text += text;
-                        if (callbacks.on_text_delta && !text.empty()) callbacks.on_text_delta(text);
-                    } else if (type == "response.output_text.done") {
-                        if (reply.text.empty()) {
-                            const std::string text = event.value("text", std::string{});
-                            if (!text.empty()) {
-                                reply.text = text;
-                                if (callbacks.on_text_delta) callbacks.on_text_delta(text);
-                            }
+                    if (type == "response.output_text.delta" || type == "response.output_text.done") {
+                        size_t index = event.value("output_index", active_text_output);
+                        const std::string item_id = event.value("item_id", std::string{});
+                        const auto mapped = output_indices.find(item_id);
+                        if (!event.contains("output_index")) {
+                            if (mapped != output_indices.end()) index = mapped->second;
+                            else if (!item_id.empty()) index = next_output_index;
                         }
+                        if (index != unindexed_output) {
+                            if (!item_id.empty()) {
+                                output_indices[item_id] = index;
+                                text_outputs[index].id = item_id;
+                            }
+                            next_output_index = std::max(next_output_index, index + 1);
+                            active_text_output = index;
+                        }
+                        if (!event.contains("content_index")) text_outputs[index].flat = true;
+                        const bool delta = type == "response.output_text.delta";
+                        absorb_text(index, event.value("content_index", size_t{0}),
+                                    event.value(delta ? "delta" : "text", std::string{}),
+                                    delta, !delta, event.value("sequence_number", int64_t{-1}));
+                        publish_text(false);
                     } else if (type == "response.reasoning_summary_text.delta" ||
                                type == "response.reasoning_text.delta") {
                         ++reasoning_events;
@@ -994,9 +1134,20 @@ public:
                     } else if (type == "response.reasoning_text.done") {
                         reasoning_done = event.value("text", std::string{});
                     } else if (type == "response.output_item.added" || type == "response.output_item.done") {
-                        absorb_output_item(event.value("item", nlohmann::json::object()),
-                                           type == "response.output_item.done",
-                                           event.value("output_index", reasoning_items.size()));
+                        const auto item = event.value("item", nlohmann::json::object());
+                        const std::string id = item.value("id", std::string{});
+                        const std::string kind = item.value("type", std::string{});
+                        const bool final = type == "response.output_item.done";
+                        const auto mapped = output_indices.find(id);
+                        size_t index = event.value("output_index",
+                            mapped == output_indices.end() ? next_output_index : mapped->second);
+                        if (!event.contains("output_index") && id.empty()) {
+                            const auto active = anonymous_outputs.find(kind);
+                            if (final && active != anonymous_outputs.end()) index = active->second;
+                            if (final) anonymous_outputs.erase(kind);
+                            else anonymous_outputs[kind] = index;
+                        }
+                        absorb_output_item(item, final, index);
                     } else if (type == "response.output_text.annotation.added") {
                         const auto annotation = event.find("annotation");
                         if (annotation != event.end()) CollectCitation(*annotation, reply);
@@ -1020,6 +1171,7 @@ public:
                         }
                     } else if (type == "response.completed") {
                         const auto response = event.value("response", nlohmann::json::object());
+                        read_end_turn(response);
                         reply.finish_reason = response.value("status", std::string("completed"));
                         if (reply.finish_reason == "failed" || reply.finish_reason == "incomplete") {
                             stream_error = EventErrorMessage(event, "Responses API returned " + reply.finish_reason);
@@ -1028,6 +1180,44 @@ public:
                         AddUsage(response.value("usage", nlohmann::json::object()), reply);
                         // Some gateways only publish the finished output here.
                         if (response.contains("output") && response["output"].is_array()) {
+                            // Unindexed events use provisional positions. Match their message
+                            // state before applying authoritative indexes, including tool gaps.
+                            auto pending = std::move(text_outputs);
+                            text_outputs.clear();
+                            for (size_t index = 0; index < response["output"].size(); ++index) {
+                                const auto& item = response["output"][index];
+                                if (item.value("type", std::string{}) != "message") continue;
+                                const std::string id = item.value("id", std::string{});
+                                const std::string phase = item.contains("phase") && item["phase"].is_string()
+                                    ? item["phase"].get<std::string>() : std::string{};
+                                const std::string snapshot = ContentText(item.value("content", nlohmann::json{}));
+                                auto previous = pending.end();
+                                const auto mapped = output_indices.find(id);
+                                if (!id.empty() && mapped != output_indices.end()) {
+                                    previous = pending.find(mapped->second);
+                                }
+                                if (previous == pending.end()) {
+                                    for (auto candidate = pending.begin(); candidate != pending.end(); ++candidate) {
+                                        const auto& output = candidate->second;
+                                        if (!output.message || (!id.empty() && !output.id.empty() && output.id != id) ||
+                                            (!phase.empty() && !output.phase.empty() && output.phase != phase)) continue;
+                                        std::string prefix;
+                                        for (const auto& part : output.parts) prefix += part.second.text;
+                                        if (snapshot.empty() || snapshot.compare(0, prefix.size(), prefix) == 0) {
+                                            previous = candidate;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (previous != pending.end() && previous->second.message) {
+                                    text_outputs[index] = std::move(previous->second);
+                                    pending.erase(previous);
+                                }
+                            }
+                            output_indices.clear();
+                            anonymous_outputs.clear();
+                            active_text_output = unindexed_output;
+                            next_output_index = 0;
                             for (size_t index = 0; index < response["output"].size(); ++index) {
                                 absorb_output_item(response["output"][index], true, index);
                             }
@@ -1107,6 +1297,14 @@ public:
             info += " | 回传推理 " + std::to_string(replayed_reasoning) + " 条 / " +
                     std::to_string(replayed_reasoning_bytes) + " 字节";
             if (!request_id.empty()) info += " | 请求编号 " + SanitizeDisplayText(request_id);
+            info += " | end_turn=" + response_end_turn;
+            std::string phases;
+            for (const auto& message : reply.assistant_messages) {
+                if (phases.size() >= 256) { phases += ",..."; break; }
+                if (!phases.empty()) phases += ",";
+                phases += message.phase.empty() ? "unknown" : message.phase;
+            }
+            info += " | phases=" + (phases.empty() ? std::string("none") : phases);
             return info;
         };
         if (!response.ok) return Result<ModelReply>::Failure(response.error + " | " + describe_http());
@@ -1120,6 +1318,7 @@ public:
                     return Result<ModelReply>::Failure(EventErrorMessage(json, "Responses API returned an error"));
                 }
                 reply.provider_request_id = json.value("id", std::string{});
+                read_end_turn(json);
                 reply.finish_reason = json.value("status", std::string{});
                 if (reply.finish_reason == "failed" || reply.finish_reason == "incomplete") {
                     return Result<ModelReply>::Failure(EventErrorMessage(json, "Responses API returned " + reply.finish_reason));
@@ -1130,9 +1329,7 @@ public:
                         const auto& item = json["output"][index];
                         CollectOutputSources(item, reply);
                         const std::string type = item.value("type", std::string{});
-                        if (type == "message") {
-                            reply.text += ContentText(item.value("content", nlohmann::json::array()));
-                        } else if (type == "reasoning") {
+                        if (type == "message" || type == "reasoning") {
                             absorb_output_item(item, true, index);
                         } else if (type == "function_call") {
                             ToolCall call;
@@ -1143,12 +1340,24 @@ public:
                         }
                     }
                 }
-                if (callbacks.on_text_delta && !reply.text.empty()) callbacks.on_text_delta(reply.text);
             } catch (const nlohmann::json::exception& exception) {
                 return Result<ModelReply>::Failure(std::string("invalid provider JSON: ") + exception.what());
             }
         }
         if (http.stream) decoder.Finish();
+        publish_text(true);
+        for (const auto& [index, output] : text_outputs) {
+            (void)index;
+            if (!output.message) continue;
+            ChatMessage message;
+            message.role = MessageRole::Assistant;
+            message.phase = output.phase;
+            for (const auto& [content_index, part] : output.parts) {
+                (void)content_index;
+                message.content += part.text;
+            }
+            reply.assistant_messages.push_back(std::move(message));
+        }
         // The finished reasoning belongs to the assistant turn: hand it back on the next
         // request so thinking models do not reject the tool loop with HTTP 400.
         reply.reasoning_text = reasoning_done.empty() ? reasoning_buffer : reasoning_done;
@@ -1164,7 +1373,7 @@ public:
             if (call.arguments_json.empty()) call.arguments_json = "{}";
             reply.tool_calls.push_back(std::move(call));
         }
-        if (reply.text.empty() && reply.tool_calls.empty()) {
+        if (reply.text.empty() && reply.tool_calls.empty() && !reply.needs_follow_up) {
             // Never report an empty turn as success: the UI would end the turn with an
             // empty assistant bubble and no hint about what the provider actually did.
             std::string detail;

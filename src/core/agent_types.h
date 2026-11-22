@@ -59,6 +59,7 @@ struct ChatMessage {
     // Unix seconds when the message was emitted. This is transcript metadata
     // persisted in the session journal and is not sent to model providers.
     uint64_t timestamp = 0;
+    std::string phase;
 };
 
 struct ToolDefinition {
@@ -87,6 +88,8 @@ struct ModelReply {
     // Inbound provenance only. Adapters deduplicate and cap this metadata; it is
     // persisted on the assistant message but never added to provider requests.
     std::vector<SourceReference> sources;
+    std::vector<ChatMessage> assistant_messages;
+    bool needs_follow_up = false;
 };
 
 enum class ApprovalKind {

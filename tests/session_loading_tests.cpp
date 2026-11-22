@@ -713,6 +713,18 @@ struct AppWindowSessionLoadTest {
             Check(live->ui_attached && app.session_deferred_events_.empty() && reply != nullptr &&
                       reply->text == "live output during file read",
                   "buffered streaming output survives journal adoption and renders after layout");
+            const size_t before_follow_up = app.chat_view_->Count();
+            auto* phase = new AppWindow::UiEvent(AppWindow::EventKind::Phase, "fixture-provider");
+            phase->phase = AgentPhase::WaitingModel;
+            phase->session_key = live->session_key;
+            app.HandleUiEvent(phase);
+            auto* follow_up = new AppWindow::UiEvent(AppWindow::EventKind::TextDelta, "separate final answer");
+            follow_up->session_key = live->session_key;
+            app.HandleUiEvent(follow_up);
+            Check(app.chat_view_->Count() == before_follow_up + 1 &&
+                      app.chat_view_->Item(before_follow_up - 1)->text == "live output during file read" &&
+                      app.chat_view_->Item(before_follow_up)->text == "separate final answer",
+                  "a new model request keeps commentary separate from the final text");
         }
         app.active_turns_.erase(live->session_key);
         app.ClearChatView();

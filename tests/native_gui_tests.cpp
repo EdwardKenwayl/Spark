@@ -419,6 +419,15 @@ void CheckNativeHistoryActivity(spark::AppConfig config) {
     Events();
     Check(!NativeGuiTestAccess::Activity(*surface).Contains("Inspecting the native fixture"),
           "completed reasoning is not retained as the current activity");
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Phase);
+    NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Text, "A separate follow-up reply");
+    Events();
+    size_t continuation_rows = 0;
+    for (const auto& item : NativeGuiTestAccess::Model(*frame).Items()) {
+        if (item.kind == ChatItemKind::Assistant &&
+            (item.text == "A visible reply" || item.text == "A separate follow-up reply")) ++continuation_rows;
+    }
+    Check(continuation_rows == 2, "another model request keeps earlier commentary separate from its answer");
     NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Reasoning, "A new same-batch reasoning delta");
     NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::ToolStart, "same-batch-command");
     Events();

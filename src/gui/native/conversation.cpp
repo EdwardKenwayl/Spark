@@ -239,6 +239,9 @@ void NativeFrame::Consume(const NativeEvent& event) {
     } else if (event.kind == NativeEvent::Kind::Context) {
         view.context = event.first_number; view.limit = event.second_number;
     } else if (event.kind == NativeEvent::Kind::Phase) {
+        if (event.phase == AgentPhase::WaitingModel && event.first != "thinking") {
+            finish_assistant();
+        }
         if (event.phase == AgentPhase::WaitingModel && !view.transcript.NeedsAnimation())
             view.status = Add(view.transcript, ChatItemKind::TurnStatus);
         if (event.phase == AgentPhase::Compacting)

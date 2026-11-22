@@ -67,6 +67,7 @@ void to_json(nlohmann::json& output, const ChatMessage& message) {
     if (!message.reasoning_items.empty()) output["reasoning_items"] = message.reasoning_items;
     if (!message.sources.empty()) output["sources"] = message.sources;
     if (message.timestamp != 0) output["timestamp"] = message.timestamp;
+    if (message.phase == "commentary" || message.phase == "final_answer") output["phase"] = message.phase;
 }
 
 void from_json(const nlohmann::json& input, ChatMessage& message) {
@@ -88,6 +89,11 @@ void from_json(const nlohmann::json& input, ChatMessage& message) {
         message.sources = input["sources"].get<std::vector<SourceReference>>();
     }
     message.timestamp = input.value("timestamp", uint64_t{0});
+    message.phase.clear();
+    const auto phase = input.find("phase");
+    if (phase != input.end() && phase->is_string() && (*phase == "commentary" || *phase == "final_answer")) {
+        message.phase = phase->get<std::string>();
+    }
 }
 
 }  // namespace spark

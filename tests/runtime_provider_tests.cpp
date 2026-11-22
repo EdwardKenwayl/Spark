@@ -471,6 +471,7 @@ void ConcurrentCancellation() {
               !interrupted.ok && interrupted.error.find("cancel") != std::string::npos,
           "parallel providers preserve independent output and cancellation state");
 }
+#include "runtime_provider_responses_tests.h"
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -510,6 +511,17 @@ int main(int argc, char** argv) {
             ResponsesSummaryRoundTrip(delivery, false);
         }
         ResponsesRawReasoning();
+        MessagePhaseCompatibility();
+        for (const std::string delivery : {"delta", "partial", "partial_item", "partial_completed",
+                                           "done", "done_only", "item", "item_only", "completed", "json",
+                                           "unindexed", "legacy", "legacy_full", "legacy_mixed", "reverse"}) {
+            for (int end_turn : {-1, 0, 1}) ResponsesMessagePhases(delivery, end_turn);
+        }
+        for (bool streaming : {false, true}) {
+            for (const std::string kind : {"empty", "reasoning", "commentary"}) {
+                for (int end_turn : {-1, 0, 1}) ResponsesEmptyFollowUp(streaming, kind, end_turn);
+            }
+        }
         CatalogAndProbe();
         ConcurrentCancellation();
     } catch (const std::exception& error) {

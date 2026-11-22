@@ -4235,6 +4235,13 @@ void AppWindow::HandleUiEvent(UiEvent* event) {
         case EventKind::Status:
             break;
         case EventKind::Phase:
+            if (event->phase == AgentPhase::WaitingModel && event->first != "thinking") {
+                if (assistant_stream_started_ && chat_view_ != nullptr) {
+                    chat_view_->FinishAssistant(active_assistant_entry_);
+                }
+                assistant_stream_started_ = false;
+                active_assistant_entry_ = static_cast<size_t>(-1);
+            }
             SetPhase(runtime, event->phase, event->first);
             break;
         case EventKind::ReasoningDelta: {

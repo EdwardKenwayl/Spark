@@ -1,6 +1,8 @@
 #include "loopback_http.h"
 #include "core/agent.h"
+#include "core/context_compactor.h"
 
+#include <algorithm>
 #include <iostream>
 
 namespace {
@@ -16,6 +18,108 @@ void Check(bool condition, const char* message) {
 }
 
 enum class Ending { Complete, Cancel, ProviderError };
+
+void TestResponsesContinuation(bool streaming, int end_turn) {
+    const bool follow_up = end_turn == 0;
+    const auto root = fs::temp_directory_path() / Utf8ToWide("spark-follow-up-" + NewSessionId());
+    fs::create_directories(root);
+    Check(WriteFileUtf8Atomic(JoinPath(PathToUtf8(root), "fixture.txt"), "fixture"),
+          "continuation tool input is created");
+    Server server([&](Server::Connection& connection, size_t attempt) {
+        nlohmann::json output = nlohmann::json::array();
+        auto message = [](const char* phase, const char* text) {
+            return nlohmann::json{{"type", "message"}, {"role", "assistant"}, {"phase", phase},
+                {"content", nlohmann::json::array({{{"type", "output_text"}, {"text", text}}})}};
+        };
+        if (attempt == 0) {
+            output.push_back(message("commentary", "Checking the requested file."));
+            output.push_back(message("commentary", "The task is still in progress."));
+        } else if (attempt == 1) {
+            output.push_back({{"type", "reasoning"}, {"id", "reasoning-fixture"},
+                {"encrypted_content", "fixture-encrypted-reasoning"}});
+            output.push_back(message("commentary", "I will read the file now."));
+            output.push_back(message("commentary", "Reading fixture.txt."));
+            output.push_back({{"type", "function_call"}, {"call_id", "read-fixture"},
+                {"name", "read_file"}, {"arguments", R"({"path":"fixture.txt"})"}});
+        } else {
+            output.push_back(message("final_answer", "Done. The file says fixture."));
+        }
+        nlohmann::json response = {{"status", "completed"}, {"output", output}};
+        if (attempt != 0 || end_turn >= 0) response["end_turn"] = attempt == 0 ? !follow_up : attempt > 1;
+        std::string body;
+        if (streaming) {
+            for (size_t index = 0; index < output.size(); ++index) {
+                body += "data: " + nlohmann::json{{"type", "response.output_item.done"},
+                    {"output_index", index}, {"item", output[index]}}.dump() + "\n\n";
+            }
+            body += "data: " + nlohmann::json{{"type", "response.completed"},
+                {"response", response}}.dump() + "\n\n";
+        } else {
+            body = response.dump();
+        }
+        connection.Send(Server::Headers(200, body.size(), streaming
+            ? "Content-Type: text/event-stream\r\n" : "Content-Type: application/json\r\n") + body);
+    }, follow_up ? 3 : 1);
+    AppConfig config;
+    config.workspace.path = PathToUtf8(root);
+    config.storage.data_dir = JoinPath(config.workspace.path, "data");
+    config.skills.enabled = false;
+    ProviderConfig provider;
+    provider.id = "fixture";
+    provider.protocol = "responses";
+    provider.base_url = server.Url("/v1");
+    provider.api_key = "synthetic-fixture";
+    ModelConfig model;
+    model.id = "fixture-model";
+    model.capabilities.streaming = streaming;
+    provider.models.push_back(model);
+    config.providers.push_back(provider);
+    config.active = {provider.id, model.id, ""};
+    SessionJournal journal;
+    Check(journal.Open(config.storage.data_dir, config.workspace.path).ok, "continuation session opens");
+    Agent agent(config, &journal, nullptr);
+    int finished = 0, tools = 0;
+    std::string visible;
+    AgentCallbacks callbacks;
+    callbacks.on_text_delta = [&](const std::string& delta) { visible += delta; };
+    callbacks.on_tool_finish = [&](const auto&, const auto&, bool ok, const auto&) {
+        Check(ok, "continuation tool succeeds"); ++tools;
+    };
+    callbacks.on_turn_finished = [&] { ++finished; };
+    const auto result = agent.RunTurn("Read fixture.txt and report its content.",
+        [](const ApprovalRequest&) { return true; }, callbacks, nullptr);
+    if (!result.ok) std::cerr << "continuation: " << result.error << '\n';
+    const auto requests = server.Requests();
+    Check(result.ok && finished == 1 && tools == (follow_up ? 1 : 0),
+          "explicit end_turn=false continues; true or absent completes even with commentary");
+    Check(requests.size() == (follow_up ? 3 : 1), "continuation makes only the required requests");
+    Check(visible.find("Checking the requested file.") != std::string::npos &&
+              visible.find("The task is still in progress.") != std::string::npos,
+          "all intermediate messages remain visible");
+    if (follow_up && requests.size() == 3) {
+        const auto payload = nlohmann::json::parse(requests[1].body);
+        Check(payload["input"].size() >= 3 &&
+                  payload["input"][1].value("phase", "") == "commentary" &&
+                  payload["input"][2].value("phase", "") == "commentary",
+              "separate commentary messages retain their phase on the next request");
+        Check(journal.State().messages.back().content == "Done. The file says fixture.",
+              "only the completed work becomes the final response");
+        const auto compacted = BuildCompactedHistory(journal.State().messages, "Read fixture.txt.");
+        const auto calls = std::find_if(compacted.begin(), compacted.end(), [](const ChatMessage& item) {
+            return !item.tool_calls.empty();
+        });
+        Check(calls != compacted.end() && calls->reasoning_items.size() == 1 &&
+                  nlohmann::json::parse(calls->reasoning_items.front()).value("id", "") == "reasoning-fixture",
+              "compaction retains reasoning required by a multi-message response's tool calls");
+        SessionJournal restored;
+        Check(restored.Resume(journal.Path()).ok, "continuation journal reloads");
+        const nlohmann::json original = journal.State().messages;
+        const nlohmann::json replayed = restored.State().messages;
+        Check(replayed == original, "reloading preserves message boundaries, phases and tool results");
+    }
+    std::error_code error;
+    fs::remove_all(root, error);
+}
 
 void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool legacy_config) {
     const auto root = fs::temp_directory_path() / Utf8ToWide("spark-loop-" + NewSessionId());
@@ -120,6 +224,8 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
 }  // namespace
 
 int main() {
+    for (bool streaming : {false, true})
+        for (int end_turn : {-1, 0, 1}) TestResponsesContinuation(streaming, end_turn);
     TestLoop("default beyond 100", 105, Ending::Complete, false);
     TestLoop("legacy max_iterations=1", 4, Ending::Complete, true);
     TestLoop("cancel beyond 100", 105, Ending::Cancel, false);
