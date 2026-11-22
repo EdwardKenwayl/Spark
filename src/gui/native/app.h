@@ -132,6 +132,7 @@ private:
     wxTextCtrl* composer_ = nullptr;
     NativeChoice* permissions_ = nullptr;
     NativeButton *model_ = nullptr, *attach_ = nullptr, *send_ = nullptr, *summary_ = nullptr;
+    NativeButton* jump_ = nullptr;
     std::vector<std::pair<wxWindow*, std::wstring>> labels_, tooltips_;
     std::vector<SidebarRow> rows_;
     std::vector<SidebarRow> project_rows_;

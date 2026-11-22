@@ -274,7 +274,7 @@ void NativeFrame::Consume(const NativeEvent& event) {
             if (view.status != kNoChatItem)
                 view.transcript.Apply({paused ? TranscriptEventKind::PauseTurn : TranscriptEventKind::FinishTurn,
                                        view.status, final}, Now());
-            if (!event.success && !paused && !event.first.empty())
+            if (!event.success && !event.first.empty())
                 Add(view.transcript, IsQuotaExhaustedError(event.first) ? ChatItemKind::Quota : ChatItemKind::Error, event.first);
             const auto& usages = metadata.value("turn_usages", nlohmann::json::array());
             if (!usages.empty()) {

@@ -403,6 +403,21 @@ void CheckNativeHistoryActivity(spark::AppConfig config) {
     Check(NativeGuiTestAccess::Activity(*surface).Contains("still receiving live deltas"),
           "live deltas received during the older-page replay stay visible on return");
 
+    NativeGuiTestAccess::Browse(*surface, 0);
+    surface->Tick();
+    Events();
+    auto* jump = wxWindow::FindWindowByName("spark.jump-latest", frame);
+    Check(jump && jump->IsShown() && jump->IsEnabled(), "the jump control is available from an older page");
+    if (jump) {
+        wxCommandEvent click(wxEVT_BUTTON, jump->GetId());
+        click.SetEventObject(jump);
+        jump->GetEventHandler()->ProcessEvent(click);
+        Events();
+        Check(NativeGuiTestAccess::Displayed(*surface) == &NativeGuiTestAccess::Model(*frame) &&
+                  NativeGuiTestAccess::Activity(*surface).Contains("still receiving live deltas"),
+              "the jump control restores the latest transcript and ongoing output");
+    }
+
     NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Phase);
     NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Reasoning, "Inspecting the native fixture");
     Events();

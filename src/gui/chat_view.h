@@ -80,6 +80,7 @@ public:
     size_t LastUserIndex() const;
 
     void ScrollToBottom();
+    void JumpToLatest();
     void Rebuild();
 
 private:

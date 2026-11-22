@@ -2,6 +2,7 @@
 #include "gui/native/runtime.h"
 #include "platform/clock.h"
 
+#include <algorithm>
 #include <iostream>
 
 namespace {
@@ -81,6 +82,65 @@ void TestApprovalScope(const fs::path& root) {
     Check(fs::exists(root / "approval-5.txt"), "allow-once permits its approved write in another session");
     Check(!fs::exists(root / "approval-7.txt"), "a cancelled run cannot reuse a turn approval");
     runtime.Stop();
+}
+
+void TestQuotaResume(const fs::path& root) {
+    const std::string tool = R"({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"quota-tool","type":"function","function":{"name":"list_files","arguments":"{\"path\":\".\"}"}}]},"finish_reason":"tool_calls"}]})";
+    const std::string answer = R"({"choices":[{"delta":{"content":"Resumed answer"},"finish_reason":"stop"}]})";
+    Server server([&](Server::Connection& connection, size_t attempt) {
+        if (attempt == 1) {
+            const std::string body = R"({"error":{"code":"insufficient_quota","message":"Insufficient balance"}})";
+            connection.Send(Server::Headers(402, body.size(), "Content-Type: application/json\r\n") + body);
+            return;
+        }
+        const std::string body = "data: " + (attempt == 0 ? tool : answer) + "\n\ndata: [DONE]\n\n";
+        connection.Send(Server::Headers(200, body.size(), "Content-Type: text/event-stream\r\n") + body);
+    });
+    auto config = Configuration(PathToUtf8(root), server.Url("/v1"));
+    SessionJournal journal;
+    Check(journal.Open(config.storage.data_dir, config.workspace.path).ok, "quota fixture session opens");
+    const auto wait = [&](NativeRuntime& runtime, bool expected_success) {
+        const auto deadline = MonotonicMillis() + 5000;
+        while (MonotonicMillis() < deadline) {
+            for (const auto& event : runtime.Poll()) {
+                if (event.kind != NativeEvent::Kind::Done) continue;
+                Check(event.success == expected_success, "quota fixture returns expected outcome");
+                if (!expected_success) Check(IsQuotaExhaustedError(event.first), "quota error reaches the GUI");
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        Check(false, "quota fixture turn terminates");
+        return false;
+    };
+    {
+        NativeRuntime runtime;
+        Check(runtime.Start(config, journal, "List the fixture directory", false, {}).ok, "quota fixture starts");
+        if (!wait(runtime, false)) return;
+    }
+    SessionJournal paused;
+    if (!paused.Resume(journal.Path()).ok) {
+        Check(false, "quota fixture reloads from disk");
+        return;
+    }
+    const auto& blocked = paused.State().metadata;
+    Check(blocked.contains("paused_turn"), "billing failure persists a resumable turn");
+    Check(blocked.contains("turn_errors"), "billing error remains in the transcript after reload");
+    NativeRuntime runtime;
+    Check(runtime.Start(config, paused, {}, true, {}).ok, "billing failure can resume in a new runtime");
+    if (!wait(runtime, true)) return;
+    const auto finished = runtime.FinishedJournal(journal.Path());
+    Check(finished.ok && !finished.value.State().metadata.contains("paused_turn"),
+          "successful continuation clears the pause");
+    if (!finished.ok) return;
+    const auto& messages = finished.value.State().messages;
+    Check(std::count_if(messages.begin(), messages.end(), [](const ChatMessage& message) {
+        return message.role == MessageRole::User;
+    }) == 1, "continuation does not add another user message");
+    Check(std::count_if(messages.begin(), messages.end(), [](const ChatMessage& message) {
+        return message.role == MessageRole::Tool && message.tool_call_id == "quota-tool";
+    }) == 1, "continuation preserves the prior tool result without rerunning the tool");
+    Check(!messages.empty() && messages.back().content == "Resumed answer", "resumed answer is saved");
 }
 }  // namespace
 int main() {
@@ -164,6 +224,8 @@ int main() {
     runtime.Stop();
     fs::create_directories(root / "approvals", error);
     TestApprovalScope(root / "approvals");
+    fs::create_directories(root / "quota", error);
+    TestQuotaResume(root / "quota");
     fs::remove_all(root, error);
     return failures ? 1 : 0;
 }

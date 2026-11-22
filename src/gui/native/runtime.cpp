@@ -120,6 +120,7 @@ Result<void> NativeRuntime::Start(const AppConfig& config, const SessionJournal&
             return run->approved && !run->cancellation.IsCancelled();
         };
         Result<void> outcome;
+        bool quota_blocked = false;
         try {
             run->journal.Append("session.permission", {{"mode", run->config.permissions.default_mode}});
             const auto discovered = run->mcp->DiscoverEnabled(&run->cancellation);
@@ -164,11 +165,14 @@ Result<void> NativeRuntime::Start(const AppConfig& config, const SessionJournal&
             };
             Agent agent(run->config, &run->journal, run->mcp.get(), run->children.get(), options);
             outcome = agent.RunTurn(text, approve, callbacks, &run->cancellation, resume, images);
+            const auto command = Trim(text);
+            quota_blocked = !outcome.ok && command != "/compact" && command != "/上下文压缩" &&
+                IsQuotaExhaustedError(outcome.error);
         } catch (const std::exception& exception) {
             outcome = Result<void>::Failure(exception.what());
         }
         const uint64_t elapsed = MonotonicMillis() - run->started + run->previous_elapsed;
-        if (run->cancellation.IsCancelled()) {
+        if (run->cancellation.IsCancelled() || quota_blocked) {
             ChatMessage marker;
             marker.role = MessageRole::System;
             marker.content = kInterruptedTurnMarker;
@@ -185,10 +189,12 @@ Result<void> NativeRuntime::Start(const AppConfig& config, const SessionJournal&
         run->journal.Append("turn.usage", {{"input_tokens", input}, {"output_tokens", output},
             {"cached_input_tokens", cached}, {"model_calls", calls}, {"context_tokens", context},
             {"context_limit_tokens", limit}, {"elapsed_ms", elapsed}});
-        if (!outcome.ok && !run->cancellation.IsCancelled()) run->journal.Append("turn.error", {{"error", outcome.error}});
+        if (!outcome.ok && !run->cancellation.IsCancelled() && !quota_blocked)
+            run->journal.Append("turn.error", {{"error", outcome.error}});
         run->journal.SaveSnapshot();
         run->done.store(true, std::memory_order_release);
-        event(NativeEvent::Kind::Done, outcome.error, {}, {}, outcome.ok);
+        event(NativeEvent::Kind::Done, run->cancellation.IsCancelled() ? std::string{} : outcome.error,
+              {}, {}, outcome.ok);
     });
     return Result<void>::Success();
 }

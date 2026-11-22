@@ -24,7 +24,7 @@ enum class NativeButtonAppearance { Plain, Primary, Destructive };
 class NativeButton : public wxControl {
 public:
     NativeButton(wxWindow* parent, const wxString& label = {}, const wxArtID& art = {});
-    void SetArt(const wxArtID& art) { art_ = art; Refresh(); }
+    void SetArt(const wxArtID& art) { if (art_ != art) { art_ = art; Refresh(); } }
     void SetSelected(bool selected) { selected_ = selected; Refresh(); }
     bool IsSelected() const { return selected_; }
     void SetDisclosure(NativeDisclosure disclosure) { disclosure_ = disclosure; Refresh(); }

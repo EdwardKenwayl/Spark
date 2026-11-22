@@ -159,6 +159,12 @@ void NativeFrame::CreateChat() {
     transcript_row->Add(chat_, 1, wxEXPAND | wxTOP | wxBOTTOM, FromDIP(8));
     transcript_row->AddSpacer(FromDIP(16));
     chat_sizer_->Add(transcript_row, 1, wxEXPAND);
+    jump_ = Icon(chat_page_, wxArtID("spark.jump-latest"), L"Jump to latest");
+    jump_->SetName("spark.jump-latest");
+    jump_->SetMinSize(FromDIP(wxSize(28, 28)));
+    tooltips_.push_back({jump_, L"Jump to latest"});
+    jump_->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { chat_->ScrollToLatest(); });
+    chat_sizer_->Add(jump_, 0, wxALIGN_CENTER_HORIZONTAL | wxBOTTOM, FromDIP(4));
     composer_host_ = new wxPanel(chat_page_);
     auto* centered = new wxBoxSizer(wxHORIZONTAL);
     centered->AddStretchSpacer();
@@ -309,6 +315,8 @@ void NativeFrame::RestoreWindow() { Show(); if (IsIconized()) Iconize(false); Ra
 void NativeFrame::Error(const std::string& message) { wxMessageBox(U(message), "Spark", wxOK | wxICON_ERROR, this); }
 void NativeFrame::UpdateControls() {
     const bool running = runtime_.Running(active_) || external_.count(active_) != 0;
+    jump_->SetArt(running ? wxArtID("spark.jump-busy") : wxArtID("spark.jump-latest"));
+    jump_->Enable(loading_path_.empty());
     const auto remote = external_.find(active_);
     if (remote != external_.end()) {
         const auto mode = remote->second.value("permission_mode", std::string("ask"));

@@ -323,6 +323,18 @@
     "pt-BR": "Há {count} dias",
     "ru-RU": "{count} дн. назад"
   },
+  "Jump to latest": {
+    "zh-CN": "跳到聊天底部",
+    "en-US": "Jump to latest",
+    "zh-TW": "跳到聊天底部",
+    "ja-JP": "最新のメッセージへ移動",
+    "ko-KR": "최신 메시지로 이동",
+    "de-DE": "Zur neuesten Nachricht springen",
+    "fr-FR": "Aller au dernier message",
+    "es-ES": "Ir al último mensaje",
+    "pt-BR": "Ir para a última mensagem",
+    "ru-RU": "Перейти к последнему сообщению"
+  },
   "Toggle summary": {
     "zh-CN": "切换摘要",
     "en-US": "Toggle summary",

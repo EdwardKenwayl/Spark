@@ -190,7 +190,26 @@ void NativeButton::Paint(wxPaintEvent&) {
     else dc.DrawRectangle(GetClientRect());
     dc.SetFont(GetFont()); dc.SetTextForeground(ink);
     int left = FromDIP(section ? 0 : 12);
-    if (GetName() == "spark.send") {
+    if (GetName() == "spark.jump-latest") {
+        const int x = GetClientSize().x / 2, y = GetClientSize().y / 2;
+        dc.SetPen(HasFocus() ? wxPen(p.muted) : *wxTRANSPARENT_PEN);
+        dc.SetBrush(wxBrush(fill ? p.selection : p.panel));
+        dc.DrawEllipse(GetClientRect());
+        const wxColour symbol = IsEnabled() && (hover_ || HasFocus()) ? p.text : p.muted;
+        if (IsEnabled() && art_ == "spark.jump-busy" && !hover_) {
+            dc.SetPen(*wxTRANSPARENT_PEN);
+            dc.SetBrush(wxBrush(symbol));
+            for (const int offset : {-6, 0, 6}) {
+                dc.DrawCircle(x + FromDIP(offset), y, FromDIP(2));
+            }
+        } else {
+            dc.SetPen(wxPen(symbol, FromDIP(1)));
+            dc.DrawLine(x, y - FromDIP(6), x, y + FromDIP(6));
+            const wxPoint head[] = {{x - FromDIP(4), y + FromDIP(1)}, {x, y + FromDIP(6)},
+                                    {x + FromDIP(4), y + FromDIP(1)}};
+            dc.DrawLines(3, head);
+        }
+    } else if (GetName() == "spark.send") {
         const bool dark = Dark(this), busy = art_ == wxART_CROSS_MARK;
         const wxColour accent = dark ? wxColour(91, 99, 112) : wxColour(70, 78, 92);
         const wxColour active = dark ? wxColour(108, 117, 132) : wxColour(49, 56, 68);

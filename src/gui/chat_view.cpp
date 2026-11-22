@@ -2221,6 +2221,13 @@ size_t ChatView::LastUserIndex() const {
     return last_user_index_;
 }
 
+void ChatView::JumpToLatest() {
+    CloseHistory();
+    if (history_browser_) history_browser_->skip_latest = 0;
+    auto_scroll_enabled_ = true;
+    ScrollToBottom();
+}
+
 void ChatView::ScrollToBottom() {
     if (window_ == nullptr || loading_) return;
     HDC device = GetDC(window_);
@@ -3361,10 +3368,7 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             if (loading_) return 0;
             if (history_owner_ && wparam == VK_END) {
                 auto* owner = history_owner_;
-                owner->history_browser_->skip_latest = 0;
-                owner->CloseHistory();
-                owner->auto_scroll_enabled_ = true;
-                owner->ScrollToBottom();
+                owner->JumpToLatest();
                 SetFocus(owner->window_);
                 return 0;
             }

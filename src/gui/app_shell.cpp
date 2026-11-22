@@ -72,6 +72,7 @@ constexpr int kSubAgentButton = 529;
 constexpr int kSideChat = 530;
 constexpr int kSideTitle = 531;
 constexpr int kSideClose = 532;
+constexpr int kJumpToLatest = 533;
 
 constexpr int kPermissionAsk = 701;
 constexpr int kPermissionApprove = 702;
@@ -1204,7 +1205,7 @@ void AppWindow::TickTurnWatchdog() {
     for (const auto& entry : active_turns_) turns.push_back(entry.second);
     for (const auto& runtime : turns) {
         if (runtime->complete.load()) {
-            const std::string reason = runtime->interrupt_requested.load()
+            const std::string reason = runtime->paused.load()
                                            ? "paused"
                                            : runtime->cancelled.load() ? "cancelled" : "";
             FinishTurn(runtime, runtime->success.load(), reason);
@@ -1464,6 +1465,8 @@ void AppWindow::CreateControls() {
                                  0, 0, 0, 0, window_, ControlId(kModelCombo), instance_, nullptr);
     model_button_ = button(L"", kModelButton);
     send_button_ = button(L"↑", kSend);
+    jump_button_ = button(i18n::Text(L"Jump to latest"), kJumpToLatest);
+    SetWindowSubclass(jump_button_, JumpButtonProc, 1, reinterpret_cast<DWORD_PTR>(this));
     workspace_label_ = label(L"", kWorkspaceLabel, SS_LEFT | SS_ENDELLIPSIS);
     status_label_ = label(L"", kStatusLabel, SS_LEFT | SS_ENDELLIPSIS);
     empty_mark_ = label(L"", kEmptyMark, SS_OWNERDRAW | SS_NOPREFIX);
@@ -1655,9 +1658,12 @@ void AppWindow::LayoutControls() {
     // The status label is intentionally retired. Keep the HWND for compatibility with
     // existing call sites, but do not reserve a strip that can cover transcript text.
     place(status_label_, 0, 0, 0, 0);
+    const int jump_size = Dpi(28);
+    const int jump_top = panel_top - jump_size - Dpi(4);
+    place(jump_button_, (panel_left + panel_right - jump_size) / 2, jump_top, jump_size, jump_size);
     if (chat_view_ != nullptr && chat_view_->hwnd() != nullptr) {
         place(chat_view_->hwnd(), main_x + Dpi(16), topbar_height + Dpi(8), main_right - main_x - Dpi(32),
-              std::max(Dpi(100), panel_top - topbar_height - Dpi(16)));
+              std::max(1, jump_top - topbar_height - Dpi(10)));
     }
     if (!settings_mode_) {
         const int empty_center = (topbar_height + panel_top) / 2;
@@ -2735,7 +2741,7 @@ void AppWindow::SetSettingsMode(bool enabled) {
         recent_label_, history_list_, recent_menu_button_, recent_new_button_, sidebar_scrollbar_, settings_button_,
         main_title_label_, context_label_, summary_button_, subagent_button_, model_label_, model_combo_, model_button_,
         permission_button_, plus_button_, side_title_label_, side_close_button_,
-        composer_, send_button_, workspace_label_, status_label_, empty_mark_, empty_title_,
+        composer_, send_button_, jump_button_, workspace_label_, status_label_, empty_mark_, empty_title_,
     };
     if (chat_view_ != nullptr && chat_view_->hwnd() != nullptr) controls.push_back(chat_view_->hwnd());
     if (side_chat_view_ != nullptr && side_chat_view_->hwnd() != nullptr) controls.push_back(side_chat_view_->hwnd());
@@ -3918,7 +3924,8 @@ void AppWindow::StartTurn() {
             flush_reasoning();
             flush_text();
             const bool cancelled = runtime->cancellation.IsCancelled();
-            const bool paused = cancelled && runtime->interrupt_requested.load();
+            const bool paused = cancelled ? runtime->interrupt_requested.load() :
+                runtime->timed_turn && !result.ok && IsQuotaExhaustedError(result.error);
             if (!runtime->usage_context_published.load()) {
                 // Local commands never call the provider; fall back to a local estimate so the
                 // header and the usage card still agree.
@@ -3935,6 +3942,7 @@ void AppWindow::StartTurn() {
             }
             const bool success = result.ok || cancelled;
             runtime->cancelled.store(cancelled);
+            runtime->paused.store(paused);
             runtime->success.store(success);
             runtime->complete.store(true);
             post_event(EventKind::TurnFinished,
@@ -4162,6 +4170,10 @@ bool AppWindow::ActivityRowVisible() const {
 
 void AppWindow::UpdateSendButton() {
     const bool running = IsActiveSessionRunning();
+    if (jump_button_ != nullptr) {
+        EnableWindow(jump_button_, SessionLoading() ? FALSE : TRUE);
+        InvalidateRect(jump_button_, nullptr, FALSE);
+    }
     const bool has_text = !Trim(ComposerText()).empty();
     const bool paused = !running && HasPausedTurn();
     const bool show_play = paused && !has_text;
@@ -5242,6 +5254,23 @@ bool AppWindow::RouteMouseWheelToChat(WPARAM wparam, LPARAM lparam) {
         return true;
     }
     return false;
+}
+
+LRESULT CALLBACK AppWindow::JumpButtonProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+                                          UINT_PTR subclass_id, DWORD_PTR reference_data) {
+    auto* self = reinterpret_cast<AppWindow*>(reference_data);
+    if (message == WM_MOUSEMOVE && !self->jump_hovered_) {
+        TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, window, 0};
+        TrackMouseEvent(&tracking);
+        self->jump_hovered_ = true;
+        InvalidateRect(window, nullptr, FALSE);
+    } else if (message == WM_MOUSELEAVE || (message == WM_SHOWWINDOW && !wparam)) {
+        self->jump_hovered_ = false;
+        InvalidateRect(window, nullptr, FALSE);
+    } else if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(window, JumpButtonProc, subclass_id);
+    }
+    return DefSubclassProc(window, message, wparam, lparam);
 }
 
 LRESULT CALLBACK AppWindow::ComposerSubclassProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
@@ -6496,6 +6525,42 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                 DeleteObject(chevron);
                 return TRUE;
             }
+            if (item->CtlID == kJumpToLatest) {
+                const bool focused = (item->itemState & ODS_FOCUS) != 0;
+                const bool hover = !disabled && (jump_hovered_ || focused);
+                const auto fill = pressed ? kAccentPressed : hover ? kAccent : kPanel;
+                const auto ink = disabled || !hover ? kMuted : kText;
+                const auto& rect = item->rcItem;
+                const int x = (rect.left + rect.right) / 2;
+                const int y = (rect.top + rect.bottom) / 2;
+                FillRect(item->hDC, &rect, CachedBrush(kBackground));
+                const auto pen = CreatePen(PS_SOLID, 1, focused ? kMuted : fill);
+                const auto old_pen = SelectObject(item->hDC, pen);
+                const auto old_brush = SelectObject(item->hDC, CachedBrush(fill));
+                Ellipse(item->hDC, rect.left, rect.top, rect.right, rect.bottom);
+                if (!disabled && IsActiveSessionRunning() && !jump_hovered_) {
+                    SelectObject(item->hDC, GetStockObject(NULL_PEN));
+                    SelectObject(item->hDC, CachedBrush(ink));
+                    const int radius = Dpi(2);
+                    for (int offset : {-6, 0, 6}) {
+                        const int dot = x + Dpi(offset);
+                        Ellipse(item->hDC, dot - radius, y - radius, dot + radius + 1, y + radius + 1);
+                    }
+                } else {
+                    const auto arrow = CreatePen(PS_SOLID, Dpi(1), ink);
+                    SelectObject(item->hDC, arrow);
+                    const POINT stem[] = {{x, y - Dpi(6)}, {x, y + Dpi(6)}};
+                    const POINT head[] = {{x - Dpi(4), y + Dpi(1)}, {x, y + Dpi(6)}, {x + Dpi(4), y + Dpi(1)}};
+                    Polyline(item->hDC, stem, 2);
+                    Polyline(item->hDC, head, 3);
+                    SelectObject(item->hDC, old_pen);
+                    DeleteObject(arrow);
+                }
+                SelectObject(item->hDC, old_brush);
+                SelectObject(item->hDC, old_pen);
+                DeleteObject(pen);
+                return TRUE;
+            }
             if (item->CtlID == kSend) {
                 const bool busy = IsActiveSessionRunning();
                 const bool paused = !busy && HasPausedTurn() && Trim(ComposerText()).empty();
@@ -6619,6 +6684,10 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             }
             if (id == kSend && notification == BN_CLICKED) {
                 ToggleSendAction();
+                return 0;
+            }
+            if (id == kJumpToLatest && notification == BN_CLICKED) {
+                if (chat_view_ != nullptr && !SessionLoading()) chat_view_->JumpToLatest();
                 return 0;
             }
             if (id == kPlusButton && notification == BN_CLICKED) {

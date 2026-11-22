@@ -96,6 +96,7 @@ private:
         std::atomic<bool> complete{false};
         std::atomic<bool> success{false};
         std::atomic<bool> cancelled{false};
+        std::atomic<bool> paused{false};
         std::atomic<bool> interrupt_requested{false};
         std::atomic<uint64_t> last_progress_tick{0};
         std::atomic<uint64_t> usage_input_tokens{0};
@@ -213,6 +214,8 @@ private:
     static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
     static LRESULT CALLBACK ComposerSubclassProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
                                                  UINT_PTR subclass_id, DWORD_PTR reference_data);
+    static LRESULT CALLBACK JumpButtonProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+                                           UINT_PTR subclass_id, DWORD_PTR reference_data);
     static LRESULT CALLBACK HistorySubclassProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
                                                 UINT_PTR subclass_id, DWORD_PTR reference_data);
     static LRESULT CALLBACK SidebarListSubclassProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
@@ -411,6 +414,8 @@ private:
     HWND plus_button_ = nullptr;
     HWND composer_ = nullptr;
     HWND send_button_ = nullptr;
+    HWND jump_button_ = nullptr;
+    bool jump_hovered_ = false;
     HWND workspace_label_ = nullptr;
     HWND status_label_ = nullptr;
     HWND side_title_label_ = nullptr;
