@@ -13,7 +13,7 @@ void NativeList::DrawSidebarRow(wxDC& dc, const wxRect& rect, size_t index) cons
     const bool dark = GetBackgroundColour().Red() < 128;
     const auto palette = NativeColors(dark);
     const bool hovered = static_cast<int>(index) == hovered_;
-    const bool active = hovered || IsSelected(index);
+    const bool active = hovered || current_[index];
     const auto kind = kinds_[index];
     const bool project = kind == NativeListKind::ProjectExpanded || kind == NativeListKind::ProjectCollapsed ||
                          kind == NativeListKind::ProjectEmpty;
@@ -21,7 +21,9 @@ void NativeList::DrawSidebarRow(wxDC& dc, const wxRect& rect, size_t index) cons
     const bool branch = kind == NativeListKind::ProjectChat;
     const wxColour ink = active ? wxColour(250, 250, 250) : more ? palette.muted : palette.text;
     dc.SetPen(*wxTRANSPARENT_PEN);
-    dc.SetBrush(wxBrush(active ? dark ? palette.selection : wxColour(42, 43, 46) : GetBackgroundColour()));
+    const auto selection = dark ? palette.selection : wxColour(42, 43, 46);
+    const auto hover = dark ? wxColour(37, 38, 41) : wxColour(78, 79, 82);
+    dc.SetBrush(wxBrush(current_[index] ? selection : hovered ? hover : GetBackgroundColour()));
     dc.DrawRectangle(rect);
     dc.SetFont(GetFont());
     dc.SetTextForeground(ink);

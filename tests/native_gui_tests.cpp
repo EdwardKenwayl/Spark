@@ -85,6 +85,12 @@ struct NativeGuiTestAccess {
     }
     static NativeChatSurface* Surface(NativeFrame& frame) { return frame.chat_; }
     static Transcript& Model(NativeFrame& frame) { return frame.Active()->transcript; }
+    static Transcript* Displayed(NativeChatSurface& surface) { return surface.transcript_; }
+    static void Browse(NativeChatSurface& surface, size_t turn) { surface.BrowseTurn(turn); }
+    static void ScrollPastBottom(NativeChatSurface& surface) {
+        surface.Scroll(0, surface.GetVirtualSize().y);
+        surface.ScrollBy(surface.GetVirtualSize().y);
+    }
     static void Event(NativeFrame& frame, NativeEvent::Kind kind, const std::string& text = {}) {
         NativeEvent event;
         event.path = frame.active_; event.kind = kind; event.first = text;
@@ -373,20 +379,29 @@ void CheckNativeHistoryActivity(spark::AppConfig config) {
     NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Reasoning, "Before the older-page replay");
     Events();
     surface->Scroll(0, 0);
-    const int anchor = NativeGuiTestAccess::Anchor(*surface, "window-user-12");
-    NativeGuiTestAccess::ClickEarlier(*surface);
-    Check(surface->EarlierLoading(), "earlier-message action exposes a loading state immediately");
+    surface->RequestEarlier();
+    Check(surface->Loading(), "earlier-message action exposes a loading state immediately");
     NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Reasoning, " and still receiving live deltas");
-    for (int attempt = 0; attempt < 20 && surface->EarlierLoading(); ++attempt) Events();
-    Check(NativeGuiTestAccess::Model(*frame).HistoryFirstMessage() == 8 &&
-              NativeGuiTestAccess::Anchor(*surface, "window-user-12") == anchor,
-          "prepending eight turns preserves the original message's viewport anchor");
+    surface->Tick();
+    Events();
+    Check(NativeGuiTestAccess::Model(*frame).HistoryFirstMessage() == 24 &&
+              NativeGuiTestAccess::Displayed(*surface)->HistoryFirstMessage() == 4 &&
+              NativeGuiTestAccess::Displayed(*surface)->Count() <= 30,
+          "history paging keeps at most ten earlier turns and the live transcript remains intact");
+    NativeGuiTestAccess::Browse(*surface, 0);
+    surface->Tick();
+    Events();
+    Check(NativeGuiTestAccess::Displayed(*surface)->Item(0)->text == "window-user-0",
+          "a marker outside the current page opens the selected early turn");
+    NativeGuiTestAccess::ScrollPastBottom(*surface);
+    surface->Tick();
+    Events();
+    NativeGuiTestAccess::ScrollPastBottom(*surface);
+    Events();
+    Check(NativeGuiTestAccess::Displayed(*surface) == &NativeGuiTestAccess::Model(*frame),
+          "scrolling back down reaches the live transcript");
     Check(NativeGuiTestAccess::Activity(*surface).Contains("still receiving live deltas"),
-          "live deltas received during the older-page replay survive its commit");
-    NativeGuiTestAccess::ScrollEarlier(*surface);
-    for (int attempt = 0; attempt < 20 && surface->EarlierLoading(); ++attempt) Events();
-    Check(NativeGuiTestAccess::Model(*frame).HistoryFirstMessage() == 0,
-          "the final earlier page reaches the first user turn");
+          "live deltas received during the older-page replay stay visible on return");
 
     NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Phase);
     NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Reasoning, "Inspecting the native fixture");

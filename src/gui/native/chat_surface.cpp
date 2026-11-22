@@ -198,8 +198,23 @@ NativeChatSurface::NativeChatSurface(wxWindow* parent)
         if (loading_) return;
         if (event.GetWheelAxis() != wxMOUSE_WHEEL_VERTICAL) { event.Skip(); return; }
         const int rotation = event.GetWheelRotation();
-        if (rotation) ScrollBy((rotation > 0 ? -1 : 1) * FromDIP(54)
-            * std::max(1, std::abs(rotation) / std::max(1, event.GetWheelDelta())));
+        if (!rotation) return;
+        const int steps = std::max(1, std::abs(rotation) / std::max(1, event.GetWheelDelta()));
+        if (history_browser_ && event.GetX() <= FromDIP(24) && !rail_.empty() &&
+            history_browser_->Count() > rail_.size()) {
+            auto& skip = history_browser_->skip_latest;
+            const auto advance = static_cast<size_t>(steps) * 3;
+            skip = rotation > 0 ? std::min(skip + advance, history_browser_->Count() - rail_.size())
+                               : skip - std::min(skip, advance);
+            UpdateRail(GetVirtualSize().y);
+            const auto hit = HitAt(event.GetPosition());
+            hovered_ = hit.item;
+            hovered_action_ = hit.action;
+            history_browser_->Hover(hit.action == Action::Rail ? hit.item : kNoChatItem, MonotonicMillis());
+            Refresh(false);
+            return;
+        }
+        ScrollBy((rotation > 0 ? -1 : 1) * FromDIP(54) * steps);
     });
     Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
         if (loading_) return;
@@ -242,6 +257,8 @@ NativeChatSurface::NativeChatSurface(wxWindow* parent)
         if (hit.item != hovered_ || hit.action != hovered_action_) {
             hovered_ = hit.item;
             hovered_action_ = hit.action;
+            if (history_browser_)
+                history_browser_->Hover(hit.action == Action::Rail ? hit.item : kNoChatItem, MonotonicMillis());
             UnsetToolTip();
             if (hit.action == Action::Copy) {
                 const auto* item = transcript_ ? transcript_->Item(hit.item) : nullptr;
@@ -254,6 +271,7 @@ NativeChatSurface::NativeChatSurface(wxWindow* parent)
     Bind(wxEVT_LEAVE_WINDOW, [this](wxMouseEvent&) {
         hovered_ = kNoChatItem;
         hovered_action_ = Action::None;
+        if (history_browser_) history_browser_->Hover(kNoChatItem, 0);
         UnsetToolTip();
         SetCursor(wxCURSOR_ARROW);
         Refresh(false);
@@ -265,6 +283,11 @@ void NativeChatSurface::SetDark(bool dark) { dark_ = dark; row_cache_.clear(); d
 void NativeChatSurface::SetEmptyTitle(const wxString& title) { empty_title_ = title; Refresh(false); }
 void NativeChatSurface::SetLoading(uint64_t started) { loading_ = started; Refresh(false); }
 void NativeChatSurface::SetTranscript(Transcript* transcript, bool reset_scroll) {
+    if (history_browser_ && transcript != &history_browser_->transcript) {
+        live_transcript_ = transcript;
+        if (reset_scroll) history_browser_->Reset();
+        else if (history_browser_->page.end_turn) return;
+    }
     if (transcript != transcript_) {
         transcript_ = transcript; markdown_.clear(); row_cache_.clear();
         ui::ClearNativeMarkdownLinks(this);
@@ -278,11 +301,65 @@ void NativeChatSurface::SetTranscript(Transcript* transcript, bool reset_scroll)
     dirty_ = true;
     Refresh(false);
 }
+void NativeChatSurface::EnableHistory(HistoryBrowser::Source source) {
+    history_browser_ = std::make_unique<HistoryBrowser>(std::move(source));
+}
+void NativeChatSurface::CloseHistory() {
+    if (!history_browser_ || !history_browser_->page.end_turn) return;
+    history_browser_->page = {};
+    history_browser_->transcript.Clear();
+    history_browser_->Hover(kNoChatItem, 0);
+    SetTranscript(live_transcript_);
+    loading_ = 0;
+}
+void NativeChatSurface::BrowseTurn(size_t turn) {
+    auto& browser = *history_browser_;
+    browser.Update();
+    if (!live_transcript_) return;
+    browser.Reveal(turn, rail_.size());
+    const auto live_first = browser.Turn(live_transcript_->HistoryFirstMessage());
+    if (turn >= live_first) {
+        CloseHistory();
+        JumpToTurn(turn);
+        return;
+    }
+    if (browser.page.Contains(turn) && !browser.transcript.Loading()) {
+        JumpToTurn(turn);
+        return;
+    }
+    browser.Open(turn, live_first, {UnixTimeSeconds(), MonotonicMillis()});
+    SetTranscript(&browser.transcript);
+    follow_ = false;
+    SetLoading(MonotonicMillis());
+}
+void NativeChatSurface::JumpToTurn(size_t turn) {
+    if (!transcript_) return;
+    size_t ordinal = history_browser_->Turn(transcript_->HistoryFirstMessage());
+    const auto& items = transcript_->Items();
+    for (size_t index = 0; index < items.size(); ++index) {
+        if (items[index].kind != ChatItemKind::User || ordinal++ != turn) continue;
+        if (transcript_ == live_transcript_ && index == transcript_->LastUserIndex()) {
+            ScrollToLatest();
+            return;
+        }
+        follow_ = false;
+        anchor_item_ = index;
+        anchor_offset_ = -FromDIP(12);
+        Changed();
+        return;
+    }
+}
 void NativeChatSurface::SetEarlierLoading(bool loading) {
     earlier_loading_ = loading;
     Refresh(false);
 }
 void NativeChatSurface::RequestEarlier() {
+    if (history_browser_ && transcript_ && !loading_) {
+        history_browser_->Update();
+        const auto first = history_browser_->Turn(transcript_->HistoryFirstMessage());
+        if (first) BrowseTurn(first - 1);
+        return;
+    }
     if (!loading_ && !earlier_loading_ && transcript_ && transcript_->HistoryFirstMessage() && load_earlier) {
         follow_ = false;
         load_earlier();
@@ -317,6 +394,8 @@ void NativeChatSurface::Changed() {
     Refresh(false);
 }
 void NativeChatSurface::ScrollToLatest() {
+    CloseHistory();
+    if (history_browser_) history_browser_->skip_latest = 0;
     follow_ = true;
     dirty_ = true;
     Scroll(0, std::max(0, GetVirtualSize().y - GetClientSize().y));
@@ -324,6 +403,12 @@ void NativeChatSurface::ScrollToLatest() {
 }
 void NativeChatSurface::ScrollBy(int pixels) {
     const int bottom = std::max(0, GetVirtualSize().y - GetClientSize().y);
+    if (history_browser_ && transcript_) {
+        const auto& page = history_browser_->page;
+        const size_t first = history_browser_->Turn(transcript_->HistoryFirstMessage());
+        if (pixels < 0 && GetViewStart().y <= 0 && first) { BrowseTurn(first - 1); return; }
+        if (pixels > 0 && GetViewStart().y >= bottom && page.end_turn) { BrowseTurn(page.end_turn); return; }
+    }
     const int next = std::clamp(GetViewStart().y + pixels, 0, bottom);
     follow_ = pixels >= 0 && next >= bottom - FromDIP(2);
     hovered_ = kNoChatItem;
@@ -332,11 +417,19 @@ void NativeChatSurface::ScrollBy(int pixels) {
     SetCursor(wxCURSOR_ARROW);
     Scroll(0, next);
     Refresh(false);
-    if (pixels < 0 && next == 0) RequestEarlier();
+    if (!history_browser_ && pixels < 0 && next == 0) RequestEarlier();
 }
 void NativeChatSurface::Tick() {
     if (PollThumbnails()) Refresh(false);
     const auto now = MonotonicMillis();
+    if (history_browser_) {
+        auto& browser = *history_browser_;
+        if (browser.UpdatePreview(now)) Refresh(false);
+        if (browser.page.end_turn && browser.transcript.Loading() && browser.Step()) {
+            SetLoading(0);
+            JumpToTurn(browser.target);
+        }
+    }
     if (((loading_ && now - loading_ >= 150) || (transcript_ && transcript_->NeedsAnimation()) || earlier_loading_) &&
         now / 100 != elapsed_frame_) {
         elapsed_frame_ = now / 100;
@@ -425,7 +518,8 @@ void NativeChatSurface::Reflow(wxDC& dc) {
             if (item.kind == ChatItemKind::Reasoning || item.kind == ChatItemKind::Tool) activity_item_ = index;
         }
         const auto groups = transcript_->Groups(MonotonicMillis());
-        const auto last_user = transcript_->LastUserIndex();
+        const auto last_user = history_browser_ && history_browser_->page.end_turn
+            ? kNoChatItem : transcript_->LastUserIndex();
         for (size_t index = 0; index < items.size(); ++index) {
             const auto& item = items[index];
             if (!item.visible || groups[index].hidden) continue;
@@ -646,7 +740,7 @@ void NativeChatSurface::Reflow(wxDC& dc) {
 
 void NativeChatSurface::UpdateRail(int content_height) {
     const int viewport = GetClientSize().y;
-    if (!transcript_ || content_height <= viewport || viewport <= FromDIP(20)) return;
+    if (!transcript_ || (!history_browser_ && content_height <= viewport) || viewport <= FromDIP(20)) return;
     for (const auto index : rows_) {
         const auto* item = transcript_->Item(index);
         const auto cached = row_cache_.find(index);
@@ -655,6 +749,22 @@ void NativeChatSurface::UpdateRail(int content_height) {
             if (!rail_.empty()) rail_.back().content_end = start;
             rail_.push_back({index, start, content_height, 0});
         }
+    }
+    if (history_browser_) {
+        history_browser_->Update();
+        const auto first = history_browser_->Turn(transcript_->HistoryFirstMessage());
+        const auto total = std::max(history_browser_->Count(), first + rail_.size());
+        const int pitch = FromDIP(12);
+        const auto slots = HistoryRailLayout(total, history_browser_->skip_latest, viewport, FromDIP(10), pitch);
+        auto rendered = std::move(rail_);
+        rail_.clear();
+        for (size_t i = 0; i < slots.count; ++i) {
+            const auto turn = slots.first + i;
+            const bool present = turn >= first && turn - first < rendered.size();
+            rail_.push_back({turn, present ? rendered[turn - first].content_top : -1,
+                             present ? rendered[turn - first].content_end : -1, slots.top + static_cast<int>(i) * pitch});
+        }
+        return;
     }
     if (rail_.empty()) return;
     const int margin = FromDIP(10);
@@ -674,7 +784,8 @@ void NativeChatSurface::UpdateRail(int content_height) {
 }
 
 bool NativeChatSurface::IsTurnVisible(const RailDash& dash) const {
-    return ConversationTurnVisible(dash.content_top, dash.content_end, GetViewStart().y, GetClientSize().y);
+    return dash.content_top >= 0 &&
+        ConversationTurnVisible(dash.content_top, dash.content_end, GetViewStart().y, GetClientSize().y);
 }
 
 void NativeChatSurface::DrawRail(wxDC& dc) {
@@ -695,12 +806,17 @@ void NativeChatSurface::DrawRail(wxDC& dc) {
         if (hovered) hovered_y = dash.y;
     }
     const auto* item = transcript_ ? transcript_->Item(hovered_) : nullptr;
-    if (hovered_y >= 0 && item) {
-        auto preview = U(item->text);
+    if (hovered_y >= 0 && (history_browser_ || item)) {
+        const auto* browser = history_browser_.get();
+        const bool skeleton = browser && !browser->PreviewReady() && !browser->PreviewUnavailable();
+        auto preview = browser ? (browser->PreviewUnavailable() ? T(L"Preview unavailable")
+            : U(browser->prompt + "\n\n" + browser->reply)) : U(item->text);
         preview.Trim().Trim(false);
-        const auto newline = preview.find_first_of("\r\n");
-        if (newline != wxString::npos) preview = preview.Left(newline) + "\u2026";
-        if (preview.length() > 72) preview = preview.Left(72) + "\u2026";
+        if (!browser) {
+            const auto newline = preview.find_first_of("\r\n");
+            if (newline != wxString::npos) preview = preview.Left(newline) + "\u2026";
+            if (preview.length() > 72) preview = preview.Left(72) + "\u2026";
+        }
         const int padding_x = FromDIP(12), padding_y = FromDIP(8);
         const int max_width = std::max(1, std::min(FromDIP(320), GetClientSize().x - FromDIP(48)));
         Row tooltip;
@@ -712,8 +828,10 @@ void NativeChatSurface::DrawRail(wxDC& dc) {
             dc.SetFont(part.font);
             width = std::max(width, part.origin.x + dc.GetTextExtent(part.text).x);
         }
+        if (skeleton) { width = max_width; height = FromDIP(34); }
         const int box_width = std::min(max_width, width) + padding_x * 2;
-        const int box_height = std::max(FromDIP(30), height + padding_y * 2);
+        const int box_height = std::clamp(height + padding_y * 2, FromDIP(30),
+            std::max(FromDIP(30), std::min(FromDIP(180), GetClientSize().y - FromDIP(16))));
         const int left = std::max(FromDIP(12), std::min(FromDIP(36),
             GetClientSize().x - box_width - FromDIP(12)));
         const int top = std::max(FromDIP(8), std::min(hovered_y - box_height / 2,
@@ -721,7 +839,14 @@ void NativeChatSurface::DrawRail(wxDC& dc) {
         dc.SetPen(wxPen(dark_ ? wxColour(78, 79, 85) : wxColour(196, 198, 201)));
         dc.SetBrush(wxBrush(dark_ ? wxColour(46, 47, 51) : wxColour(255, 255, 255)));
         dc.DrawRoundedRectangle(left, top, box_width, box_height, FromDIP(10));
-        wxDCClipper clip(dc, left + padding_x, top + padding_y, max_width, height);
+        wxDCClipper clip(dc, left + padding_x, top + padding_y, max_width, box_height - padding_y * 2);
+        if (skeleton) {
+            dc.SetPen(*wxTRANSPARENT_PEN);
+            dc.SetBrush(wxBrush(dark_ ? wxColour(78, 79, 85) : wxColour(218, 220, 224)));
+            dc.DrawRoundedRectangle(left + padding_x, top + padding_y + FromDIP(4), max_width, FromDIP(6), FromDIP(3));
+            dc.DrawRoundedRectangle(left + padding_x, top + padding_y + FromDIP(20), max_width * 2 / 3,
+                                    FromDIP(6), FromDIP(3));
+        }
         for (const auto& part : tooltip.fragments) {
             dc.SetFont(part.font);
             dc.SetTextForeground(Foreground());
@@ -974,6 +1099,7 @@ void NativeChatSurface::Click(wxMouseEvent& event) {
     SetFocus();
     const auto hit = HitAt(event.GetPosition());
     if (hit.action == Action::Earlier) { RequestEarlier(); return; }
+    if (hit.action == Action::Rail && history_browser_) { BrowseTurn(hit.item); return; }
     if (!transcript_->Item(hit.item)) return;
     switch (hit.action) {
         case Action::None: return;
@@ -989,7 +1115,8 @@ void NativeChatSurface::Click(wxMouseEvent& event) {
         }
         case Action::Copy: Copy(hit.item); return;
         case Action::Edit:
-            if (edit && hit.item == transcript_->LastUserIndex()) edit(hit.item);
+            if (edit && (!history_browser_ || transcript_ == live_transcript_) && hit.item == transcript_->LastUserIndex())
+                edit(hit.item);
             return;
         case Action::Turn: transcript_->ToggleTurnStatus(hit.item); break;
         case Action::Tool: transcript_->ToggleTool(hit.item); break;
@@ -1037,6 +1164,7 @@ void NativeChatSurface::Context(wxContextMenuEvent& event) {
         const auto generation = transcript_->Generation();
         auto* const transcript = transcript_;
         const bool editable = item->kind == ChatItemKind::User
+            && (!history_browser_ || transcript_ == live_transcript_)
             && item_index == transcript_->LastUserIndex() && edit;
         const auto destination = row.fragments.empty() ? std::wstring{} :
             ui::NativeMarkdownLinkAt(this, row.item, point.x, point.y, row.fragments.front().origin.y);
@@ -1068,7 +1196,8 @@ void NativeChatSurface::Context(wxContextMenuEvent& event) {
         const int choice = ShowNativeMenu(this, menu, anchor);
         if (transcript_ != transcript || transcript_->Generation() != generation || !transcript_->Item(item_index)) return;
         if (choice == wxID_COPY) Copy(item_index);
-        if (choice == wxID_EDIT && edit && item_index == transcript_->LastUserIndex()) edit(item_index);
+        if (choice == wxID_EDIT && edit && (!history_browser_ || transcript_ == live_transcript_)
+            && item_index == transcript_->LastUserIndex()) edit(item_index);
         break;
     }
 }

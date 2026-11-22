@@ -50,7 +50,7 @@ public:
     void Set(const wxArrayString& labels);
     void SetString(unsigned index, const wxString& label);
     wxString GetString(unsigned index) const { return labels_[index]; }
-    void Style(size_t index, NativeListKind kind, bool running = false);
+    void Style(size_t index, NativeListKind kind, bool running = false, bool current = false);
     void Tick();
     int HitTest(const wxPoint& point) const { return VirtualHitTest(point.y); }
     void SetScrollbar(int orientation, int position, int thumb, int range, bool refresh = true) override;
@@ -63,6 +63,7 @@ private:
     wxArrayString labels_;
     std::vector<NativeListKind> kinds_;
     std::vector<bool> running_;
+    std::vector<bool> current_;
     int hovered_ = wxNOT_FOUND;
 };
 

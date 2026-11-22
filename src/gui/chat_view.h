@@ -4,6 +4,7 @@
 
 #include "gui/chat_items.h"
 #include "gui/chat_image_cache.h"
+#include "gui/history_browser.h"
 #include "render/markdown.h"
 
 #include <cstdint>
@@ -35,6 +36,9 @@ public:
     void SetHistoryAction(std::function<void()> load_earlier);
     void SetEarlierHistory(bool available);
     void PreserveHistoryAnchor(const std::string& text, uint64_t timestamp);
+    void EnableHistory(HistoryBrowser::Source source);
+    void SetHistoryFirstTurn(size_t first);
+    void CloseHistory();
 
     void Clear();
     // Replay only updates rows until EndRestore schedules bounded layout work.
@@ -110,6 +114,7 @@ private:
         size_t item = 0;
         int rail_y = 0;
         int content_top = 0;
+        int content_end = -1;
     };
 
     static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
@@ -122,6 +127,10 @@ private:
     HitArea HitTest(POINT point);
     void ClampScroll(int content_height, int viewport_height);
     void UpdateRail(HDC device);
+    void OpenHistoryTurn(size_t turn);
+    void JumpToTurn(size_t turn);
+    void LoadHistoryPage();
+    bool ScrollHistoryEdge(int delta);
     void DrawScrollRail(HDC device, const RECT& client);
     void SetHover(const HitArea& area);
     void PushItem(ChatItem item);
@@ -156,6 +165,11 @@ private:
     Action edit_item_;
     std::function<void()> load_earlier_;
     bool earlier_history_ = false;
+    std::unique_ptr<HistoryBrowser> history_browser_;
+    std::unique_ptr<ChatView> history_view_;
+    ChatView* history_owner_ = nullptr;
+    size_t first_turn_ = 0;
+    size_t anchor_turn_ = kNoChatItem;
     std::string history_anchor_text_;
     uint64_t history_anchor_timestamp_ = 0;
     std::vector<RailDash> rail_dashes_;

@@ -150,7 +150,10 @@ void NativeFrame::CreateChat() {
     chat_ = new NativeChatSurface(chat_page_);
     chat_->SetName("spark.transcript");
     chat_->edit = [this](size_t row) { EditMessage(row); };
-    chat_->load_earlier = [this] { LoadEarlier(); };
+    chat_->EnableHistory([this]() -> const SessionState* {
+        const auto* view = Active();
+        return view ? &view->journal.State() : nullptr;
+    });
     auto* transcript_row = new wxBoxSizer(wxHORIZONTAL);
     transcript_row->AddSpacer(FromDIP(16));
     transcript_row->Add(chat_, 1, wxEXPAND | wxTOP | wxBOTTOM, FromDIP(8));

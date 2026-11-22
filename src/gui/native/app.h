@@ -42,7 +42,6 @@ private:
         size_t assistant = kNoChatItem, reasoning = kNoChatItem, status = kNoChatItem;
         std::map<std::string, size_t> tools;
         uint64_t context = 0, limit = 0, replay = 0;
-        std::unique_ptr<View> earlier;
     };
     struct Project {
         std::string name, workspace;
@@ -69,7 +68,6 @@ private:
     void RefreshModels();
     void UpdateControls();
     void OpenConversation(const std::string& path);
-    void LoadEarlier();
     void LoadEarlierSide();
     void RequestSideSnapshot(bool force = false);
     void NewConversation(int project = -1);

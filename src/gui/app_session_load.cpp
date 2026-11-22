@@ -18,6 +18,8 @@ void AppWindow::QueueSessionLoad(const std::string& path) {
     ClearChatView(ChatViewReset::Loading);
     session_load_started_tick_ = MonotonicMillis();
     session_load_path_ = path;
+    if (history_list_ != nullptr) InvalidateRect(history_list_, nullptr, FALSE);
+    if (projects_list_ != nullptr) InvalidateRect(projects_list_, nullptr, FALSE);
     if (chat_view_ != nullptr) chat_view_->BeginRestore(session_load_started_tick_);
     UpdateSendButton();
     SetWindowTextW(context_label_, L"");

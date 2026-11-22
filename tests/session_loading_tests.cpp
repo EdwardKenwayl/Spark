@@ -283,6 +283,15 @@ struct ChatViewLoadTest {
         view.scroll_y_ = 0;
         SendMessageW(view.hwnd(), WM_MOUSEWHEEL, MAKEWPARAM(0, WHEEL_DELTA), 0);
     }
+    static const ChatView* History(const ChatView& view) {
+        return view.history_browser_ && view.history_browser_->page.end_turn ? view.history_view_.get() : nullptr;
+    }
+    static void ScrollPastHistory(ChatView& view) {
+        auto& page = *view.history_view_;
+        page.scroll_y_ = 1000000;
+        page.Rebuild();
+        SendMessageW(page.hwnd(), WM_MOUSEWHEEL, MAKEWPARAM(0, -WHEEL_DELTA), 0);
+    }
 
     static void CheckCircle(ChatView& view, bool dark) {
         PrintedClient image(view.hwnd());
@@ -696,14 +705,23 @@ struct AppWindowSessionLoadTest {
                   app.journal_.State().messages.size() == a.messages.size() + 1,
               "long sessions initially render only eight recent turns and preserve the complete journal");
         ChatViewLoadTest::RequestEarlier(*app.chat_view_);
-        if (!WaitUntil([&] { return !app.SessionLoading(); }, "earlier history restores",
+        if (!WaitUntil([&] { const auto* page = ChatViewLoadTest::History(*app.chat_view_);
+                             return page && !page->Loading(); }, "earlier history restores",
                        [&] { PostProbe(app.window_); })) return;
-        Check(app.chat_view_->Count() > recent_rows && app.chat_view_->Count() < 150 &&
-                  app.chat_view_->Item(0)->text == a.messages[(kLongTurns - 16) * 2].content &&
+        const auto* history_page = ChatViewLoadTest::History(*app.chat_view_);
+        const size_t history_rows = history_page->Count();
+        Check(app.chat_view_->Count() == recent_rows && history_rows < 100 &&
+                  history_page->Item(0)->text == a.messages[(kLongTurns - 18) * 2].content,
+              "scrolling above the loaded window displays a bounded older page beside the live transcript");
+        const size_t streaming_row = app.chat_view_->AddAssistant("streaming ");
+        app.chat_view_->AppendAssistant(streaming_row, "while browsing");
+        ChatViewLoadTest::ScrollPastHistory(*app.chat_view_);
+        Check(!ChatViewLoadTest::History(*app.chat_view_) &&
+                  app.chat_view_->Item(streaming_row)->text == "streaming while browsing" &&
                   app.journal_.State().messages.back().content == final.content,
-              "scrolling above the loaded window adds eight earlier turns without changing the journal");
+              "scrolling down returns to the live transcript with its streamed delta and journal intact");
         std::cout << "history_probe total_turns=" << kLongTurns << " recent_rows=" << recent_rows
-                  << " expanded_rows=" << app.chat_view_->Count() << '\n';
+                  << " history_rows=" << history_rows << '\n';
         app.QueueSessionLoad(a.path);
         if (!WaitUntil([&] { return app.journal_.State().id == a.id &&
                                     app.session_load_path_.empty() && app.chat_view_->Count() > 0; },

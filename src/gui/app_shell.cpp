@@ -1425,7 +1425,7 @@ void AppWindow::CreateControls() {
                            [this](size_t index) { CopyChatItem(index); },
                            [this](size_t index) { EditChatItem(index); });
     chat_view_->SetGroupAction([this](size_t index) { ToggleToolGroupEntry(index); });
-    chat_view_->SetHistoryAction([this] { LoadEarlierHistory(); });
+    chat_view_->EnableHistory([this] { return pending_new_conversation_ ? nullptr : &journal_.State(); });
     side_chat_view_ = std::make_unique<ChatView>();
     if (!side_chat_view_->Create(window_, instance_, kSideChat, chat_font_, mono_font_)) {
         side_chat_view_.reset();
@@ -3612,6 +3612,7 @@ void AppWindow::StartTurn() {
         UpdateSendButton();
         return;
     }
+    if (chat_view_ != nullptr) chat_view_->CloseHistory();
     const auto errors = ValidateConfig(config_, true);
     if (!errors.empty()) {
         std::wstring message = i18n::Text(L"Cannot send: the configuration is incomplete.\n\n");
@@ -4848,17 +4849,7 @@ void AppWindow::UpdateEmptyState() {
     }
 }
 
-void AppWindow::LoadEarlierHistory() {
-    if (SessionLoading() || history_first_message_ == 0 || chat_view_ == nullptr) return;
-    const ChatItem* first = chat_view_->Item(0);
-    const std::string anchor = first == nullptr ? std::string{} : first->text;
-    const uint64_t timestamp = first == nullptr ? 0 : first->timestamp;
-    const size_t before = history_first_message_;
-    ReloadSessionIntoView(before);
-    chat_view_->PreserveHistoryAnchor(anchor, timestamp);
-}
-
-void AppWindow::ReloadSessionIntoView(size_t before_message) {
+void AppWindow::ReloadSessionIntoView() {
     if (!active_subagent_id_.empty()) {
         const auto child = subagents_ui_.find(active_subagent_id_);
         if (child == subagents_ui_.end() || NormalizePathForComparison(child->second.info.parent_session_key) !=
@@ -4933,9 +4924,8 @@ void AppWindow::ReloadSessionIntoView(size_t before_message) {
     const uint64_t paused_elapsed_ms =
         paused_tail ? metadata["paused_turn"].value("elapsed_ms", uint64_t{0}) : uint64_t{0};
     const auto& messages = journal_.State().messages;
-    const auto history = SelectHistoryWindow(messages, before_message);
-    history_first_message_ = history.first_message;
-    chat_view_->SetEarlierHistory(history_first_message_ > 0);
+    const auto history = SelectHistoryWindow(messages);
+    chat_view_->SetHistoryFirstTurn(history.first_turn);
     const size_t total_turns = history.total_turns;
     struct ReplayProgress {
         size_t message_index = 0;
@@ -6193,10 +6183,14 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                     FillRect(item->hDC, &item->rcItem, CachedBrush(kSidebar));
                     return TRUE;
                 }
-                const bool selected = (item->itemState & ODS_SELECTED) != 0;
+                const bool selected = item_index < history_paths_.size() &&
+                    (!pending_new_conversation_ || !session_load_path_.empty()) &&
+                    history_paths_[item_index] == (session_load_path_.empty() ? journal_.Path() : session_load_path_);
                 const bool hovered = static_cast<int>(item->itemID) == hovered_history_item_;
                 const bool active = selected || hovered;
-                FillRect(item->hDC, &item->rcItem, CachedBrush(active ? kSidebarHover : kSidebar));
+                const COLORREF row_background = selected ? kSidebarHover :
+                    hovered ? BlendColor(kSidebar, kSidebarHover, 58) : kSidebar;
+                FillRect(item->hDC, &item->rcItem, CachedBrush(row_background));
                 wchar_t text[512]{};
                 SendMessageW(item->hwndItem, LB_GETTEXT, item->itemID, reinterpret_cast<LPARAM>(text));
                 SetBkMode(item->hDC, TRANSPARENT);
@@ -6239,12 +6233,16 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                     return TRUE;
                 }
                 const SidebarRow* row = row_index < project_rows_.size() ? &project_rows_[row_index] : nullptr;
-                const bool selected = (item->itemState & ODS_SELECTED) != 0;
+                const bool selected = row && !row->session_path.empty() &&
+                    (!pending_new_conversation_ || !session_load_path_.empty()) &&
+                    row->session_path == (session_load_path_.empty() ? journal_.Path() : session_load_path_);
                 const bool hovered = static_cast<int>(item->itemID) == hovered_project_item_;
                 const bool active = selected || hovered;
                 const bool project_row = row != nullptr && row->kind == SidebarRowKind::Project;
                 const bool more_row = row != nullptr && row->kind == SidebarRowKind::More;
-                FillRect(item->hDC, &item->rcItem, CachedBrush(active ? kSidebarHover : kSidebar));
+                const COLORREF row_background = selected ? kSidebarHover :
+                    hovered ? BlendColor(kSidebar, kSidebarHover, 58) : kSidebar;
+                FillRect(item->hDC, &item->rcItem, CachedBrush(row_background));
                 wchar_t text[512]{};
                 SendMessageW(item->hwndItem, LB_GETTEXT, item->itemID, reinterpret_cast<LPARAM>(text));
                 SetBkMode(item->hDC, TRANSPARENT);

@@ -55,6 +55,8 @@ public:
     // first_message aligns backward to a user boundary; metadata keeps absolute journal indices.
     uint64_t BeginReplay(const SessionState& state, TranscriptTime now, TranscriptRun run = {},
                          size_t first_message = 0);
+    uint64_t BeginHistoryReplay(const SessionState& state, TranscriptTime now, size_t first_message,
+                                size_t end_message, size_t first_turn, size_t end_turn);
     size_t HistoryFirstMessage() const { return history_first_message_; }
     // At most 64 messages/live tools per call. Old generations are ignored after Clear/EraseFrom.
     bool ReplayStep(uint64_t generation, size_t max_messages = 64);

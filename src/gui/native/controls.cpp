@@ -294,15 +294,17 @@ NativeList::NativeList(wxWindow* parent)
 }
 void NativeList::Set(const wxArrayString& labels) {
     labels_ = labels; kinds_.assign(labels.size(), NativeListKind::Chat); running_.assign(labels.size(), false);
+    current_.assign(labels.size(), false);
     hovered_ = wxNOT_FOUND;
     SetItemCount(labels.size()); RefreshAll();
 }
 void NativeList::SetString(unsigned index, const wxString& label) {
     labels_[index] = label; RefreshRow(index);
 }
-void NativeList::Style(size_t index, NativeListKind kind, bool running) {
+void NativeList::Style(size_t index, NativeListKind kind, bool running, bool current) {
     if (index >= kinds_.size()) return;
-    if (kinds_[index] == kind && running_[index] == running) return;
+    if (kinds_[index] == kind && running_[index] == running && current_[index] == current) return;
+    current_[index] = current;
     kinds_[index] = kind; running_[index] = running; RefreshRow(index);
 }
 void NativeList::Tick() {

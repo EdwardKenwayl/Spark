@@ -373,6 +373,24 @@ uint64_t Transcript::BeginReplay(const SessionState& state, TranscriptTime now, 
     }
     return generation_;
 }
+uint64_t Transcript::BeginHistoryReplay(const SessionState& state, TranscriptTime now, size_t first_message,
+                                        size_t end_message, size_t first_turn, size_t end_turn) {
+    Clear();
+    history_first_message_ = first_message;
+    replay_ = std::make_unique<Replay>();
+    replay_->first_message = first_message;
+    replay_->total_messages = end_message;
+    replay_->total_turns = end_turn;
+    replay_->turn = first_turn;
+    replay_->now = now;
+    replay_->state.messages.assign(state.messages.begin() + first_message, state.messages.begin() + end_message);
+    for (const auto* key : {"turn_durations_ms", "turn_usages", "turn_errors", "tool_durations_ms", "context_compactions"}) {
+        const auto found = state.metadata.find(key);
+        if (found != state.metadata.end()) replay_->state.metadata[key] = *found;
+    }
+    return generation_;
+}
+
 bool Transcript::ReplayStep(uint64_t generation, size_t max_messages) {
     if (generation != generation_) return false;
     if (!replay_) return true;

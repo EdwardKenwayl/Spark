@@ -683,6 +683,18 @@
     "pt-BR": "Mostrar no Explorador",
     "ru-RU": "Показать в проводнике"
   },
+  "Preview unavailable": {
+    "zh-CN": "预览不可用",
+    "en-US": "Preview unavailable",
+    "zh-TW": "預覽無法使用",
+    "ja-JP": "プレビューを表示できません",
+    "ko-KR": "미리보기를 사용할 수 없음",
+    "de-DE": "Vorschau nicht verfügbar",
+    "fr-FR": "Aperçu indisponible",
+    "es-ES": "Vista previa no disponible",
+    "pt-BR": "Visualização indisponível",
+    "ru-RU": "Предпросмотр недоступен"
+  },
   "Load earlier messages": {
     "zh-CN": "加载更早的消息",
     "en-US": "Load earlier messages",

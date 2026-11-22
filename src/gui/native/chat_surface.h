@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gui/transcript.h"
+#include "gui/history_browser.h"
 #include "gui/native/thumbnail_cache.h"
 #include "render/markdown.h"
 
@@ -25,6 +26,8 @@ public:
     void ScrollToLatest();
     void RequestEarlier();
     void SetEarlierLoading(bool loading);
+    void EnableHistory(HistoryBrowser::Source source);
+    void CloseHistory();
     bool EarlierLoading() const { return earlier_loading_; }
     // Replacing a replay after prepending keeps the old visible row at its screen position.
     void PrependTranscript(Transcript* transcript, size_t added_items);
@@ -70,6 +73,8 @@ private:
     void Copy(size_t index);
     Hit HitAt(const wxPoint& client_point) const;
     void ScrollBy(int pixels);
+    void BrowseTurn(size_t turn);
+    void JumpToTurn(size_t turn);
     void UpdateRail(int content_height);
     void DrawRail(wxDC& dc);
     bool IsTurnVisible(const RailDash& dash) const;
@@ -85,6 +90,8 @@ private:
     wxColour Foreground() const;
     wxColour Muted() const;
     Transcript* transcript_ = nullptr;
+    Transcript* live_transcript_ = nullptr;
+    std::unique_ptr<HistoryBrowser> history_browser_;
     bool dark_ = true, dirty_ = true, follow_ = true;
     uint64_t loading_ = 0;
     uint64_t elapsed_frame_ = 0;

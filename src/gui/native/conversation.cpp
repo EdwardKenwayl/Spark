@@ -106,8 +106,7 @@ void NativeFrame::Send() {
         chat_->SetTranscript(&view->transcript, true);
     }
     if (edit_row_ != kNoChatItem) {
-        view->earlier.reset();
-        chat_->SetEarlierLoading(false);
+        chat_->CloseHistory();
         auto& state = view->journal.MutableState();
         const auto first = std::min(view->transcript.HistoryFirstMessage(), state.messages.size());
         size_t turn = static_cast<size_t>(std::count_if(state.messages.begin(), state.messages.begin() + first,
@@ -130,6 +129,7 @@ void NativeFrame::Send() {
         state.metadata.erase("paused_turn");
         view->journal.SaveSnapshot();
         view->transcript.EraseFrom(edit_row_);
+        chat_->SetTranscript(&view->transcript, true);
         edit_row_ = kNoChatItem;
     }
     AppConfig run_config = config_;
@@ -318,24 +318,6 @@ void NativeFrame::EditMessage(size_t row) {
     UpdateControls();
 }
 
-void NativeFrame::LoadEarlier() {
-    auto* view = Active();
-    if (!view || view->earlier || !loading_path_.empty()) return;
-    const auto first = view->transcript.HistoryFirstMessage();
-    if (!first || first > view->journal.State().messages.size()) return;
-    const auto window = SelectHistoryWindow(view->journal.State().messages, first);
-    if (window.first_message >= first) return;
-    SessionState prefix;
-    prefix.metadata = view->journal.State().metadata;
-    prefix.metadata.erase("live_turn");
-    prefix.metadata.erase("paused_turn");
-    prefix.messages.assign(view->journal.State().messages.begin(), view->journal.State().messages.begin() + first);
-    view->earlier = std::make_unique<View>();
-    view->earlier->replay = view->earlier->transcript.BeginReplay(prefix, Now(), {}, window.first_message);
-    chat_->SetEarlierLoading(true);
-    RenderSidebar();
-}
-
 void NativeFrame::LoadEarlierSide() {
     if (side_path_.empty() || pending_side_ || side_loading_) return;
     const auto first = side_transcript_->HistoryFirstMessage();
@@ -416,27 +398,6 @@ void NativeFrame::Tick(wxTimerEvent&) {
         }
     }
     for (auto& item : views_) {
-        auto& view = *item.second;
-        if (view.earlier && view.earlier->transcript.ReplayStep(view.earlier->replay)) {
-            auto replacement = std::move(view.earlier);
-            const size_t offset = AppendCurrentWindow(replacement->transcript, view.transcript);
-            const auto remap = [offset](size_t row) { return row == kNoChatItem ? row : row + offset; };
-            replacement->journal = std::move(view.journal);
-            replacement->assistant = remap(view.assistant);
-            replacement->reasoning = remap(view.reasoning);
-            replacement->status = remap(view.status);
-            replacement->tools = std::move(view.tools);
-            for (auto& tool : replacement->tools) tool.second = remap(tool.second);
-            replacement->context = view.context;
-            replacement->limit = view.limit;
-            if (item.first == active_) {
-                if (edit_row_ != kNoChatItem) edit_row_ = remap(edit_row_);
-                chat_->PrependTranscript(&replacement->transcript, offset);
-                chat_->SetEarlierLoading(false);
-            }
-            item.second = std::move(replacement);
-            RenderSidebar();
-        }
         if (item.second->transcript.Loading() &&
             item.second->transcript.ReplayStep(item.second->replay) && item.first == active_) chat_->Changed();
     }

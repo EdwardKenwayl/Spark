@@ -1,5 +1,6 @@
 #include "gui/transcript.h"
 #include "gui/history_window.h"
+#include "gui/history_browser.h"
 #include "gui/chat_ui_helpers.h"
 
 #include <algorithm>
@@ -515,6 +516,43 @@ void TestLiveTurnIdentity() {
           "clearing during live-tail replay rejects its remaining tools and text");
 }
 
+void TestIndexedHistoryNavigation() {
+    SessionState state;
+    for (int turn = 0; turn < 400; ++turn) {
+        ChatMessage user, reply;
+        user.role = MessageRole::User;
+        user.content = "Prompt " + std::to_string(turn);
+        reply.role = MessageRole::Assistant;
+        reply.content = "Reply " + std::to_string(turn);
+        state.messages.push_back(std::move(user));
+        state.messages.push_back(std::move(reply));
+    }
+    HistoryBrowser browser([&] { return &state; });
+    browser.Update();
+    const auto latest = HistoryRailLayout(browser.Count(), 0, 500, 10, 12);
+    const auto oldest = HistoryRailLayout(browser.Count(), 1000, 500, 10, 12);
+    Check(latest.first + latest.count == 400 && oldest.first == 0 && oldest.count == latest.count,
+          "the rail can scroll independently from the last marker to the first without overlapping");
+    browser.Hover(10, 100);
+    Check(browser.PreviewUnavailable(), "the oldest markers remain navigable without a preview");
+    browser.Hover(150, 200);
+    Check(!browser.UpdatePreview(349) && !browser.PreviewReady(), "preview starts in the loading state");
+    Check(browser.UpdatePreview(350) && browser.prompt == "Prompt 150" && browser.reply == "Reply 150",
+          "preview reads only the selected turn's prompt and final reply");
+    browser.Hover(151, 351);
+    Check(browser.prompt.empty() && browser.reply.empty() && !browser.PreviewReady(),
+          "moving to another marker clears the previous preview immediately");
+    browser.Open(200, 392, {1700000000, 1000});
+    while (!browser.Step()) {}
+    Check(browser.page.Contains(200) && browser.page.end_turn - browser.page.first_turn == 10 &&
+              browser.transcript.HistoryFirstMessage() == browser.page.first_turn * 2 &&
+              browser.transcript.Item(0)->text == "Prompt 196" && browser.transcript.Count() == 30,
+          "seeking to the middle renders only its ten-turn neighborhood using absolute indices");
+    browser.Reset();
+    Check(browser.transcript.Count() == 0 && browser.Count() == 0 && !browser.PreviewReady() &&
+              !browser.UpdatePreview(1000), "switching chats discards the loaded page and pending preview");
+}
+
 void TestHistoryWindows() {
     std::vector<ChatMessage> messages;
     for (size_t turn = 0; turn < 20; ++turn) {
@@ -837,6 +875,7 @@ int main() {
         TestLiveReplay(root);
         TestLiveTurnIdentity();
         TestHistoryWindows();
+        TestIndexedHistoryNavigation();
         TestWindowReplayMetadata();
         TestMixedToolGroups();
         TestReasoningActivityGroups();

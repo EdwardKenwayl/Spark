@@ -52,6 +52,8 @@ constexpr int kToolGap = 8;
 constexpr int kContentBottomPadding = 28;
 constexpr UINT_PTR kStreamRenderTimer = 2;
 constexpr UINT_PTR kImageRenderTimer = 3;
+constexpr UINT_PTR kHistoryReplayTimer = 4;
+constexpr UINT_PTR kRailPreviewTimer = 5;
 constexpr UINT kRestoreSpinnerDelayMs = 50;
 constexpr uint64_t kRestoreSpinnerRevealDelayMs = 200;
 constexpr UINT kRestorePrepareDelayMs = 10;
@@ -1623,6 +1625,126 @@ void ChatView::SetHistoryAction(std::function<void()> load_earlier) {
     load_earlier_ = std::move(load_earlier);
 }
 
+void ChatView::EnableHistory(HistoryBrowser::Source source) {
+    history_browser_ = std::make_unique<HistoryBrowser>(std::move(source));
+}
+
+void ChatView::SetHistoryFirstTurn(size_t first) {
+    first_turn_ = first;
+    rail_dirty_ = true;
+}
+
+void ChatView::CloseHistory() {
+    if (!history_view_ || !history_browser_->page.end_turn) return;
+    KillTimer(window_, kHistoryReplayTimer);
+    ShowWindow(history_view_->window_, SW_HIDE);
+    history_view_->Clear();
+    history_browser_->transcript.Clear();
+    history_browser_->page = {};
+    history_browser_->Hover(kNoChatItem, 0);
+    rail_dirty_ = true;
+    SetHover({});
+    Rebuild();
+}
+
+void ChatView::OpenHistoryTurn(size_t turn) {
+    auto& history = *history_browser_;
+    history.Update();
+    const bool browsing = history.page.end_turn != 0;
+    history.Reveal(turn, browsing ? history_view_->rail_dashes_.size() : rail_dashes_.size());
+    if (turn >= first_turn_) {
+        CloseHistory();
+        JumpToTurn(turn);
+        return;
+    }
+    if (!history_view_) {
+        auto view = std::make_unique<ChatView>();
+        const auto instance = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(window_, GWLP_HINSTANCE));
+        if (!view->Create(window_, instance, 1, text_font_, mono_font_)) return;
+        view->history_owner_ = this;
+        auto* page = view.get();
+        view->SetActions([page](size_t item) { page->ToggleTool(item); }, [page](size_t item) {
+            const auto* row = page->Item(item);
+            if (!row || row->text.empty()) return;
+            const auto wide = Utf8ToWide(row->text);
+            HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, (wide.size() + 1) * sizeof(wchar_t));
+            if (!memory) return;
+            if (auto* data = GlobalLock(memory)) {
+                memcpy(data, wide.c_str(), (wide.size() + 1) * sizeof(wchar_t));
+                GlobalUnlock(memory);
+                if (OpenClipboard(page->window_)) {
+                    EmptyClipboard();
+                    if (SetClipboardData(CF_UNICODETEXT, memory)) memory = nullptr;
+                    CloseClipboard();
+                }
+            }
+            if (memory) GlobalFree(memory);
+        }, {});
+        view->SetGroupAction([page](size_t item) { page->ToggleToolGroup(item); });
+        history_view_ = std::move(view);
+    }
+    if (history.page.Contains(turn) && !history_view_->Loading()) {
+        history_view_->JumpToTurn(turn);
+        return;
+    }
+    history.Open(turn, first_turn_, {UnixTimeSeconds(), MonotonicMillis()});
+    RECT client{};
+    GetClientRect(window_, &client);
+    history_view_->link_base_directory_ = link_base_directory_;
+    history_view_->BeginRestore();
+    history_view_->SetHistoryFirstTurn(history.page.first_turn);
+    history_view_->anchor_turn_ = turn;
+    history_view_->auto_scroll_enabled_ = false;
+    SetWindowPos(history_view_->window_, HWND_TOP, 0, 0, client.right, client.bottom,
+                 SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    if (GetFocus() == window_) SetFocus(history_view_->window_);
+    SetTimer(window_, kHistoryReplayTimer, 10, nullptr);
+}
+
+void ChatView::LoadHistoryPage() {
+    if (!history_view_ || !history_browser_->Step()) return;
+    KillTimer(window_, kHistoryReplayTimer);
+    for (const auto& row : history_browser_->transcript.Items()) history_view_->PushItem(row);
+    history_browser_->transcript.Clear();
+    history_view_->EndRestore();
+}
+
+void ChatView::JumpToTurn(size_t turn) {
+    HDC dc = GetDC(window_);
+    EnsureItemHeights(dc);
+    ReleaseDC(window_, dc);
+    size_t ordinal = first_turn_;
+    int top = ContentTop();
+    for (size_t index = 0; index < items_.size(); ++index) {
+        if (items_[index].kind == ChatItemKind::User && ordinal++ == turn) {
+            auto_scroll_enabled_ = !history_owner_ && index == last_user_index_;
+            if (auto_scroll_enabled_) ScrollToBottom();
+            else { scroll_y_ = std::max(0, top - Scale(12)); Rebuild(); }
+            return;
+        }
+        top += item_heights_[index];
+    }
+}
+
+bool ChatView::ScrollHistoryEdge(int delta) {
+    auto* owner = history_owner_ ? history_owner_ : this;
+    if (!owner->history_browser_) return false;
+    RECT client{};
+    GetClientRect(window_, &client);
+    HDC dc = GetDC(window_);
+    const int bottom = std::max(0, CalculateContentHeight(dc) - static_cast<int>(client.bottom));
+    ReleaseDC(window_, dc);
+    if (delta > 0 && scroll_y_ <= 0 && first_turn_) {
+        owner->OpenHistoryTurn(first_turn_ - 1);
+        return true;
+    }
+    if (delta < 0 && scroll_y_ >= bottom && history_owner_) {
+        owner->OpenHistoryTurn(owner->history_browser_->page.end_turn);
+        return true;
+    }
+    return false;
+}
+
 int ChatView::ContentTop() const { return 18 + (earlier_history_ ? Scale(36) : 0); }
 
 void ChatView::SetEarlierHistory(bool available) {
@@ -1639,6 +1761,10 @@ void ChatView::PreserveHistoryAnchor(const std::string& text, uint64_t timestamp
 }
 
 void ChatView::Clear() {
+    CloseHistory();
+    if (history_browser_) history_browser_->Reset();
+    first_turn_ = 0;
+    anchor_turn_ = kNoChatItem;
     CancelRestore();
     image_cache_.Clear();
     if (window_ != nullptr && !image_cache_.Pending()) {
@@ -2060,6 +2186,8 @@ void ChatView::ToggleTurnStatus(size_t index) {
 }
 
 void ChatView::EraseFrom(size_t index) {
+    CloseHistory();
+    if (history_browser_) history_browser_->Reset();
     if (index >= items_.size()) return;
     if (window_ != nullptr && stream_render_pending_) KillTimer(window_, kStreamRenderTimer);
     stream_render_pending_ = false;
@@ -2404,6 +2532,11 @@ void ChatView::PrepareRestoreRows() {
                 if (auto_scroll_enabled_) scroll_y_ = std::max(0, content_height - viewport);
                 else ClampScroll(content_height, viewport);
                 CancelRestore();
+                if (anchor_turn_ != kNoChatItem) {
+                    const auto target = std::exchange(anchor_turn_, kNoChatItem);
+                    JumpToTurn(target);
+                }
+                if (history_owner_ || history_browser_) UpdateRail(device);
                 InvalidateRect(window_, nullptr, FALSE);
                 break;
             }
@@ -2464,7 +2597,7 @@ std::vector<ChatView::HitArea> ChatView::CalculateHitAreas(HDC device) {
     if (loading_) return areas;
     RECT client{};
     GetClientRect(window_, &client);
-    const size_t last_user = LastUserIndex();
+    const size_t last_user = history_owner_ ? kNoChatItem : LastUserIndex();
     const ChatFonts fonts{text_font_, bold_font_, italic_font_, bold_italic_font_, mono_font_, heading_font_};
     EnsureItemHeights(device);
     const std::vector<GroupInfo>& groups = EnsureGroups().groups;
@@ -2580,6 +2713,30 @@ void ChatView::UpdateRail(HDC device) {
     const int viewport = static_cast<int>(client.bottom - client.top);
     if (width <= 0 || viewport <= 0) return;
 
+    auto* browser = history_owner_ ? history_owner_->history_browser_.get() : history_browser_.get();
+    if (browser) {
+        browser->Update();
+        EnsureItemHeights(device);
+        std::vector<int> starts;
+        int y = ContentTop();
+        for (size_t index = 0; index < items_.size(); ++index) {
+            if (items_[index].kind == ChatItemKind::User) starts.push_back(y);
+            y += item_heights_[index];
+        }
+        const size_t total = std::max(browser->Count(), first_turn_ + starts.size());
+        const int pitch = Scale(12);
+        const auto slots = HistoryRailLayout(total, browser->skip_latest, viewport, Scale(10), pitch);
+        for (size_t index = 0; index < slots.count; ++index) {
+            const size_t turn = slots.first + index;
+            const bool present = turn >= first_turn_ && turn - first_turn_ < starts.size();
+            rail_dashes_.push_back({turn, slots.top + static_cast<int>(index) * pitch,
+                                    present ? starts[turn - first_turn_] : -1,
+                                    present && turn - first_turn_ + 1 < starts.size()
+                                        ? starts[turn - first_turn_ + 1] : content_height_});
+        }
+        return;
+    }
+
     std::vector<std::pair<size_t, int>> turns;
     if (earlier_history_) turns.emplace_back(static_cast<size_t>(-1), 0);
     EnsureItemHeights(device);
@@ -2623,9 +2780,10 @@ void ChatView::DrawScrollRail(HDC device, const RECT& client) {
     int hovered_y = -1;
     for (size_t index = 0; index < rail_dashes_.size(); ++index) {
         const auto& dash = rail_dashes_[index];
-        const int end = index + 1 < rail_dashes_.size() ? rail_dashes_[index + 1].content_top : content_height_;
+        const int next = index + 1 < rail_dashes_.size() ? rail_dashes_[index + 1].content_top : -1;
+        const int end = dash.content_end >= 0 ? dash.content_end : next >= 0 ? next : content_height_;
         const bool hovered = hover_type_ == HitArea::Type::Rail && hover_item_ == dash.item;
-        const bool active = !hovered && ConversationTurnVisible(dash.content_top, end, scroll_y_,
+        const bool active = !hovered && dash.content_top >= 0 && ConversationTurnVisible(dash.content_top, end, scroll_y_,
                                                                client.bottom - client.top);
         const int length = hovered ? hover_length : (active ? active_length : idle_length);
         const COLORREF color = hovered ? kRailHover : (active ? kRailActive : kRailIdle);
@@ -2637,19 +2795,27 @@ void ChatView::DrawScrollRail(HDC device, const RECT& client) {
     }
 
     if (hovered_y < 0) return;
-    const std::wstring preview = hover_item_ == static_cast<size_t>(-1)
+    const auto* browser = history_owner_ ? history_owner_->history_browser_.get() : history_browser_.get();
+    const bool skeleton = browser && !browser->PreviewUnavailable() && !browser->PreviewReady();
+    const std::wstring preview = browser ? (browser->PreviewUnavailable()
+        ? std::wstring(i18n::Text(L"Preview unavailable"))
+        : browser->PreviewReady() ? Utf8ToWide(browser->prompt + "\n\n" + browser->reply)
+                                  : std::wstring{})
+        : hover_item_ == static_cast<size_t>(-1)
         ? std::wstring(i18n::Text(L"Load earlier messages"))
         : hover_item_ < items_.size() ? RailPreview(items_[hover_item_].text) : std::wstring{};
-    if (preview.empty()) return;
+    if (preview.empty() && !skeleton) return;
     HFONT previous_font = static_cast<HFONT>(SelectObject(device, text_font_));
-    const int max_text_width = Scale(320);
+    const int max_text_width = std::max(1, std::min(Scale(320), static_cast<int>(client.right) - Scale(54)));
     RECT measured{0, 0, max_text_width, 0};
-    DrawTextW(device, preview.c_str(), -1, &measured, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+    if (skeleton) measured.bottom = Scale(36);
+    else DrawTextW(device, preview.c_str(), -1, &measured, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
     const int padding_x = Scale(12);
     const int padding_y = Scale(8);
     const int box_width = std::min(max_text_width, static_cast<int>(measured.right - measured.left)) + padding_x * 2;
     const int box_height =
-        std::max(Scale(30), static_cast<int>(measured.bottom - measured.top) + padding_y * 2);
+        std::clamp(static_cast<int>(measured.bottom - measured.top) + padding_y * 2, Scale(30),
+                   std::max(Scale(30), std::min(Scale(180), static_cast<int>(client.bottom) - Scale(16))));
     int box_left = left + hover_length + Scale(12);
     box_left = std::min(box_left, static_cast<int>(client.right) - box_width - Scale(12));
     box_left = std::max(Scale(12), box_left);
@@ -2660,7 +2826,15 @@ void ChatView::DrawScrollRail(HDC device, const RECT& client) {
     SetBkMode(device, TRANSPARENT);
     SetTextColor(device, kText);
     RECT text_rect{box.left + padding_x, box.top + padding_y, box.right - padding_x, box.bottom - padding_y};
-    DrawTextW(device, preview.c_str(), -1, &text_rect, DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+    if (skeleton) {
+        HBRUSH brush = CreateSolidBrush(kRailTipBorder);
+        RECT line{text_rect.left, text_rect.top + Scale(3), text_rect.right, text_rect.top + Scale(9)};
+        FillRect(device, &line, brush);
+        OffsetRect(&line, 0, Scale(15));
+        line.right -= Scale(32);
+        FillRect(device, &line, brush);
+        DeleteObject(brush);
+    } else DrawTextW(device, preview.c_str(), -1, &text_rect, DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
     SelectObject(device, previous_font);
 }
 
@@ -2673,7 +2847,16 @@ void ChatView::SetHover(const HitArea& area) {
     const bool changed = hover_item_ != area.item || hover_type_ != area.type;
     hover_item_ = area.item;
     hover_type_ = area.type;
-    if (changed) InvalidateRect(window_, nullptr, FALSE);
+    if (changed) {
+        auto* browser = history_owner_ ? history_owner_->history_browser_.get() : history_browser_.get();
+        if (browser) {
+            KillTimer(window_, kRailPreviewTimer);
+            browser->Hover(area.type == HitArea::Type::Rail ? area.item : kNoChatItem, MonotonicMillis());
+            if (area.type == HitArea::Type::Rail && !browser->PreviewUnavailable())
+                SetTimer(window_, kRailPreviewTimer, 160, nullptr);
+        }
+        InvalidateRect(window_, nullptr, FALSE);
+    }
 }
 
 LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
@@ -2681,11 +2864,23 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
         case WM_ERASEBKGND:
             return 1;
         case WM_SIZE:
+            if (history_view_) {
+                RECT client{};
+                GetClientRect(window_, &client);
+                MoveWindow(history_view_->window_, 0, 0, client.right, client.bottom, TRUE);
+            }
             rail_dirty_ = true;
             if (loading_) InvalidateRect(window_, nullptr, FALSE);
             Rebuild();
             return 0;
         case WM_TIMER:
+            if (wparam == kHistoryReplayTimer) { LoadHistoryPage(); return 0; }
+            if (wparam == kRailPreviewTimer) {
+                KillTimer(window_, kRailPreviewTimer);
+                auto* browser = history_owner_ ? history_owner_->history_browser_.get() : history_browser_.get();
+                if (browser && browser->UpdatePreview(MonotonicMillis())) InvalidateRect(window_, nullptr, FALSE);
+                return 0;
+            }
             if (wparam == kImageRenderTimer) {
                 if (image_cache_.Poll()) InvalidateRect(window_, nullptr, FALSE);
                 if (!image_cache_.Pending()) {
@@ -2756,7 +2951,7 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                 if (!printing) EndPaint(window_, &paint);
                 return 0;
             }
-            const size_t last_user = LastUserIndex();
+            const size_t last_user = history_owner_ ? kNoChatItem : LastUserIndex();
             const ChatFonts fonts{text_font_, bold_font_, italic_font_, bold_italic_font_, mono_font_, heading_font_};
             EnsureItemHeights(buffer);
             const std::vector<GroupInfo>& groups = EnsureGroups().groups;
@@ -3083,6 +3278,7 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             return TRUE;
         }
         case WM_LBUTTONDOWN:
+            SetFocus(window_);
             return 0;
         case WM_LBUTTONUP: {
             const HitArea area = HitTest(POINT{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
@@ -3090,6 +3286,8 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                 (area.type == HitArea::Type::Rail && area.item == static_cast<size_t>(-1))) {
                 if (load_earlier_) load_earlier_();
             } else if (area.type == HitArea::Type::Rail) {
+                auto* owner = history_owner_ ? history_owner_ : this;
+                if (owner->history_browser_) { owner->OpenHistoryTurn(area.item); return 0; }
                 for (size_t rail_index = 0; rail_index < rail_dashes_.size(); ++rail_index) {
                     const RailDash& dash = rail_dashes_[rail_index];
                     if (dash.item != area.item) continue;
@@ -3117,8 +3315,29 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             return 0;
         }
         case WM_MOUSEWHEEL: {
+            if (history_view_ && (GetWindowLongW(history_view_->window_, GWL_STYLE) & WS_VISIBLE))
+                return SendMessageW(history_view_->window_, message, wparam, lparam);
             if (loading_) return 0;
             const int delta = GET_WHEEL_DELTA_WPARAM(wparam);
+            auto* owner = history_owner_ ? history_owner_ : this;
+            POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+            ScreenToClient(window_, &point);
+            auto* browser = owner->history_browser_.get();
+            if (browser && point.x >= 0 && point.x <= Scale(24) && !rail_dashes_.empty() && delta != 0) {
+                const auto count = rail_dashes_.size();
+                if (browser->Count() > count) {
+                    const auto upper = browser->Count() - count;
+                    const auto steps = static_cast<size_t>(3 * std::max(1, std::abs(delta) / WHEEL_DELTA));
+                    browser->skip_latest = delta > 0 ? std::min(upper, browser->skip_latest + steps)
+                        : browser->skip_latest - std::min(browser->skip_latest, steps);
+                    SetHover({});
+                    rail_dirty_ = true;
+                    Rebuild();
+                    SetHover(HitTest(point));
+                    return 0;
+                }
+            }
+            if (delta != 0 && ScrollHistoryEdge(delta)) return 0;
             if (delta > 0 && scroll_y_ <= 0 && earlier_history_ && load_earlier_) {
                 load_earlier_();
                 return 0;
@@ -3140,6 +3359,17 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
         }
         case WM_KEYDOWN: {
             if (loading_) return 0;
+            if (history_owner_ && wparam == VK_END) {
+                auto* owner = history_owner_;
+                owner->history_browser_->skip_latest = 0;
+                owner->CloseHistory();
+                owner->auto_scroll_enabled_ = true;
+                owner->ScrollToBottom();
+                SetFocus(owner->window_);
+                return 0;
+            }
+            if ((wparam == VK_UP || wparam == VK_PRIOR) && ScrollHistoryEdge(1)) return 0;
+            if ((wparam == VK_DOWN || wparam == VK_NEXT) && ScrollHistoryEdge(-1)) return 0;
             RECT client{};
             GetClientRect(window_, &client);
             const int page = std::max(Scale(40), static_cast<int>(client.bottom - client.top) - Scale(32));
