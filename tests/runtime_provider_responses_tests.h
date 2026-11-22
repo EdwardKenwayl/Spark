@@ -126,7 +126,7 @@ void ResponsesMessagePhases(const std::string& delivery, int end_turn) {
     Check(first.ok && first.value.text == "Working now\n\nDone!" && displayed == first.value.text,
           "Responses indexed delta/done/item/completed merge messages and missing suffixes exactly once");
     Check(first.ok && first.value.needs_follow_up == (end_turn == 0),
-          "Responses follows up only on explicit end_turn=false");
+          "Responses keeps explicit end_turn=false continuation and final_answer terminal");
     if (!first.ok) { std::cerr << delivery << ": " << first.error << '\n'; return; }
     const Json expected = Json::array({
         {{"role", "assistant"}, {"content", "Working now"}, {"phase", "commentary"}},
@@ -182,12 +182,13 @@ void ResponsesEmptyFollowUp(bool streaming, const std::string& kind, int end_tur
     request.model = &model;
     const auto reply = CreateProviderAdapter(provider.protocol)->Complete(request, {}, nullptr);
     Check(reply.ok == (end_turn == 0 || kind == "commentary"),
-          "Responses permits empty continuation with end_turn=false and does not infer from commentary");
+          "Responses permits commentary continuation when end_turn is absent");
     if (reply.ok) {
-        Check(reply.value.needs_follow_up == (end_turn == 0) &&
+        const bool expected_follow_up = end_turn == 0 || (end_turn < 0 && kind == "commentary");
+        Check(reply.value.needs_follow_up == expected_follow_up &&
               reply.value.text == (kind == "commentary" ? "Working" : "") && reply.value.tool_calls.empty() &&
               reply.value.reasoning_items == (kind == "reasoning" ? std::vector<std::string>{reasoning.dump()} : std::vector<std::string>{}),
-              "continuation preserves explicit end_turn semantics and opaque reasoning");
+              "continuation preserves end_turn fallback semantics and opaque reasoning");
     }
 }
 
