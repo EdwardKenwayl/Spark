@@ -143,6 +143,23 @@ void TestJournalAndLoader(const JournalFixture& long_session, const JournalFixtu
               journal.State().workspace == small_session.workspace &&
               journal.State().metadata.value("scope", "") == "project",
           "BOM, CRLF, blank lines and damaged tail preserve valid messages and project scope");
+    const auto compaction_session = MakeJournal(ParentPath(ParentPath(small_session.path)), "Compaction", 1);
+    SessionJournal compaction_journal;
+    const auto compaction_resumed = compaction_journal.Resume(compaction_session.path);
+    ChatMessage retained_context;
+    retained_context.role = MessageRole::Assistant;
+    retained_context.content = "retained tool-loop context";
+    const auto compacted = compaction_journal.Append("context.compacted", {
+        {"trigger", "tool_loop"},
+        {"summary", "handoff summary"},
+        {"context_messages", nlohmann::json::array({retained_context})},
+    });
+    SessionJournal replayed;
+    const auto replayed_result = replayed.Resume(compaction_session.path);
+    Check(compaction_resumed.ok && compacted.ok && replayed_result.ok &&
+              replayed.State().context_messages.size() == 1 &&
+              replayed.State().context_messages.front().content == retained_context.content,
+          "context.compacted restores replacement context without requiring a later snapshot");
     CancellationToken cancellation;
     cancellation.Cancel();
     SessionJournal cancelled;

@@ -435,7 +435,9 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
         summary = TruncateUtf8(std::move(summary),
                                std::max<size_t>(2048, static_cast<size_t>(config_.context.summary_max_tokens) * 4));
         if (config_.storage.redact_secrets) summary = RedactSecrets(summary, CollectConfiguredSecrets(config_));
-        std::vector<ChatMessage> replacement = BuildCompactedHistory(context_messages(), summary);
+        // Leave most of the model window for the summary, tools and the retained tool group.
+        std::vector<ChatMessage> replacement = BuildCompactedHistory(
+            context_messages(), summary, std::max<uint64_t>(1, context_limit_tokens / 8));
         const uint64_t after = EstimateMessagesTokens(replacement) + EstimateToolsTokens(definitions) +
                                EstimateTextTokens(system_prompt) + 64;
         if (journal_ != nullptr) {
@@ -450,6 +452,7 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
                 {"summary_source", summary_source},
                 {"summary_passes", summary_passes},
                 {"summary", summary},
+                {"context_messages", replacement},
             };
             const auto appended = journal_->Append("context.compacted", payload);
             if (!appended.ok) return appended;

@@ -3,7 +3,9 @@
 #include "core/context_compactor.h"
 
 #include <algorithm>
+#include <atomic>
 #include <iostream>
+#include <sstream>
 
 namespace {
 using namespace spark;
@@ -18,6 +20,157 @@ void Check(bool condition, const char* message) {
 }
 
 enum class Ending { Complete, Cancel, ProviderError };
+
+void TestCompactionUserBudget() {
+    std::vector<ChatMessage> history;
+    for (size_t index = 0; index < 40; ++index) {
+        ChatMessage user;
+        user.content = std::to_string(index) + ":" + std::string(2000, 'a');
+        history.push_back(std::move(user));
+    }
+    ChatMessage call;
+    call.role = MessageRole::Assistant;
+    call.tool_calls.push_back({"budget-call", "read_file", R"({"path":"fixture.txt"})"});
+    ChatMessage output;
+    output.role = MessageRole::Tool;
+    output.name = "read_file";
+    output.tool_call_id = "budget-call";
+    output.content = "fixture";
+    history.push_back(call);
+    history.push_back(output);
+    const auto compacted = BuildCompactedHistory(history, "Work remains.");
+    size_t bytes = 0, count = 0;
+    bool newest = false;
+    for (const auto& message : compacted) {
+        if (message.role != MessageRole::User) continue;
+        bytes += message.content.size();
+        ++count;
+        newest = newest || message.content == history[39].content;
+    }
+    Check(newest && count > 1 && count <= 16 && bytes <= 16000,
+          "compaction keeps recent user instructions within a shared byte and message budget");
+    Check(nlohmann::json(BuildCompactedHistory(compacted, "Work remains.")) == nlohmann::json(compacted),
+          "repeated compaction does not accumulate duplicate user messages");
+    history[39].content = std::string(32000, 'z');
+    const auto oversized = BuildCompactedHistory(history, "Work remains.");
+    const auto user = std::find_if(oversized.begin(), oversized.end(), [](const ChatMessage& item) {
+        return item.role == MessageRole::User;
+    });
+    Check(user != oversized.end() && user->content == std::string(16000, 'z'),
+          "a large latest instruction is retained with a bounded UTF-8-safe prefix");
+}
+
+void TestCompactionReplayAndContinue() {
+    const auto root = fs::temp_directory_path() / Utf8ToWide("spark-compact-replay-" + NewSessionId());
+    fs::create_directories(root);
+    Check(WriteFileUtf8Atomic(JoinPath(PathToUtf8(root), "fixture.txt"), "fixture"),
+          "compaction continuation input is created");
+    std::atomic<bool> replaying{false};
+    size_t replay_requests = 0;
+    Server server([&](Server::Connection& connection, size_t) {
+        nlohmann::json output = nlohmann::json::array();
+        const bool resume = replaying.load();
+        if (resume && replay_requests++ == 0) {
+            output.push_back({{"type", "function_call"}, {"call_id", "resumed-read"}, {"name", "read_file"},
+                              {"arguments", R"({"path":"fixture.txt"})"}});
+        } else {
+            output.push_back({{"type", "message"}, {"role", "assistant"},
+                {"content", nlohmann::json::array({{{"type", "output_text"},
+                    {"text", resume ? "Done: fixture." : "Work remains. Continue the file read."}}})}});
+        }
+        const std::string body = nlohmann::json{{"status", "completed"}, {"output", output}}.dump();
+        connection.Send(Server::Headers(200, body.size(), "Content-Type: application/json\r\n") + body);
+    }, 8);
+    AppConfig config;
+    config.workspace.path = PathToUtf8(root);
+    config.storage.data_dir = JoinPath(config.workspace.path, "data");
+    config.skills.enabled = false;
+    config.agent.request_timeout_seconds = 3;
+    ProviderConfig provider;
+    provider.id = "fixture";
+    provider.protocol = "responses";
+    provider.base_url = server.Url("/v1");
+    provider.api_key = "synthetic-fixture";
+    ModelConfig model;
+    model.id = "fixture-model";
+    model.capabilities.context_window = 4096;
+    model.capabilities.streaming = false;
+    provider.models.push_back(model);
+    config.providers.push_back(provider);
+    config.active = {provider.id, model.id, ""};
+    SessionJournal journal;
+    Check(journal.Open(config.storage.data_dir, config.workspace.path).ok, "compaction session opens");
+    ChatMessage earlier;
+    for (size_t index = 0; index < 4096; ++index) earlier.content += "\xE4\xB8\xAD";
+    ChatMessage goal;
+    goal.content = "Read fixture.txt and finish the entire task.";
+    ChatMessage steering;
+    steering.content = "Continue until complete; a progress report does not finish this task.";
+    ChatMessage call;
+    call.role = MessageRole::Assistant;
+    call.tool_calls.push_back({"seed-read", "read_file", R"({"path":"fixture.txt"})"});
+    call.reasoning_items.push_back(
+        R"({"type":"reasoning","id":"seed-reasoning","encrypted_content":"fixture"})");
+    ChatMessage output;
+    output.role = MessageRole::Tool;
+    output.name = "read_file";
+    output.tool_call_id = "seed-read";
+    output.content = "fixture";
+    for (const auto& message : {earlier, goal, steering, call, output}) {
+        journal.MutableState().messages.push_back(message);
+        Check(journal.Append("message", message).ok, "seed message persists");
+    }
+    Agent agent(config, &journal, nullptr);
+    const auto approve = [](const ApprovalRequest&) { return true; };
+    Check(agent.RunTurn("/compact", approve, {}, nullptr).ok, "first real compaction succeeds");
+    const auto first = journal.State().context_messages;
+    Check(first.size() == 6 && !first[1].content.empty() &&
+              first[1].content.size() < earlier.content.size() &&
+              earlier.content.find(first[1].content) == 0 && EstimateMessagesTokens(first) < 4096,
+          "small-window compaction bounds retained user text while preserving a UTF-8 prefix");
+    Check(agent.RunTurn("/compact", approve, {}, nullptr).ok, "second real compaction succeeds");
+    const nlohmann::json expected = std::vector<ChatMessage>{
+        journal.State().context_messages.front(), first[1], goal, steering, call, output};
+    Check(nlohmann::json(first) == expected && nlohmann::json(journal.State().context_messages) == expected,
+          "both compactions preserve original instructions and the complete reasoning/tool group once");
+    const auto contents = ReadFileUtf8(journal.Path());
+    std::istringstream records(contents.value_or(""));
+    std::string line, without_snapshots;
+    while (std::getline(records, line)) {
+        const auto event = nlohmann::json::parse(line);
+        if (event.value("type", "") != "snapshot") without_snapshots += line + "\n";
+    }
+    const auto replay_path = JoinPath(config.storage.data_dir, "sessions/replayed.jsonl");
+    Check(WriteFileUtf8Atomic(replay_path, without_snapshots), "journal-only replay fixture is created");
+    SessionJournal replayed;
+    Check(replayed.Resume(replay_path).ok, "journal without snapshots resumes");
+    Check(nlohmann::json(replayed.State().context_messages) == expected,
+          "compaction event alone restores the exact replacement context");
+    // The small window above tests retention; use a normal window for the tool-loop replay.
+    config.providers.front().models.front().capabilities.context_window = 272000;
+    Agent resumed(config, &replayed, nullptr);
+    const size_t summary_requests = server.Requests().size();
+    replaying.store(true);
+    size_t tools = 0;
+    AgentCallbacks callbacks;
+    callbacks.on_tool_finish = [&](const auto&, const auto&, bool ok, const auto&) {
+        Check(ok, "tool after journal-only restore succeeds"); ++tools;
+    };
+    const auto result = resumed.RunTurn("Continue.", approve, callbacks, nullptr);
+    const auto requests = server.Requests();
+    Check(result.ok && tools == 1 && requests.size() == summary_requests + 2 && server.Error().empty(),
+          "a twice-compacted journal resumes the actual provider/tool loop");
+    if (requests.size() == summary_requests + 2) {
+        const auto body = nlohmann::json::parse(requests[summary_requests].body);
+        Check(requests[summary_requests].body.find(goal.content) != std::string::npos &&
+              requests[summary_requests].body.find(steering.content) != std::string::npos &&
+              requests[summary_requests].body.find("seed-reasoning") != std::string::npos &&
+              !body["tools"].empty() && replayed.State().messages.back().content == "Done: fixture.",
+              "the continued request contains retained instructions, reasoning and tools");
+    }
+    std::error_code error;
+    fs::remove_all(root, error);
+}
 
 void TestResponsesContinuation(bool streaming, int end_turn) {
     const bool follow_up = end_turn == 0;
@@ -224,6 +377,8 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
 }  // namespace
 
 int main() {
+    TestCompactionUserBudget();
+    TestCompactionReplayAndContinue();
     for (bool streaming : {false, true})
         for (int end_turn : {-1, 0, 1}) TestResponsesContinuation(streaming, end_turn);
     TestLoop("default beyond 100", 105, Ending::Complete, false);

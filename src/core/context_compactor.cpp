@@ -218,7 +218,8 @@ std::string BuildHandoffSummary(const std::vector<ChatMessage>& messages, const 
     return ClipText(summary.str(), std::max<size_t>(2048, max_tokens * 3));
 }
 
-std::vector<ChatMessage> BuildCompactedHistory(const std::vector<ChatMessage>& messages, const std::string& summary) {
+std::vector<ChatMessage> BuildCompactedHistory(const std::vector<ChatMessage>& messages, const std::string& summary,
+                                             uint64_t retained_user_text_tokens) {
     std::vector<ChatMessage> compacted;
     ChatMessage handoff;
     handoff.role = MessageRole::System;
@@ -275,6 +276,33 @@ std::vector<ChatMessage> BuildCompactedHistory(const std::vector<ChatMessage>& m
                 }
             }
         }
+    }
+    // Keep recent user instructions independently of the generated summary and tool tail.
+    // Select newest first, then restore chronology; both limits also bound empty messages.
+    size_t remaining_user_bytes = 16000;
+    std::vector<ChatMessage> recent_users;
+    for (size_t index = tail_start;
+         index > 0 && remaining_user_bytes && retained_user_text_tokens && recent_users.size() < 16; --index) {
+        if (messages[index - 1].role != MessageRole::User) continue;
+        ChatMessage user = messages[index - 1];
+        user.content = TruncateUtf8(user.content, remaining_user_bytes);
+        if (EstimateTextTokens(user.content) > retained_user_text_tokens) {
+            size_t lower = 0, upper = user.content.size();
+            while (lower < upper) {
+                const size_t middle = lower + (upper - lower + 1) / 2;
+                if (EstimateTextTokens(TruncateUtf8(user.content, middle)) <= retained_user_text_tokens)
+                    lower = middle;
+                else
+                    upper = middle - 1;
+            }
+            user.content = TruncateUtf8(user.content, lower);
+        }
+        remaining_user_bytes -= user.content.size();
+        retained_user_text_tokens -= EstimateTextTokens(user.content);
+        recent_users.push_back(std::move(user));
+    }
+    for (auto user = recent_users.rbegin(); user != recent_users.rend(); ++user) {
+        compacted.push_back(std::move(*user));
     }
     for (size_t index = tail_start; index < messages.size(); ++index) {
         ChatMessage tail = messages[index];

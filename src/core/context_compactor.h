@@ -24,6 +24,7 @@ std::string BuildHandoffSummary(const std::vector<ChatMessage>& messages, const 
 // Makes a history acceptable to tool-calling providers without changing the stored transcript:
 // orphan tool outputs are removed, and retained tool calls with no result get a synthetic result.
 std::vector<ChatMessage> NormalizeToolCallHistory(const std::vector<ChatMessage>& messages);
-std::vector<ChatMessage> BuildCompactedHistory(const std::vector<ChatMessage>& messages, const std::string& summary);
+std::vector<ChatMessage> BuildCompactedHistory(const std::vector<ChatMessage>& messages, const std::string& summary,
+                                             uint64_t retained_user_text_tokens = 16000);
 
 }  // namespace spark

@@ -909,11 +909,9 @@ public:
         size_t active_text_output = unindexed_output;
         size_t next_output_index = 0;
         std::string response_end_turn = "absent";
-        bool has_response_end_turn = false;
         const auto read_end_turn = [&](const nlohmann::json& response) {
             const auto end_turn = response.find("end_turn");
-            has_response_end_turn = end_turn != response.end() && end_turn->is_boolean();
-            reply.needs_follow_up = has_response_end_turn && !end_turn->get<bool>();
+            reply.needs_follow_up = end_turn != response.end() && end_turn->is_boolean() && !end_turn->get<bool>();
             response_end_turn = end_turn != response.end() && end_turn->is_boolean()
                                     ? (end_turn->get<bool>() ? "true" : "false") : "absent";
         };
@@ -1359,18 +1357,6 @@ public:
                 message.content += part.text;
             }
             reply.assistant_messages.push_back(std::move(message));
-        }
-        if (!has_response_end_turn) {
-            bool has_commentary = false;
-            bool has_final_answer = false;
-            for (const auto& message : reply.assistant_messages) {
-                has_commentary = has_commentary || message.phase == "commentary";
-                has_final_answer = has_final_answer || message.phase == "final_answer";
-            }
-            // Some gateways omit end_turn from completed responses. Preserve a
-            // commentary-only turn as an unfinished model turn instead of
-            // presenting its progress update as the final answer.
-            reply.needs_follow_up = has_commentary && !has_final_answer;
         }
         // The finished reasoning belongs to the assistant turn: hand it back on the next
         // request so thinking models do not reject the tool loop with HTTP 400.
