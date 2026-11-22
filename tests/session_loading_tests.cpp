@@ -1,6 +1,7 @@
 #include "gui/app.h"
 #include "gui/session_loader.h"
 #include "gui/theme.h"
+#include "platform/clock.h"
 
 #include <commctrl.h>
 #include <objidl.h>
@@ -717,6 +718,34 @@ struct AppWindowSessionLoadTest {
         app.ClearChatView();
     }
 
+    static void TestEditingAndQuietCommands(Fixture& fixture) {
+        auto& app = fixture.app;
+        app.ClearChatView();
+        const std::string image = JoinPath(fixture.directory.Utf8(), "edited-image.png");
+        app.chat_view_->AddUser(u8"[附件引用]\n- " + image + "\n\nOriginal question", 0, {image});
+        app.EditChatItem(app.chat_view_->LastUserIndex());
+        { PrintedClient rendered(app.window_); }
+        std::cout << "edit_probe text=" << app.ComposerText() << " attachments=" << app.attachments_.size()
+                  << " previews=" << app.attachment_hit_areas_.size() << '\n';
+        Check(app.ComposerText() == "Original question" &&
+                  app.attachments_ == std::vector<std::string>{image} &&
+                  app.attachment_hit_areas_.size() == 1,
+              "editing a sent image restores a thumbnail and plain question instead of attachment references");
+        app.pending_edit_index_ = static_cast<size_t>(-1);
+        app.attachments_.clear();
+        app.ClearComposer();
+        app.ClearChatView();
+        app.LayoutControls();
+        auto quiet = std::make_shared<AppWindow::TurnRuntime>();
+        quiet->session_key = "quiet-command-fixture";
+        quiet->last_progress_tick.store(MonotonicMillis() - 631000);
+        app.active_turns_[quiet->session_key] = quiet;
+        app.TickTurnWatchdog();
+        Check(!quiet->cancellation.IsCancelled(),
+              "a quiet command is not cancelled by the UI after ten and a half minutes");
+        app.active_turns_.erase(quiet->session_key);
+    }
+
     static void TestCompletionNotifications(Fixture& fixture) {
         auto& app = fixture.app;
         const auto cards = [] {
@@ -805,6 +834,7 @@ struct AppWindowSessionLoadTest {
                 ChatViewLoadTest::Run(fixture.app.window_);
                 TestSwitchPainting(fixture.app);
                 RunIntegration(fixture, a, b);
+                TestEditingAndQuietCommands(fixture);
                 TestCompletionNotifications(fixture);
             }
         } catch (const std::exception& exception) {

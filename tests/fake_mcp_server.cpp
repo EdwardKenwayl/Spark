@@ -32,6 +32,11 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::seconds(30));
         return 0;
     }
+    if (argc > 2 && std::string(argv[1]) == "--delay") {
+        std::this_thread::sleep_for(std::chrono::milliseconds(std::stoi(argv[2])));
+        std::cout << "delayed command completed\n";
+        return 0;
+    }
     int call_count = 0;
     std::string line;
     while (std::getline(std::cin, line)) {

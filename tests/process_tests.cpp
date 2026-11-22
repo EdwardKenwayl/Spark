@@ -28,6 +28,16 @@ std::string Collect(spark::ChildProcess& child, spark::ProcessStream stream) {
 
 int main(int argc, char** argv) {
     using namespace spark;
+    if (argc == 3 && std::string(argv[2]) == "--long-command") {
+        ToolContext context;
+        context.workspace.path = ParentPath(AbsolutePath(argv[1]));
+        const uint64_t started = MonotonicMillis();
+        const auto result = ExecuteShellCommand("\"" + AbsolutePath(argv[1]) + "\" --delay 632000",
+            context.workspace.path, context.limits.tool_timeout_seconds, context);
+        const auto elapsed = MonotonicMillis() - started;
+        std::cout << "elapsed_ms=" << elapsed << " ok=" << result.ok << "\n" << result.output << '\n';
+        return result.ok && elapsed >= 632000 ? 0 : 1;
+    }
     if (argc != 2) return 2;
     const std::string helper = AbsolutePath(argv[1]);
     ProcessOptions options;
@@ -79,6 +89,31 @@ int main(int argc, char** argv) {
           captured.output.find("[stderr]") != std::string::npos, "both large pipes drain with bounded retention");
     captured = ExecuteShellCommand(command + " 7", ParentPath(helper), 3, context);
     Check(!captured.ok && captured.output.find("exit code") != std::string::npos, "nonzero exit is a tool failure");
+    const std::string delayed = "\"" + helper + "\" --delay 1250";
+    captured = ExecuteShellCommand(delayed, ParentPath(helper), 0, context);
+    Check(captured.ok && captured.output.find("delayed command completed") != std::string::npos,
+          "zero timeout waits for a quiet command instead of imposing a one-second deadline");
+    captured = ExecuteShellCommand(delayed, ParentPath(helper), 1, context);
+    Check(!captured.ok && captured.output.find("command timed out") != std::string::npos,
+          "an explicit command deadline still terminates the process");
+    CancellationToken command_cancel;
+    context.cancellation = &command_cancel;
+    std::thread cancel_command([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        command_cancel.Cancel();
+    });
+    const uint64_t cancel_started = MonotonicMillis();
+    captured = ExecuteShellCommand("\"" + helper + "\" --silent", ParentPath(helper), 0, context);
+    cancel_command.join();
+    Check(!captured.ok && captured.output.find("cancelled") != std::string::npos &&
+              MonotonicMillis() - cancel_started < 2000,
+          "an unlimited silent command remains promptly cancellable");
+    context.cancellation = nullptr;
+    auto config = ConfigFromJson(ParseConfigJson(DefaultConfigExampleJson()), {});
+    config.agent.tool_timeout_seconds = 0;
+    Check(ValidateConfig(config, false).empty(), "zero command timeout is valid configuration");
+    config.agent.tool_timeout_seconds = -1;
+    Check(!ValidateConfig(config, false).empty(), "negative command timeout is rejected");
     McpServerConfig server;
     server.id = "fixture";
     server.enabled = true;

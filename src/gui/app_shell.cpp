@@ -1,6 +1,7 @@
 #include "platform/clock.h"
 #include "gui/app.h"
 #include "gui/history_window.h"
+#include "gui/chat_ui_helpers.h"
 #include "gui/compaction_boundary.h"
 #include "gui/localization.h"
 #include "gui/model_picker.h"
@@ -1209,16 +1210,8 @@ void AppWindow::TickTurnWatchdog() {
             FinishTurn(runtime, runtime->success.load(), reason);
             continue;
         }
-        const uint64_t silence_ms = spark::MonotonicMillis() - runtime->last_progress_tick.load();
-        const int patience_seconds = std::max(30, std::max(runtime->config.agent.request_timeout_seconds,
-                                                            runtime->config.agent.response_header_timeout_seconds));
-        if (silence_ms >= static_cast<uint64_t>(patience_seconds) * 1000 + 30000) {
-            runtime->cancellation.Cancel();
-            if (IsSessionRunning(journal_.Path()) &&
-                NormalizePathForComparison(journal_.Path()) == runtime->session_key) {
-                SetStatus(i18n::Text(L"The model or tool timed out. Cancelling this turn..."));
-            }
-        }
+        // HTTP, MCP and command execution own their deadlines. A quiet tool can
+        // legitimately outlive the model's header timeout without emitting UI events.
     }
 }
 
@@ -4632,7 +4625,10 @@ void AppWindow::EditChatItem(size_t index) {
     const ChatItem* item = chat_view_->Item(index);
     if (item == nullptr || item->kind != ChatItemKind::User || index != chat_view_->LastUserIndex()) return;
     pending_edit_index_ = index;
-    SetWindowTextW(composer_, Utf8ToWide(item->text).c_str());
+    attachments_ = item->image_paths;
+    SetWindowTextW(composer_, Utf8ToWide(ui::UserMessageText(item->text, &attachments_)).c_str());
+    LayoutControls();
+    SaveComposerState();
     SetFocus(composer_);
     UpdateSendButton();
     SetStatus(i18n::Text(L"Editing the last message. Sending will replace it and its replies."));

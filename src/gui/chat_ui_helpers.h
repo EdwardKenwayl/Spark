@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -23,8 +24,8 @@ inline bool IsAttachmentPath(std::string_view path) {
         (path.size() >= 2 && path[0] == '\\' && path[1] == '\\');
 }
 
-// Presentation only. Never use this to rewrite a journal entry or a model request.
-inline std::string UserMessageText(std::string_view source) {
+// Decode generated references for display/editing; journal entries stay unchanged.
+inline std::string UserMessageText(std::string_view source, std::vector<std::string>* attachments = nullptr) {
     constexpr std::string_view marker = u8"[附件引用]";
     const auto start = source.find(marker);
     if (start == std::string_view::npos) return std::string(source);
@@ -46,13 +47,21 @@ inline std::string UserMessageText(std::string_view source) {
     if (line(pos, &next) != marker) return std::string(source);
     pos = next;
     size_t paths = 0;
+    std::vector<std::string> references;
     while (pos < source.size()) {
         const auto value = line(pos, &next);
         if (value.empty()) {
-            if (paths) return std::string(source.substr(0, start)) + std::string(source.substr(next));
+            if (paths) {
+                if (attachments) for (const auto& path : references) {
+                    if (std::find(attachments->begin(), attachments->end(), path) == attachments->end())
+                        attachments->push_back(path);
+                }
+                return std::string(source.substr(0, start)) + std::string(source.substr(next));
+            }
             break;
         }
         if (value.size() < 3 || value.substr(0, 2) != "- " || !IsAttachmentPath(value.substr(2))) break;
+        if (attachments) references.emplace_back(value.substr(2));
         ++paths;
         pos = next;
     }

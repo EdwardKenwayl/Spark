@@ -630,7 +630,7 @@ std::vector<std::string> ValidateConfig(const AppConfig& config, bool require_cr
         }
     }
     if (config.agent.max_parallel_read_tools <= 0 ||
-        config.agent.request_timeout_seconds <= 0 || config.agent.tool_timeout_seconds <= 0 ||
+        config.agent.request_timeout_seconds <= 0 || config.agent.tool_timeout_seconds < 0 ||
         config.agent.response_header_timeout_seconds <= 0 ||
         config.agent.max_tool_output_bytes <= 0 || config.agent.max_command_output_bytes <= 0) {
         errors.push_back("agent: limits must be positive");

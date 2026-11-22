@@ -49,10 +49,8 @@ struct AgentLimitsConfig {
     int max_parallel_read_tools = 4;
     int request_timeout_seconds = 180;
     int response_header_timeout_seconds = 600;
-    // A command may run for a long time while the user is watching it. The
-    // tool can still be cancelled explicitly, and individual calls may
-    // override this value.
-    int tool_timeout_seconds = 600;
+    // Zero waits for completion or cancellation. Positive values set a deadline.
+    int tool_timeout_seconds = 0;
     int max_tool_output_bytes = 16384;
     int max_command_output_bytes = 65536;
 };

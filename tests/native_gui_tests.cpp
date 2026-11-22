@@ -52,6 +52,26 @@ public:
 wxIMPLEMENT_APP_NO_MAIN(SmokeApplication);
 namespace spark {
 struct NativeGuiTestAccess {
+    static bool EditImageMessage(NativeFrame& frame) {
+        auto view = std::make_unique<NativeFrame::View>();
+        frame.active_ = "native-image-edit-fixture";
+        frame.views_[frame.active_] = std::move(view);
+        auto& model = frame.Active()->transcript;
+        ChatItem user;
+        user.kind = ChatItemKind::User;
+        user.text = u8"[附件引用]\n- /tmp/native-edit.png\n\nEdit the image question";
+        user.image_paths = {"/tmp/native-edit.png"};
+        const auto row = model.Apply({TranscriptEventKind::Add, kNoChatItem, user}, {1700000000, MonotonicMillis()});
+        frame.chat_->SetTranscript(&model, true);
+        frame.EditMessage(row);
+        const bool restored = frame.composer_->GetValue() == "Edit the image question" &&
+            frame.attachments_ == user.image_paths && frame.edit_row_ == row;
+        frame.edit_row_ = kNoChatItem;
+        frame.composer_->ChangeValue("");
+        frame.attachments_.clear();
+        frame.RefreshAttachments();
+        return restored;
+    }
     static void Seed(NativeFrame& frame, const SessionState& state) {
         auto view = std::make_unique<NativeFrame::View>();
         view->journal.MutableState() = state;
@@ -334,6 +354,8 @@ void CheckNativeHistoryActivity(spark::AppConfig config) {
     std::cout << "history stage: frame constructed" << std::endl;
     frame->SetSize(900, 650);
     frame->Show();
+    Check(NativeGuiTestAccess::EditImageMessage(*frame),
+          "native editing restores image selections and removes generated references from the composer");
     SessionState state;
     for (int turn = 0; turn < 20; ++turn) {
         ChatMessage user; user.role = MessageRole::User; user.content = "window-user-" + std::to_string(turn);

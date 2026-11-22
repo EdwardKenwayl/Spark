@@ -115,12 +115,14 @@ Legacy `agent.max_iterations` values are ignored. A turn continues through tool 
 | `max_parallel_read_tools` | `4` | Maximum concurrent read tools; the old name `max_parallel_tools` is still accepted |
 | `request_timeout_seconds` | `180` | Maximum idle time without new response stream data |
 | `response_header_timeout_seconds` | `600` | Maximum wait for response headers |
-| `tool_timeout_seconds` | `600` | Default command timeout; a command can override it and can still be interrupted |
+| `tool_timeout_seconds` | `0` | Command deadline in seconds; zero waits for completion or user interruption |
 | `max_tool_output_bytes` | `16384` | Ordinary tool output budget in bytes |
 | `max_command_output_bytes` | `65536` | Command output capture budget in bytes |
 
-A `run_command` call can specify `timeout_seconds`, capped at 24 hours;
-an omitted or zero value uses `agent.tool_timeout_seconds`.
+A `run_command` call can specify a positive `timeout_seconds`, capped at 24 hours.
+An omitted value uses `agent.tool_timeout_seconds`; an explicit zero disables
+the deadline for that command. Silent commands have no additional UI timeout.
+HTTP response-header/stream-idle and MCP timeouts apply to their own operations.
 
 ## Permissions
 

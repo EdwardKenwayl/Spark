@@ -72,11 +72,14 @@ ToolRegistry::ToolRegistry() {
          {"required", nlohmann::json::array({"changes"})}});
     add("run_command",
         "Run a command in the workspace. The user must approve the command and its output is bounded. "
-        "Optional timeout_seconds overrides the configured command timeout for this call.",
+        "Commands wait for completion or user cancellation by default. "
+        "Optional timeout_seconds sets a deadline for commands expected to finish within it.",
         {{"type", "object"}, {"properties", {
             {"command", {{"type", "string"}}}, {"cwd", {{"type", "string"}}},
             {"timeout_seconds", {{"type", "integer"},
-             {"description", "Optional per-command timeout in seconds; 0 uses the configured default."}}}}},
+             {"minimum", 0},
+             {"description", "Optional deadline in seconds; 0 waits until completion or cancellation. "
+                             "Omit to use the configured default (normally no deadline)."}}}}},
          {"required", nlohmann::json::array({"command"})}});
 }
 
@@ -217,9 +220,9 @@ ToolExecutionResult ToolRegistry::Execute(const std::string& name, const std::st
         ApprovalRequest request{ApprovalKind::Command, "允许执行命令？", "cwd: " + directory + "\ncommand: " + command};
         if (context.workspace.command_approval != "allow" && context.approve && !context.approve(request))
             return fail("command was not approved");
-        const int requested = IntArgument(arguments, "timeout_seconds", 0);
-        return ExecuteShellCommand(command, directory, requested > 0 ? std::min(requested, 86400) :
-                                   context.limits.tool_timeout_seconds, context);
+        const int requested = IntArgument(arguments, "timeout_seconds", context.limits.tool_timeout_seconds);
+        if (requested < 0) return fail("timeout_seconds cannot be negative");
+        return ExecuteShellCommand(command, directory, std::min(requested, 86400), context);
     }
     return fail("unknown tool: " + name);
 }

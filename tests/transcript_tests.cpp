@@ -1,5 +1,6 @@
 #include "gui/transcript.h"
 #include "gui/history_window.h"
+#include "gui/chat_ui_helpers.h"
 
 #include <algorithm>
 #include "platform/filesystem.h"
@@ -19,6 +20,29 @@ size_t Add(Transcript& transcript, ChatItemKind kind, const std::string& text = 
     item.kind = kind;
     item.text = text;
     return transcript.Apply({TranscriptEventKind::Add, kNoChatItem, item}, {123, 1000});
+}
+
+void TestEditedImageReplay(const fs::path& root) {
+    ChatMessage edited;
+    edited.role = MessageRole::User;
+    const std::string image = PathToUtf8(root / "edited.png");
+    edited.image_paths = {image};
+    edited.content = u8"[附件引用]\n- " + image + "\n\nOriginal question";
+    auto attachments = edited.image_paths;
+    edited.content = ui::UserMessageText(edited.content, &attachments) + " updated";
+    edited.image_paths = attachments;
+    SessionJournal journal;
+    Check(journal.Open(PathToUtf8(root), PathToUtf8(root)).ok, "edited image journal opens");
+    journal.MutableState().messages = {edited};
+    journal.SaveSnapshot();
+    SessionJournal restored;
+    Check(restored.Resume(journal.Path()).ok, "edited image journal reloads");
+    Transcript model;
+    const auto replay = model.BeginReplay(restored.State(), {123, 1000});
+    while (!model.ReplayStep(replay)) {}
+    Check(model.Count() > 0 && model.Item(0)->text == "Original question updated" &&
+              model.Item(0)->image_paths == std::vector<std::string>{image},
+          "edited images remain structured and visible after journal reload and transcript replay");
 }
 
 void TestEventsAndTimers() {
@@ -803,6 +827,7 @@ int main() {
     spark::fs::create_directories(root);
     try {
         TestEventsAndTimers();
+        TestEditedImageReplay(root);
         TestCompactionActivity();
         TestJournalReplay(root);
         TestTurnBoundaries();

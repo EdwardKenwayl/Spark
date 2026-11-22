@@ -86,7 +86,8 @@ ToolExecutionResult ExecuteShellCommand(const std::string& command, const std::s
     bool output_end = false, error_end = false, stopped = false;
     int exit_code = -1;
     std::string failure;
-    const uint64_t deadline = MonotonicMillis() + static_cast<uint64_t>(std::max(1, timeout_seconds)) * 1000;
+    const uint64_t deadline = timeout_seconds > 0
+        ? MonotonicMillis() + static_cast<uint64_t>(timeout_seconds) * 1000 : 0;
     uint64_t drain_deadline = 0;
     for (;;) {
         char buffer[8192];
@@ -105,7 +106,7 @@ ToolExecutionResult ExecuteShellCommand(const std::string& command, const std::s
         }
         if (!stopped) {
             if (context.cancellation && context.cancellation->IsCancelled()) failure = "cancelled";
-            else if (MonotonicMillis() >= deadline) failure = "command timed out";
+            else if (deadline && MonotonicMillis() >= deadline) failure = "command timed out";
             const bool exited = child.value->Exited(&exit_code);
             if (!failure.empty() || exited) {
                 child.value->Stop();

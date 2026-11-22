@@ -83,6 +83,14 @@ int main() {
              std::string(u8"[智能快照]literal\n\n[附件引用]\n- /tmp/a.png\n\nBody")})
         Check(UserMessageText(literal) == literal, "literal heading and incomplete blocks are preserved");
     Check(UserMessageText(u8"[附件引用]\n- /tmp/a.png\n\n").empty(), "attachment-only display has no path block");
+    std::vector<std::string> edited_attachments{"C:\\work\\photo.png"};
+    Check(UserMessageText(original, &edited_attachments) == u8"保留正文\nsecond line" &&
+              edited_attachments == std::vector<std::string>({"C:\\work\\photo.png", "/tmp/notes.md"}),
+          "editing restores generated file references without duplicating structured images");
+    const std::string incomplete = u8"[附件引用]\n- /tmp/a.png\nno blank terminator";
+    edited_attachments.clear();
+    Check(UserMessageText(incomplete, &edited_attachments) == incomplete && edited_attachments.empty(),
+          "incomplete literal reference blocks never become selected attachments");
     Check(FileLinkTarget(L"C:\\work\\source.cpp:17:4") == L"C:\\work\\source.cpp" &&
           FileLinkTarget(L"file:///tmp/My%20File.cpp#L17-L20") == L"file:///tmp/My%20File.cpp" &&
           FileLinkTarget(L"/tmp/file%3A17") == L"/tmp/file%3A17", "source locations strip before URI decoding");

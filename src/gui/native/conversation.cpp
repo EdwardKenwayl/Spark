@@ -2,6 +2,7 @@
 #include "gui/native/approval_prompt.h"
 #include "gui/localization.h"
 #include "gui/history_window.h"
+#include "gui/chat_ui_helpers.h"
 #include "core/external_agents.h"
 #include "platform/clock.h"
 
@@ -304,8 +305,12 @@ void NativeFrame::EditMessage(size_t row) {
     if (!view || runtime_.Running(active_) || external_.count(active_)) return;
     const auto* item = view->transcript.Item(row);
     if (!item || item->kind != ChatItemKind::User) return;
-    composer_->ChangeValue(U(item->text));
+    attachments_ = item->image_paths;
+    composer_->ChangeValue(U(ui::UserMessageText(item->text, &attachments_)));
     edit_row_ = row;
+    draft_dirty_ = true;
+    RefreshAttachments();
+    SaveDraft();
     composer_->SetFocus();
     UpdateControls();
 }
