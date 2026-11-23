@@ -765,15 +765,18 @@ public:
             {"input", nlohmann::json::array()},
             {"stream", request.model->capabilities.streaming},
         };
+        std::string model_id = LowerAscii(request.model->id);
+        const size_t separator = model_id.find_last_of('/');
+        if (separator != std::string::npos) model_id.erase(0, separator + 1);
+        const auto family = [&](const std::string& name) {
+            return model_id == name || model_id.rfind(name + "-", 0) == 0 ||
+                   model_id.rfind(name + ".", 0) == 0;
+        };
+        // GPT-6.2 does not cache the top-level instructions field. Put the stable
+        // developer message first, as Codex does, without changing other relays.
+        const bool instructions_in_input = model_id == "gpt-6.2" || model_id.rfind("gpt-6.2-", 0) == 0;
         if (request.model->capabilities.reasoning) {
             if (!request.reasoning_effort.empty()) payload["reasoning"]["effort"] = request.reasoning_effort;
-            std::string model_id = LowerAscii(request.model->id);
-            const size_t separator = model_id.find_last_of('/');
-            if (separator != std::string::npos) model_id.erase(0, separator + 1);
-            const auto family = [&](const std::string& name) {
-                return model_id == name || model_id.rfind(name + "-", 0) == 0 ||
-                       model_id.rfind(name + ".", 0) == 0;
-            };
             // Provider names are user-defined, and other Responses implementations
             // do not necessarily accept OpenAI's optional summary parameter.
             const bool supports_summary = family("gpt-5") || family("gpt-6") ||
@@ -796,10 +799,10 @@ public:
         for (size_t message_index = 0; message_index < prepared_messages.size(); ++message_index) {
             const ChatMessage& message = prepared_messages[message_index];
             if (message.role == MessageRole::System) {
-                if (message_index == 0) {
+                if (message_index == 0 && !instructions_in_input) {
                     instructions = message.content;
-                } else {
-                    // Handoffs and resume markers belong at their position in the input history.
+                } else if (message_index != 0 || !message.content.empty()) {
+                    // Keep base instructions first and handoffs/resume markers in their original positions.
                     payload["input"].push_back({{"type", "message"}, {"role", "developer"},
                         {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", message.content}}})}});
                 }
@@ -880,6 +883,17 @@ public:
         http.headers["Content-Type"] = "application/json";
         http.headers["Accept"] = request.model->capabilities.streaming ? "text/event-stream" : "application/json";
         ApplyProviderHeaders(http, *request.provider);
+        constexpr const char* kTurnStateHeader = "x-codex-turn-state";
+        const bool manage_turn_state = !request.prompt_cache_key.empty() &&
+            std::none_of(http.headers.begin(), http.headers.end(), [&](const auto& header) {
+                return LowerAscii(header.first) == kTurnStateHeader;
+            });
+        const bool same_route = route_provider_ == request.provider && route_url_ == http.url &&
+                                route_model_ == request.model->id && route_session_ == request.prompt_cache_key;
+        if (manage_turn_state && same_route && !turn_state_.empty()) {
+            http.headers[kTurnStateHeader] = turn_state_;
+            http.forbid_redirects = true;
+        }
         http.body = payload.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
         http.timeout_seconds = request.request_timeout_seconds;
         http.header_timeout_seconds = request.response_header_timeout_seconds;
@@ -1251,6 +1265,15 @@ public:
             return stream_complete ? StreamAction::Stop : StreamAction::Continue;
         };
         auto response = HttpRequestStreaming(http, chunk_callback, cancellation);
+        if (http.forbid_redirects && response.ok && received_events == 0 &&
+            (response.value.status == 301 || response.value.status == 302 || response.value.status == 303 ||
+             response.value.status == 307 || response.value.status == 308)) {
+            // Preserve the transport's existing redirect behavior without forwarding the token.
+            turn_state_.clear();
+            http.headers.erase(kTurnStateHeader);
+            http.forbid_redirects = false;
+            response = HttpRequestStreaming(http, chunk_callback, cancellation);
+        }
         if (response.ok && (response.value.status == 400 || response.value.status == 422) &&
             received_events == 0 && payload.contains("reasoning") && payload["reasoning"].contains("summary")) {
             bool unsupported_summary = false;
@@ -1290,6 +1313,16 @@ public:
                 const std::string header = LowerAscii(Trim(name));
                 if (header == "content-type") content_type = value;
                 if (header == "x-request-id" || header == "request-id") request_id = value.substr(0, 200);
+                if (manage_turn_state && (!same_route || turn_state_.empty()) && header == kTurnStateHeader &&
+                    response.value.status >= 200 && response.value.status < 300 && !response.value.redirected &&
+                    !value.empty() && value.size() <= 8192 && std::all_of(value.begin(), value.end(),
+                        [](unsigned char ch) { return ch >= 0x21 && ch <= 0x7e; })) {
+                    route_provider_ = request.provider;
+                    route_url_ = http.url;
+                    route_model_ = request.model->id;
+                    route_session_ = request.prompt_cache_key;
+                    turn_state_ = value;
+                }
             }
         }
         std::string type_summary;
@@ -1419,6 +1452,10 @@ public:
         reply.diagnostics = describe_http();
         return Result<ModelReply>::Success(std::move(reply));
     }
+private:
+    // Agent owns a Responses adapter for one turn. Unkeyed compaction calls do not use this state.
+    const ProviderConfig* route_provider_ = nullptr;
+    std::string route_url_, route_model_, route_session_, turn_state_;
 };
 
 }  // namespace

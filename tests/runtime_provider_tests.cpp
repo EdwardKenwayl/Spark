@@ -109,7 +109,7 @@ void ProtocolRoundTrip(const std::string& protocol, bool streaming, const std::s
           "native protocol uses the correct authentication header");
 }
 
-void ResponsesToolFollowUp() {
+void ResponsesToolFollowUp(const std::string& model_id, bool cached_instructions) {
     Server server([](Server::Connection& connection, size_t attempt) {
         const Json output = attempt == 0
             ? Json::array({{{"type", "function_call"}, {"id", "item-1"}, {"call_id", "call-1"},
@@ -117,17 +117,20 @@ void ResponsesToolFollowUp() {
             : Json::array({{{"type", "message"}, {"role", "assistant"},
                 {"content", Json::array({{{"type", "output_text"}, {"text", "Reviewed"}}})}}});
         const auto body = Json{{"status", "completed"}, {"output", output}}.dump();
-        connection.Send(Server::Headers(200, body.size()) + body);
+        const char* headers = attempt == 0 ? "X-Codex-Turn-State: fixture-route\r\n" : "";
+        connection.Send(Server::Headers(200, body.size(), headers) + body);
     });
     ProviderConfig provider;
     provider.protocol = "responses";
     provider.base_url = server.Url("/v1");
     ModelConfig model;
-    model.id = "fixture-model";
+    model.id = model_id;
     model.capabilities.streaming = false;
     ProviderRequest request;
     request.provider = &provider;
     request.model = &model;
+    request.prompt_cache_key = "fixture-session";
+    request.messages.push_back({MessageRole::System, "Stable project instructions"});
     request.messages.push_back({MessageRole::User, "Review the readme"});
     auto adapter = CreateProviderAdapter(provider.protocol);
     const auto first = adapter->Complete(request, {}, nullptr);
@@ -145,9 +148,41 @@ void ResponsesToolFollowUp() {
     request.messages.push_back(tool);
     const auto final = adapter->Complete(request, {}, nullptr);
     Check(final.ok && final.value.text == "Reviewed", "native Responses accepts a tool result follow-up");
+    auto independent = request;
+    independent.prompt_cache_key.clear();
+    Check(adapter->Complete(independent, {}, nullptr).ok, "compaction-style request completes independently");
+    auto other_model = model;
+    other_model.id = "different-model";
+    independent = request;
+    independent.model = &other_model;
+    Check(adapter->Complete(independent, {}, nullptr).ok, "a different model completes independently");
+    Check(CreateProviderAdapter(provider.protocol)->Complete(request, {}, nullptr).ok,
+          "a new turn in the same session completes");
     const auto requests = server.Requests();
-    if (requests.size() != 2) { Check(false, "tool follow-up has two HTTP requests"); return; }
-    const auto payload = Json::parse(requests.back().body);
+    if (requests.size() != 5) { Check(false, "all turn routing requests reach the provider"); return; }
+    for (size_t i = 0; i < requests.size(); ++i) {
+        const auto& headers = requests[i].headers;
+        const auto state = headers.find("x-codex-turn-state");
+        Check(i == 1 ? state != headers.end() && state->second == "fixture-route" : state == headers.end(),
+              "only the same turn's tool follow-up replays the server-issued routing state");
+    }
+    const auto initial = Json::parse(requests.front().body);
+    const auto payload = Json::parse(requests[1].body);
+    Check(initial["prompt_cache_key"] == payload["prompt_cache_key"] &&
+          initial["input"].size() < payload["input"].size() &&
+          std::equal(initial["input"].begin(), initial["input"].end(), payload["input"].begin()),
+          "Responses tool follow-up preserves the cache key and entire original input prefix");
+    if (cached_instructions) {
+        const Json prefix = {{"type", "message"}, {"role", "developer"},
+            {"content", Json::array({{{"type", "input_text"}, {"text", "Stable project instructions"}}})}};
+        Check(!initial.contains("instructions") && !payload.contains("instructions") &&
+              initial["input"].size() == 2 && initial["input"][0] == prefix,
+              "GPT-6.2 starts its cacheable input with stable developer instructions");
+    } else {
+        Check(initial.value("instructions", "") == "Stable project instructions" &&
+              payload.value("instructions", "") == "Stable project instructions" && initial["input"].size() == 1,
+              "legacy Responses providers keep the original instructions layout");
+    }
     bool paired = false;
     for (const auto& item : payload["input"]) {
         if (item.value("type", "") == "function_call_output") {
@@ -155,6 +190,48 @@ void ResponsesToolFollowUp() {
         }
     }
     Check(paired, "tool results serialize with their original call id");
+}
+
+void ResponsesTurnStateRedirect() {
+    const auto body = Reply("responses", false);
+    Server destination([&](Server::Connection& connection, size_t) {
+        connection.Send(Server::Headers(200, body.size(), "X-Codex-Turn-State: redirected-route\r\n") + body);
+    });
+    Server server([&](Server::Connection& connection, size_t attempt) {
+        if (attempt == 1 || attempt == 2) {
+            connection.Send(Server::Headers(307, 0, "Location: " + destination.Url("/responses") + "\r\n"));
+        } else {
+            connection.Send(Server::Headers(200, body.size(), attempt == 0
+                ? "X-Codex-Turn-State: direct-route\r\n" : "") + body);
+        }
+    });
+    ProviderConfig provider;
+    provider.protocol = "responses";
+    provider.base_url = server.Url("/v1");
+    ModelConfig model;
+    model.id = "fixture-model";
+    model.capabilities.streaming = false;
+    ProviderRequest request;
+    request.provider = &provider;
+    request.model = &model;
+    request.prompt_cache_key = "fixture-session";
+    request.messages.push_back({MessageRole::User, "Review"});
+    auto adapter = CreateProviderAdapter(provider.protocol);
+    Check(adapter->Complete(request, {}, nullptr).ok, "the endpoint issues a direct routing token");
+    adapter->Complete(request, {}, nullptr);
+    Check(adapter->Complete(request, {}, nullptr).ok, "the original endpoint remains usable after redirect");
+    const auto requests = server.Requests();
+    Check(requests.size() == 4 && requests[1].headers.count("x-codex-turn-state") == 1 &&
+          requests[2].headers.count("x-codex-turn-state") == 0 &&
+          requests[3].headers.count("x-codex-turn-state") == 0,
+          "redirect retry omits routing state and does not adopt the redirect destination's state");
+    const auto redirected = destination.Requests();
+    Check(std::none_of(redirected.begin(), redirected.end(), [](const auto& next) {
+        return next.headers.count("x-codex-turn-state") != 0;
+    }), "a redirect destination never receives the original endpoint's routing state");
+#if defined(_WIN32) && !defined(SPARK_WINDOWS_XP)
+    Check(redirected.size() == 1, "WinHTTP still follows the redirect when no routing state is sent");
+#endif
 }
 
 void ResponsesSummaryRequests() {
@@ -498,7 +575,9 @@ int main(int argc, char** argv) {
             ProtocolRoundTrip(protocol, false, image);
             ProtocolRoundTrip(protocol, true, image);
         }
-        ResponsesToolFollowUp();
+        ResponsesToolFollowUp("fixture-model", false);
+        ResponsesToolFollowUp("relay/gpt-6.2-sol", true);
+        ResponsesTurnStateRedirect();
         ResponsesSummaryRequests();
         for (bool streaming : {false, true}) {
             ResponsesSummaryFallback(400, true, streaming, "medium");

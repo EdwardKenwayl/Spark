@@ -34,6 +34,7 @@ struct HttpRequest {
     // Non-idempotent requests can opt out of automatic replay.
     int max_attempts = 3;
     bool stream = false;
+    bool forbid_redirects = false;
     // Report received headers even if reading the body later fails.
     std::function<void(int)> on_status;
 };
@@ -46,6 +47,7 @@ struct HttpResponse {
     long long header_ms = 0;
     long long total_ms = 0;
     size_t received_bytes = 0;
+    bool redirected = false;
 };
 
 Result<HttpResponse> HttpRequestStreaming(const HttpRequest& request, const StreamCallback& on_chunk = {},

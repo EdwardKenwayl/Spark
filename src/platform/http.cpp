@@ -138,7 +138,8 @@ public:
         if (!WinHttpSetOption(handle_, WINHTTP_OPTION_CONTEXT_VALUE, &context, sizeof(context))) {
             setup_error_ = GetLastError();
         } else if (WinHttpSetStatusCallback(handle_, Callback,
-                       WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_HANDLES, 0) ==
+                       WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_HANDLES |
+                           WINHTTP_CALLBACK_FLAG_REDIRECT, 0) ==
                    WINHTTP_INVALID_STATUS_CALLBACK) {
             setup_error_ = GetLastError();
         } else {
@@ -152,6 +153,10 @@ public:
     HINTERNET Handle() const { return handle_; }
     DWORD BytesRead() const { return bytes_read_; }
     HttpCloseReason CloseReason() const { return close_reason_; }
+    bool Redirected() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return redirected_;
+    }
     void SetDeadline(uint64_t deadline) { deadline_ = deadline; }
 
     template <typename Start>
@@ -201,6 +206,10 @@ private:
         if (context == 0) return;
         auto* self = reinterpret_cast<HttpRequestGuard*>(context);
         std::lock_guard<std::mutex> lock(self->mutex_);
+        if (status == WINHTTP_CALLBACK_STATUS_REDIRECT) {
+            self->redirected_ = true;
+            return;
+        }
         if (status == WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING) self->closed_ = true;
         else if (status == WINHTTP_CALLBACK_STATUS_REQUEST_ERROR) {
             self->error_ = static_cast<WINHTTP_ASYNC_RESULT*>(info)->dwError;
@@ -218,6 +227,7 @@ private:
     uint64_t deadline_;
     DWORD setup_error_ = ERROR_SUCCESS, expected_ = 0, error_ = ERROR_SUCCESS, bytes_read_ = 0;
     bool callback_registered_ = false, ready_ = false, closed_ = false;
+    bool redirected_ = false;
     HttpCloseReason close_reason_ = HttpCloseReason::None;
     std::mutex mutex_;
     std::condition_variable condition_;
@@ -271,6 +281,16 @@ Result<HttpResponse> AttemptHttpRequest(const HttpRequest& request, const Stream
         WinHttpCloseHandle(connection);
         WinHttpCloseHandle(session);
         return Result<HttpResponse>::Failure("WinHttpOpenRequest failed: " + FormatWin32Error(GetLastError()));
+    }
+    if (request.forbid_redirects) {
+        DWORD disabled = WINHTTP_DISABLE_REDIRECTS;
+        if (!WinHttpSetOption(http_request, WINHTTP_OPTION_DISABLE_FEATURE, &disabled, sizeof(disabled))) {
+            const DWORD option_error = GetLastError();
+            WinHttpCloseHandle(http_request);
+            WinHttpCloseHandle(connection);
+            WinHttpCloseHandle(session);
+            return Result<HttpResponse>::Failure("Could not disable HTTP redirects: " + FormatWin32Error(option_error));
+        }
     }
     ApplySystemProxy(session, http_request, Utf8ToWide(request.url));
 
@@ -350,6 +370,7 @@ Result<HttpResponse> AttemptHttpRequest(const HttpRequest& request, const Stream
     }
     if (request.on_status) request.on_status(response.status);
     ReadResponseHeaders(http_request, response.headers);
+    response.redirected = active_request.Redirected();
     response.header_ms = static_cast<long long>(spark::MonotonicMillis() - header_started);
 
     std::vector<char> buffer(64 * 1024);
