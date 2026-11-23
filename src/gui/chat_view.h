@@ -63,6 +63,7 @@ public:
 
     void AppendAssistant(size_t index, const std::string& text);
     void FinishAssistant(size_t index, uint64_t timestamp = 0);
+    void HideUnfinishedAssistant(size_t index);
     void FinishTurnStatus(size_t index, uint64_t elapsed_ms, uint64_t timestamp = 0);
     void SetTurnStatusLabel(size_t index, const std::string& text);
     void MarkTurnPaused(size_t index, uint64_t elapsed_ms, uint64_t timestamp = 0);

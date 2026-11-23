@@ -27,10 +27,11 @@ LiveTurn::LiveTurn(SessionJournal* journal, AgentCallbacks& callbacks, bool resu
     const auto phase = callbacks.on_phase;
     callbacks.on_phase = [this, phase](AgentPhase value, const std::string& detail) {
         Flush();
-        if (value == AgentPhase::WaitingModel && detail != "thinking")
+        if (value == AgentPhase::Reconnecting || (value == AgentPhase::WaitingModel && detail != "thinking"))
             journal_->Append("turn.live_reset", nlohmann::json::object());
         const char* name = value == AgentPhase::RunningTool ? "running_tool" :
             value == AgentPhase::Compacting ? "compacting" :
+            value == AgentPhase::Reconnecting ? "reconnecting" :
             value == AgentPhase::Streaming ? "streaming" : "waiting_model";
         journal_->Append("turn.phase", {{"phase", name}, {"detail", detail}});
         if (phase) phase(value, detail);

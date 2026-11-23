@@ -239,17 +239,22 @@ void NativeFrame::Consume(const NativeEvent& event) {
     } else if (event.kind == NativeEvent::Kind::Context) {
         view.context = event.first_number; view.limit = event.second_number;
     } else if (event.kind == NativeEvent::Kind::Phase) {
-        if (event.phase == AgentPhase::WaitingModel && event.first != "thinking") {
+        if (event.phase == AgentPhase::Reconnecting) {
+            HideReasoning(view.transcript, view.assistant);
+        } else if (event.phase == AgentPhase::WaitingModel && event.first != "thinking") {
             finish_assistant();
         }
-        if (event.phase == AgentPhase::WaitingModel && !view.transcript.NeedsAnimation())
+        if ((event.phase == AgentPhase::WaitingModel || event.phase == AgentPhase::Reconnecting) &&
+            !view.transcript.NeedsAnimation())
             view.status = Add(view.transcript, ChatItemKind::TurnStatus);
-        if (event.phase == AgentPhase::Compacting)
+        if (event.phase == AgentPhase::Compacting || event.phase == AgentPhase::Reconnecting)
             HideReasoning(view.transcript, view.reasoning);
         if (view.status != kNoChatItem) {
             ChatItem status;
             if (event.phase == AgentPhase::Compacting)
                 status.text = WideToUtf8(i18n::Text(L"Compacting context..."));
+            if (event.phase == AgentPhase::Reconnecting)
+                status.text = WideToUtf8(i18n::Text(L"Reconnecting")) + " " + event.first;
             view.transcript.Apply({TranscriptEventKind::SetTurnStatus, view.status, status}, Now());
         }
     } else if (event.kind == NativeEvent::Kind::Done) {
@@ -258,10 +263,13 @@ void NativeFrame::Consume(const NativeEvent& event) {
         auto completed = runtime_.FinishedJournal(event.path);
         if (completed.ok) {
             view.journal = std::move(completed.value);
-            finish_assistant();
-            HideReasoning(view.transcript, view.reasoning);
             const auto& metadata = view.journal.State().metadata;
             const bool paused = metadata.contains("paused_turn");
+            if (paused && !event.success && !event.first.empty())
+                HideReasoning(view.transcript, view.assistant);
+            else
+                finish_assistant();
+            HideReasoning(view.transcript, view.reasoning);
             const auto durations = metadata.find("turn_durations_ms");
             ChatItem final;
             final.elapsed_ms = durations == metadata.end() || durations->empty() ? 0 : durations->back().get<uint64_t>();

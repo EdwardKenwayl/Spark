@@ -18,6 +18,7 @@ enum class MessageRole {
 
 enum class AgentPhase {
     WaitingModel,
+    Reconnecting,
     Streaming,
     Compacting,
     RunningTool,

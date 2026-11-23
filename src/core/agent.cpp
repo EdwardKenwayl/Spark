@@ -517,41 +517,42 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
             if (callbacks.on_reasoning_delta) callbacks.on_reasoning_delta(delta);
         };
         provider_callbacks.on_status = callbacks.on_status;
+        constexpr int kMaxReconnects = 5;
         auto reply = adapter->Complete(request, provider_callbacks, cancellation);
-        const std::string visible_tail = dsml_stream.Finish();
-        if (!visible_tail.empty()) {
-            if (!response_streamed) {
-                response_streamed = true;
-                NotifyPhase(callbacks, AgentPhase::Streaming, request_status);
-            }
-            if (callbacks.on_text_delta) callbacks.on_text_delta(visible_tail);
-        }
-        if (!reply.ok && !response_streamed && cancellation != nullptr && !cancellation->IsCancelled() &&
-            reply.error.find("reasoning_text") != std::string::npos) {
+        const auto cancelled = [&] { return cancellation != nullptr && cancellation->IsCancelled(); };
+        for (int attempt = 1; !reply.ok && !cancelled() && attempt <= kMaxReconnects; ++attempt) {
             if (journal_ != nullptr) {
-                journal_->Append("turn.retry", {{"reason", reply.error}, {"model", model->id}});
+                journal_->Append("turn.retry", {{"reason", reply.error}, {"model", model->id},
+                    {"attempt", attempt}, {"max_attempts", kMaxReconnects}});
             }
-            if (callbacks.on_status) callbacks.on_status("供应商暂时拒绝了上一轮推理，正在自动重试...");
-            std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+            NotifyPhase(callbacks, AgentPhase::Reconnecting,
+                std::to_string(attempt) + "/" + std::to_string(kMaxReconnects));
+            const auto retry_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(500 * attempt);
+            while (!cancelled() && std::chrono::steady_clock::now() < retry_at) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            }
+            if (cancelled()) break;
             dsml_stream = DsmlStreamFilter{};
+            response_streamed = false;
+            reasoning_phase_sent = false;
             reply = adapter->Complete(request, provider_callbacks, cancellation);
-            const std::string retry_tail = dsml_stream.Finish();
-            if (!retry_tail.empty()) {
-                if (!response_streamed) {
-                    response_streamed = true;
-                    NotifyPhase(callbacks, AgentPhase::Streaming, request_status);
-                }
-                if (callbacks.on_text_delta) callbacks.on_text_delta(retry_tail);
-            }
         }
         if (!reply.ok) {
-            const bool cancelled = cancellation != nullptr && cancellation->IsCancelled();
+            const bool interrupted = cancelled();
             if (journal_ != nullptr) {
-                journal_->Append(cancelled ? "turn.cancelled" : "turn.error",
+                journal_->Append(interrupted ? "turn.cancelled" : "turn.error",
                                  {{"error", reply.error}, {"provider", provider->id}, {"model", model->id}});
             }
-            if (!cancelled && report_errors && callbacks.on_error) callbacks.on_error(reply.error);
+            if (!interrupted) {
+                if (callbacks.on_provider_interrupted) callbacks.on_provider_interrupted();
+                if (report_errors && callbacks.on_error) callbacks.on_error(reply.error);
+            }
             return reply;
+        }
+        const std::string visible_tail = dsml_stream.Finish();
+        if (!visible_tail.empty()) {
+            if (!response_streamed) NotifyPhase(callbacks, AgentPhase::Streaming, request_status);
+            if (callbacks.on_text_delta) callbacks.on_text_delta(visible_tail);
         }
         // Some OpenAI-compatible gateways expose DeepSeek's textual DSML tool
         // protocol as ordinary content instead of structured tool_calls. Recover

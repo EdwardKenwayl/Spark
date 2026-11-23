@@ -1155,8 +1155,8 @@ void AppWindow::AttachTurnUi(const std::shared_ptr<TurnRuntime>& runtime) {
     if (chat_view_ != nullptr) {
         if (active_turn_entry_ != static_cast<size_t>(-1))
             chat_view_->SetTurnStatusLabel(active_turn_entry_,
-                current_phase_ == AgentPhase::Compacting
-                    ? WideToUtf8(i18n::Text(L"Compacting context...")) : std::string{});
+                current_phase_ == AgentPhase::Compacting || current_phase_ == AgentPhase::Reconnecting
+                    ? WideToUtf8(phase_text_) : std::string{});
         // Replay restores committed messages. The current summary is transient and may
         // only exist in the running turn, particularly after switching conversations.
         if (current_phase_ == AgentPhase::WaitingModel && runtime->phase_detail == "thinking" &&
@@ -3847,6 +3847,8 @@ void AppWindow::StartTurn() {
             Agent agent(runtime->config, &runtime->journal, turn_mcp, subagents_.get(),
                         {runtime->plan_mode ? CollaborationMode::Plan : CollaborationMode::Execute, runtime->goal});
             AgentCallbacks callbacks;
+            bool provider_interrupted = false;
+            callbacks.on_provider_interrupted = [&] { provider_interrupted = true; };
             callbacks.on_status = [&](const std::string& status) { post_event(EventKind::Status, status); };
             callbacks.on_phase = [&](AgentPhase phase, const std::string& detail) {
                 flush_reasoning();
@@ -3919,7 +3921,7 @@ void AppWindow::StartTurn() {
             flush_text();
             const bool cancelled = runtime->cancellation.IsCancelled();
             const bool paused = cancelled ? runtime->interrupt_requested.load() :
-                runtime->timed_turn && !result.ok && IsQuotaExhaustedError(result.error);
+                runtime->timed_turn && provider_interrupted;
             if (!runtime->usage_context_published.load()) {
                 // Local commands never call the provider; fall back to a local estimate so the
                 // header and the usage card still agree.
@@ -4242,7 +4244,11 @@ void AppWindow::HandleUiEvent(UiEvent* event) {
         case EventKind::Status:
             break;
         case EventKind::Phase:
-            if (event->phase == AgentPhase::WaitingModel && event->first != "thinking") {
+            if (event->phase == AgentPhase::Reconnecting) {
+                if (chat_view_ != nullptr) chat_view_->HideUnfinishedAssistant(active_assistant_entry_);
+                assistant_stream_started_ = false;
+                active_assistant_entry_ = static_cast<size_t>(-1);
+            } else if (event->phase == AgentPhase::WaitingModel && event->first != "thinking") {
                 if (assistant_stream_started_ && chat_view_ != nullptr) {
                     chat_view_->FinishAssistant(active_assistant_entry_);
                 }
@@ -4385,6 +4391,11 @@ void AppWindow::FinishTurn(const std::shared_ptr<TurnRuntime>& runtime, bool suc
         }
     }
     if (paused) {
+        if (!success && attached && chat_view_ != nullptr) {
+            chat_view_->HideUnfinishedAssistant(active_assistant_entry_);
+            assistant_stream_started_ = false;
+            active_assistant_entry_ = static_cast<size_t>(-1);
+        }
         PersistInterruptedTurn(runtime, elapsed_ms);
     } else {
         ClearPausedTurn(runtime->journal);
@@ -4670,6 +4681,11 @@ void AppWindow::SetPhase(const std::shared_ptr<TurnRuntime>& runtime, AgentPhase
     runtime->phase_detail = detail;
     std::wstring text;
     switch (phase) {
+        case AgentPhase::Reconnecting:
+            if (attached) FinishActiveReasoning(true);
+            runtime->reasoning_preview.clear();
+            text = i18n::Text(L"Reconnecting") + std::wstring(L" ") + Utf8ToWide(detail);
+            break;
         case AgentPhase::WaitingModel:
             if (detail == "thinking") {
                 // Codex shows the reasoning text itself, so no "thinking" prefix is added.
@@ -4724,7 +4740,7 @@ void AppWindow::SetPhase(const std::shared_ptr<TurnRuntime>& runtime, AgentPhase
     reasoning_preview_ = runtime->reasoning_preview;
     if (chat_view_ != nullptr && active_turn_entry_ != static_cast<size_t>(-1))
         chat_view_->SetTurnStatusLabel(active_turn_entry_,
-            phase == AgentPhase::Compacting ? WideToUtf8(i18n::Text(L"Compacting context...")) : std::string{});
+            phase == AgentPhase::Compacting || phase == AgentPhase::Reconnecting ? WideToUtf8(text) : std::string{});
     if (chat_view_ != nullptr) chat_view_->SetActivityState(ActivityRowVisible(), text, runtime->started_tick);
 }
 

@@ -440,6 +440,9 @@ Result<void> ExternalAgentManager::StartTask(const std::shared_ptr<Run>& run, co
                 case AgentPhase::Cancelling:
                     run->info.phase = "正在停止...";
                     break;
+                case AgentPhase::Reconnecting:
+                    run->info.phase = "Reconnecting " + detail;
+                    break;
                 case AgentPhase::Completed:
                     run->info.phase = "已完成";
                     break;

@@ -120,7 +120,7 @@ Result<void> NativeRuntime::Start(const AppConfig& config, const SessionJournal&
             return run->approved && !run->cancellation.IsCancelled();
         };
         Result<void> outcome;
-        bool quota_blocked = false;
+        bool provider_interrupted = false;
         try {
             if (!resume) {
                 const auto discarded = run->journal.DiscardPause();
@@ -135,6 +135,7 @@ Result<void> NativeRuntime::Start(const AppConfig& config, const SessionJournal&
                 if (required) throw std::runtime_error(discovered.error);
             }
             AgentCallbacks callbacks;
+            callbacks.on_provider_interrupted = [&] { provider_interrupted = true; };
             callbacks.on_text_delta = [&](const std::string& delta) { event(NativeEvent::Kind::Text, delta); };
             callbacks.on_reasoning_delta = [&](const std::string& delta) { event(NativeEvent::Kind::Reasoning, delta); };
             callbacks.on_tool_start = [&](const std::string& id, const std::string& name, const std::string& arguments) {
@@ -169,14 +170,11 @@ Result<void> NativeRuntime::Start(const AppConfig& config, const SessionJournal&
             };
             Agent agent(run->config, &run->journal, run->mcp.get(), run->children.get(), options);
             outcome = agent.RunTurn(text, approve, callbacks, &run->cancellation, resume, images);
-            const auto command = Trim(text);
-            quota_blocked = !outcome.ok && command != "/compact" && command != "/上下文压缩" &&
-                IsQuotaExhaustedError(outcome.error);
         } catch (const std::exception& exception) {
             outcome = Result<void>::Failure(exception.what());
         }
         const uint64_t elapsed = MonotonicMillis() - run->started + run->previous_elapsed;
-        if (run->cancellation.IsCancelled() || quota_blocked) {
+        if (run->cancellation.IsCancelled() || provider_interrupted) {
             ChatMessage marker;
             marker.role = MessageRole::System;
             marker.content = kInterruptedTurnMarker;
@@ -193,7 +191,7 @@ Result<void> NativeRuntime::Start(const AppConfig& config, const SessionJournal&
         run->journal.Append("turn.usage", {{"input_tokens", input}, {"output_tokens", output},
             {"cached_input_tokens", cached}, {"model_calls", calls}, {"context_tokens", context},
             {"context_limit_tokens", limit}, {"elapsed_ms", elapsed}});
-        if (!outcome.ok && !run->cancellation.IsCancelled() && !quota_blocked)
+        if (!outcome.ok && !run->cancellation.IsCancelled() && !provider_interrupted)
             run->journal.Append("turn.error", {{"error", outcome.error}});
         run->done.store(true, std::memory_order_release);
         event(NativeEvent::Kind::Done, run->cancellation.IsCancelled() ? std::string{} : outcome.error,

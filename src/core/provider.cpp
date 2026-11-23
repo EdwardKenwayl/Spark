@@ -906,7 +906,7 @@ public:
         std::map<std::string, ToolCall> calls_by_id;
         std::map<std::string, std::string> call_id_by_item_id;
         SseDecoder decoder;
-        bool stream_complete = false;
+        std::string terminal_event;
         std::string stream_error;
         // Diagnostics for the silent-failure case: a 2xx answer that carries no
         // usable payload used to end the turn with an empty assistant message and
@@ -1254,18 +1254,18 @@ public:
                                 absorb_output_item(response["output"][index], true, index);
                             }
                         }
-                        stream_complete = true;
+                        terminal_event = type;
                     } else if (type == "error" || type == "response.failed" || type == "response.incomplete") {
                         stream_error = EventErrorMessage(event, "Responses API returned " + type);
                         reply.finish_reason = "error";
-                        stream_complete = true;
+                        terminal_event = type;
                     }
                 } catch (const nlohmann::json::exception&) {
                     reply.finish_reason = "malformed_sse";
                 }
             });
             if (cancellation != nullptr && cancellation->IsCancelled()) return StreamAction::Cancel;
-            return stream_complete ? StreamAction::Stop : StreamAction::Continue;
+            return terminal_event.empty() ? StreamAction::Continue : StreamAction::Stop;
         };
         auto response = HttpRequestStreaming(http, chunk_callback, cancellation);
         if (http.forbid_redirects && response.ok && received_events == 0 &&
@@ -1328,11 +1328,6 @@ public:
                 }
             }
         }
-        std::string type_summary;
-        for (const auto& [name, count] : event_type_counts) {
-            if (!type_summary.empty()) type_summary += ", ";
-            type_summary += name + "=" + std::to_string(count);
-        }
         // One readable line describing what the provider actually did, attached to
         // every failure and journalled on success so a stalled turn can be
         // explained afterwards without guessing or screenshots.
@@ -1344,7 +1339,13 @@ public:
             info += " | 等待响应头 " + std::to_string(response.value.header_ms) + "ms";
             info += " | 总耗时 " + std::to_string(response.value.total_ms) + "ms";
             info += " | 收到 " + std::to_string(received_bytes) + " 字节 / " + std::to_string(received_events) + " 个事件";
+            std::string type_summary;
+            for (const auto& [name, count] : event_type_counts) {
+                if (!type_summary.empty()) type_summary += ", ";
+                type_summary += name + "=" + std::to_string(count);
+            }
             if (!type_summary.empty()) info += " [" + type_summary + "]";
+            if (http.stream) info += " | terminal=" + (terminal_event.empty() ? std::string("missing") : terminal_event);
             info += " | 回传推理 " + std::to_string(replayed_reasoning) + " 条 / " +
                     std::to_string(replayed_reasoning_bytes) + " 字节";
             if (!request_id.empty()) info += " | 请求编号 " + SanitizeDisplayText(request_id);
@@ -1413,11 +1414,16 @@ public:
         // request so thinking models do not reject the tool loop with HTTP 400.
         reply.reasoning_text = reasoning_done.empty() ? reasoning_buffer : reasoning_done;
         reply.reasoning_items = std::move(reasoning_items);
-        if (!stream_error.empty()) return Result<ModelReply>::Failure(stream_error);
+        if (!stream_error.empty()) return Result<ModelReply>::Failure(stream_error + " | " + describe_http());
         if (reply.finish_reason == "error") {
             return Result<ModelReply>::Failure("Responses API returned an error");
         }
         if (reply.finish_reason == "malformed_sse") return Result<ModelReply>::Failure("provider sent malformed SSE data");
+        if (http.stream && received_events != 0 && terminal_event.empty()) {
+            std::string detail = "流式响应意外中断（收到 " + std::to_string(received_events) + " 个事件";
+            if (reasoning_events > 0) detail += "，其中推理片段 " + std::to_string(reasoning_events) + " 个";
+            return Result<ModelReply>::Failure(detail + "）：供应商没有发送完成事件。 | " + describe_http());
+        }
         for (auto& [id, call] : calls_by_id) {
             (void)id;
             if (call.name.empty()) continue;
@@ -1441,10 +1447,6 @@ public:
                     if (snippet.size() >= 200) break;
                 }
                 if (!snippet.empty()) detail += " 响应开头：" + snippet;
-            } else if (http.stream && !stream_complete) {
-                detail = "流式响应意外中断（收到 " + std::to_string(received_events) + " 个事件";
-                if (reasoning_events > 0) detail += "，其中推理片段 " + std::to_string(reasoning_events) + " 个";
-                detail += "）：供应商没有发送完成事件，也没有给出任何文本或工具调用。";
             } else {
                 detail = "供应商返回了空响应（status=" +
                          (reply.finish_reason.empty() ? std::string("unknown") : reply.finish_reason) +

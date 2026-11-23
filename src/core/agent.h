@@ -37,6 +37,7 @@ struct AgentCallbacks {
     // Reports a completed compaction so the transcript can show the same marker as Codex.
     std::function<void(uint64_t, uint64_t, const std::string&)> on_context_compacted;
     std::function<void()> on_turn_finished;
+    std::function<void()> on_provider_interrupted;
     std::function<void(const std::string&)> on_error;
 };
 

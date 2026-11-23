@@ -2134,6 +2134,15 @@ void ChatView::HideReasoning(size_t index) {
     Rebuild();
 }
 
+void ChatView::HideUnfinishedAssistant(size_t index) {
+    if (index >= items_.size() || items_[index].kind != ChatItemKind::Assistant ||
+        items_[index].finished || !items_[index].visible) return;
+    items_[index].visible = false;
+    InvalidateItemHeight(index);
+    rail_dirty_ = true;
+    Rebuild();
+}
+
 void ChatView::FinishTool(size_t index, bool success, const std::string& result, uint64_t timestamp,
                           uint64_t elapsed_ms) {
     if (index >= items_.size() || items_[index].kind != ChatItemKind::Tool) return;

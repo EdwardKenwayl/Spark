@@ -1487,6 +1487,18 @@
     "pt-BR": "Aguardando o modelo...",
     "ru-RU": "Ожидание модели..."
   },
+  "Reconnecting": {
+    "en-US": "Reconnecting",
+    "zh-CN": "正在重新连接",
+    "zh-TW": "正在重新連線",
+    "ja-JP": "再接続中",
+    "ko-KR": "재연결 중",
+    "de-DE": "Verbindung wird wiederhergestellt",
+    "fr-FR": "Reconnexion en cours",
+    "es-ES": "Reconectando",
+    "pt-BR": "Reconectando",
+    "ru-RU": "Повторное подключение"
+  },
   "Compacting context...": {
     "en-US": "Compacting context...",
     "zh-CN": "正在压缩上下文...",

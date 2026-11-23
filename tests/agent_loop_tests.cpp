@@ -19,7 +19,7 @@ void Check(bool condition, const char* message) {
     }
 }
 
-enum class Ending { Complete, Cancel, ProviderError };
+enum class Ending { Complete, Cancel, ProviderError, Recovered, CancelReconnect };
 
 void TestPromptCachePrefix(std::string protocol) {
     const bool responses = protocol == "responses";
@@ -355,9 +355,13 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
     Check(WriteFileUtf8Atomic(JoinPath(PathToUtf8(root), "fixture.txt"), "fixture", &write_error),
           "tool input is created");
     Server server([&](Server::Connection& connection, size_t attempt) {
-        if (attempt == tool_rounds && ending == Ending::ProviderError) {
-            const std::string body = R"({"error":{"message":"fixture provider rejected request"}})";
-            connection.Send(Server::Headers(400, body.size(), "Content-Type: application/json\r\n") + body);
+        if ((ending == Ending::ProviderError && attempt >= tool_rounds && attempt < tool_rounds + 6) ||
+            ((ending == Ending::Recovered || ending == Ending::CancelReconnect) && attempt == tool_rounds)) {
+            const std::string body = ending == Ending::ProviderError
+                ? R"({"error":{"message":"insufficient quota"}})"
+                : R"({"error":{"message":"system cpu overloaded"}})";
+            connection.Send(Server::Headers(ending == Ending::ProviderError ? 403 : 503,
+                body.size(), "Content-Type: application/json\r\n") + body);
             return;
         }
         const bool tool = attempt < tool_rounds;
@@ -375,7 +379,7 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
         })}};
         const std::string body = "data: " + event.dump() + "\n\ndata: [DONE]\n\n";
         connection.Send(Server::Headers(200, body.size(), "Content-Type: text/event-stream\r\n") + body);
-    }, tool_rounds + 1);
+    }, tool_rounds + 7);
 
     AppConfig config;
     config.workspace.path = PathToUtf8(root);
@@ -406,6 +410,8 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
     size_t tools = 0;
     int finished = 0;
     int errors = 0;
+    int interrupted = 0;
+    std::vector<std::string> reconnects;
     AgentCallbacks callbacks;
     callbacks.on_tool_finish = [&](const std::string&, const std::string&, bool ok, const std::string&) {
         Check(ok, "tool succeeds");
@@ -413,6 +419,12 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
     };
     callbacks.on_turn_finished = [&] { ++finished; };
     callbacks.on_error = [&](const std::string&) { ++errors; };
+    callbacks.on_provider_interrupted = [&] { ++interrupted; };
+    callbacks.on_phase = [&](AgentPhase phase, const std::string& detail) {
+        if (phase != AgentPhase::Reconnecting) return;
+        reconnects.push_back(detail);
+        if (ending == Ending::CancelReconnect) cancellation.Cancel();
+    };
     const auto result = agent.RunTurn("read the fixture for every requested tool round",
         [](const ApprovalRequest&) { return true; }, callbacks, &cancellation);
     const auto requests = server.Requests();
@@ -424,20 +436,31 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
     }
     Check(server.Error().empty(), "fixture server reports no error");
     Check(tools == tool_rounds && results == tool_rounds, "every requested tool has a persisted result");
-    if (ending == Ending::Complete) {
+    if (ending == Ending::Complete || ending == Ending::Recovered) {
         Check(result.ok && finished == 1 && errors == 0, "only the final answer completes the turn");
         Check(!journal.State().messages.empty() &&
                   journal.State().messages.back().content == "finished all requested tools",
               "final response is preserved");
-    } else if (ending == Ending::Cancel) {
-        Check(!result.ok && result.error == "cancelled" && finished == 0,
+    } else if (ending == Ending::Cancel || ending == Ending::CancelReconnect) {
+        Check(!result.ok && cancellation.IsCancelled() && finished == 0 && errors == 0,
               "cancel still interrupts a long tool loop");
     } else {
         Check(!result.ok && errors == 1 && finished == 0,
-              "provider failure still stops a long tool loop as an error");
+              "only the last provider failure is reported and the turn does not complete");
     }
-    Check(requests.size() == tool_rounds + (ending == Ending::Cancel ? 0 : 1),
-          "requests stop at completion, cancellation or provider error");
+    const bool exhausted = ending == Ending::ProviderError;
+    Check(interrupted == (exhausted ? 1 : 0), "provider exhaustion requests pause, not completion");
+    const size_t expected_requests = tool_rounds + (ending == Ending::Cancel ? 0 : exhausted ? 6 :
+                                                    ending == Ending::Recovered ? 2 : 1);
+    Check(requests.size() == expected_requests, "reconnect stops at success, cancellation or five retries");
+    const std::vector<std::string> expected_reconnects = exhausted
+        ? std::vector<std::string>{"1/5", "2/5", "3/5", "4/5", "5/5"}
+        : ending == Ending::Recovered || ending == Ending::CancelReconnect
+            ? std::vector<std::string>{"1/5"} : std::vector<std::string>{};
+    Check(reconnects == expected_reconnects, "reconnect reports every displayed attempt and the total");
+    for (size_t index = tool_rounds + 1; index < requests.size(); ++index) {
+        Check(requests[index].body == requests[tool_rounds].body, "reconnect resends the same context and tool results");
+    }
     for (const auto& request : requests) {
         const auto body = nlohmann::json::parse(request.body);
         Check(body.contains("tools") && !body["tools"].empty(), "no forced no-tools finalization is inserted");
@@ -461,5 +484,7 @@ int main() {
     TestLoop("legacy max_iterations=1", 4, Ending::Complete, true);
     TestLoop("cancel beyond 100", 105, Ending::Cancel, false);
     TestLoop("provider error beyond 100", 105, Ending::ProviderError, false);
+    TestLoop("recovered provider", 2, Ending::Recovered, false);
+    TestLoop("cancel during reconnect", 2, Ending::CancelReconnect, false);
     return failures == 0 ? 0 : 1;
 }

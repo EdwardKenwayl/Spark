@@ -84,50 +84,60 @@ void TestApprovalScope(const fs::path& root) {
     runtime.Stop();
 }
 
-void TestQuotaResume(const fs::path& root) {
+void TestProviderResume(const fs::path& root, int status) {
     const std::string tool = R"({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"quota-tool","type":"function","function":{"name":"list_files","arguments":"{\"path\":\".\"}"}}]},"finish_reason":"tool_calls"}]})";
     const std::string answer = R"({"choices":[{"delta":{"content":"Resumed answer"},"finish_reason":"stop"}]})";
     Server server([&](Server::Connection& connection, size_t attempt) {
-        if (attempt == 1) {
-            const std::string body = R"({"error":{"code":"insufficient_quota","message":"Insufficient balance"}})";
-            connection.Send(Server::Headers(402, body.size(), "Content-Type: application/json\r\n") + body);
+        if (attempt >= 1 && attempt <= 6) {
+            const std::string body = status == 402
+                ? R"({"error":{"code":"insufficient_quota","message":"Insufficient balance"}})"
+                : R"({"error":{"message":"system cpu overloaded"}})";
+            connection.Send(Server::Headers(status, body.size(), "Content-Type: application/json\r\n") + body);
             return;
         }
         const std::string body = "data: " + (attempt == 0 ? tool : answer) + "\n\ndata: [DONE]\n\n";
         connection.Send(Server::Headers(200, body.size(), "Content-Type: text/event-stream\r\n") + body);
-    });
+    }, 8);
     auto config = Configuration(PathToUtf8(root), server.Url("/v1"));
     SessionJournal journal;
-    Check(journal.Open(config.storage.data_dir, config.workspace.path).ok, "quota fixture session opens");
+    Check(journal.Open(config.storage.data_dir, config.workspace.path).ok, "provider failure fixture session opens");
     const auto wait = [&](NativeRuntime& runtime, bool expected_success) {
-        const auto deadline = MonotonicMillis() + 5000;
+        const auto deadline = MonotonicMillis() + 12000;
+        std::vector<std::string> reconnects;
         while (MonotonicMillis() < deadline) {
             for (const auto& event : runtime.Poll()) {
+                if (event.kind == NativeEvent::Kind::Phase && event.phase == AgentPhase::Reconnecting)
+                    reconnects.push_back(event.first);
                 if (event.kind != NativeEvent::Kind::Done) continue;
-                Check(event.success == expected_success, "quota fixture returns expected outcome");
-                if (!expected_success) Check(IsQuotaExhaustedError(event.first), "quota error reaches the GUI");
+                Check(event.success == expected_success, "provider fixture returns expected outcome");
+                if (!expected_success) {
+                    Check(!event.first.empty() && IsQuotaExhaustedError(event.first) == (status == 402),
+                          "the final provider error reaches the GUI");
+                    Check(reconnects == std::vector<std::string>{"1/5", "2/5", "3/5", "4/5", "5/5"},
+                          "GUI receives all five reconnect phases");
+                }
                 return true;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
-        Check(false, "quota fixture turn terminates");
+        Check(false, "provider fixture turn exits its worker");
         return false;
     };
     {
         NativeRuntime runtime;
-        Check(runtime.Start(config, journal, "List the fixture directory", false, {}).ok, "quota fixture starts");
+        Check(runtime.Start(config, journal, "List the fixture directory", false, {}).ok, "provider fixture starts");
         if (!wait(runtime, false)) return;
     }
     SessionJournal paused;
     if (!paused.Resume(journal.Path()).ok) {
-        Check(false, "quota fixture reloads from disk");
+        Check(false, "paused session reloads from disk");
         return;
     }
     const auto& blocked = paused.State().metadata;
-    Check(blocked.contains("paused_turn"), "billing failure persists a resumable turn");
-    Check(blocked.contains("turn_errors"), "billing error remains in the transcript after reload");
+    Check(blocked.contains("paused_turn"), "provider failure persists a resumable turn");
+    Check(blocked.contains("turn_errors"), "provider error remains in the transcript after reload");
     NativeRuntime runtime;
-    Check(runtime.Start(config, paused, {}, true, {}).ok, "billing failure can resume in a new runtime");
+    Check(runtime.Start(config, paused, {}, true, {}).ok, "provider failure can resume in a new runtime");
     if (!wait(runtime, true)) return;
     const auto finished = runtime.FinishedJournal(journal.Path());
     Check(finished.ok && !finished.value.State().metadata.contains("paused_turn"),
@@ -224,8 +234,11 @@ int main() {
     runtime.Stop();
     fs::create_directories(root / "approvals", error);
     TestApprovalScope(root / "approvals");
-    fs::create_directories(root / "quota", error);
-    TestQuotaResume(root / "quota");
+    for (const int status : {402, 503}) {
+        const auto fixture = root / std::to_string(status);
+        fs::create_directories(fixture, error);
+        TestProviderResume(fixture, status);
+    }
     fs::remove_all(root, error);
     return failures ? 1 : 0;
 }

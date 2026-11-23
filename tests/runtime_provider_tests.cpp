@@ -337,6 +337,38 @@ void ResponsesSummaryFallback(int status, bool unsupported, bool streaming, cons
     }
 }
 
+void ResponsesStreamTermination(const std::string& ending) {
+    std::string body = Event("response.output_text.delta", {{"delta", "A progress report"}});
+    body += Event("response.output_item.done", {{"item", {{"type", "message"}, {"phase", "final_answer"},
+        {"content", Json::array({{{"type", "output_text"}, {"text", "A progress report"}}})}}}});
+    for (int index = 0; index < 12; ++index) {
+        body += Event("gateway.fixture." + std::to_string(index), Json::object());
+    }
+    if (ending == "response.completed") {
+        body += Event(ending, {{"response", {{"status", "completed"}}}});
+    } else if (!ending.empty()) {
+        body += Event(ending, {{"response", {{"status", "incomplete"}}}});
+    }
+    Server server([&](Server::Connection& connection, size_t) {
+        connection.Send(Server::Headers(200, body.size(), "Content-Type: text/event-stream\r\n") + body);
+    });
+    ProviderConfig provider;
+    provider.protocol = "responses";
+    provider.base_url = server.Url("/v1");
+    ModelConfig model;
+    model.id = "fixture-model";
+    ProviderRequest request;
+    request.provider = &provider;
+    request.model = &model;
+    const auto reply = CreateProviderAdapter(provider.protocol)->Complete(request, {}, nullptr);
+    const bool complete = ending == "response.completed";
+    Check(reply.ok == complete, "text and final_answer do not replace response.completed");
+    const auto& diagnostic = reply.ok ? reply.value.diagnostics : reply.error;
+    Check(diagnostic.find("terminal=" + (ending.empty() ? std::string("missing") : ending)) != std::string::npos,
+          "terminal event stays visible after the diagnostic event list fills");
+    Check(server.Requests().size() == 1, "visible partial output is not automatically requested again");
+}
+
 void ResponsesSummaryRoundTrip(const std::string& delivery, bool observe) {
     const bool streaming = delivery != "json";
     const std::string summary = u8"Checking \u4e16\u754c";
@@ -580,6 +612,9 @@ int main(int argc, char** argv) {
         ResponsesToolFollowUp("relay/gpt-6.2-sol", true);
         ResponsesTurnStateRedirect();
         ResponsesSummaryRequests();
+        for (const std::string ending : {"", "response.completed", "response.incomplete"}) {
+            ResponsesStreamTermination(ending);
+        }
         for (bool streaming : {false, true}) {
             ResponsesSummaryFallback(400, true, streaming, "medium");
             ResponsesSummaryFallback(422, true, streaming, "");
