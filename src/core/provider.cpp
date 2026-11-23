@@ -350,6 +350,16 @@ int AnthropicThinkingBudget(const std::string& effort) {
     return 4096;
 }
 
+std::vector<ChatMessage> PrepareProviderMessages(const std::vector<ChatMessage>& messages) {
+    auto prepared = PreparePromptImageHistory(messages);
+    for (auto& message : prepared) {
+        if (message.role == MessageRole::User && !message.turn_context.empty()) {
+            message.content = message.turn_context + "\nUser request:\n" + message.content;
+        }
+    }
+    return prepared;
+}
+
 class OpenAiChatAdapter final : public ProviderAdapter {
 public:
     Result<ModelReply> Complete(const ProviderRequest& request, const ProviderCallbacks& callbacks,
@@ -363,7 +373,7 @@ public:
             {"messages", nlohmann::json::array()},
         };
         if (!request.reasoning_effort.empty()) payload["reasoning_effort"] = request.reasoning_effort;
-        for (const ChatMessage& message : PreparePromptImageHistory(request.messages)) {
+        for (const ChatMessage& message : PrepareProviderMessages(request.messages)) {
             nlohmann::json entry = {
                 {"role", MessageRoleToString(message.role)},
             };
@@ -581,7 +591,7 @@ public:
         };
         if (use_thinking) payload["thinking"] = {{"type", "enabled"}, {"budget_tokens", thinking_budget}};
         std::string system_prompt;
-        for (const ChatMessage& message : PreparePromptImageHistory(request.messages)) {
+        for (const ChatMessage& message : PrepareProviderMessages(request.messages)) {
             if (message.role == MessageRole::System) {
                 if (!system_prompt.empty()) system_prompt += "\n\n";
                 system_prompt += message.content;
@@ -782,12 +792,17 @@ public:
         // same way, and compaction is what keeps the request from growing without bound.
         size_t replayed_reasoning = 0;
         size_t replayed_reasoning_bytes = 0;
-        const auto prepared_messages = PreparePromptImageHistory(request.messages);
+        const auto prepared_messages = PrepareProviderMessages(request.messages);
         for (size_t message_index = 0; message_index < prepared_messages.size(); ++message_index) {
             const ChatMessage& message = prepared_messages[message_index];
             if (message.role == MessageRole::System) {
-                if (!instructions.empty()) instructions += "\n\n";
-                instructions += message.content;
+                if (message_index == 0) {
+                    instructions = message.content;
+                } else {
+                    // Handoffs and resume markers belong at their position in the input history.
+                    payload["input"].push_back({{"type", "message"}, {"role", "developer"},
+                        {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", message.content}}})}});
+                }
             } else if (message.role == MessageRole::Tool) {
                 payload["input"].push_back({{"type", "function_call_output"}, {"call_id", message.tool_call_id}, {"output", message.content}});
                 if (!message.image_paths.empty()) {

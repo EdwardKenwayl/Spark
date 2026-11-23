@@ -60,6 +60,8 @@ struct ChatMessage {
     // persisted in the session journal and is not sent to model providers.
     uint64_t timestamp = 0;
     std::string phase;
+    // Explicitly invoked skills belong to this user request, not the transcript text.
+    std::string turn_context;
 };
 
 struct ToolDefinition {

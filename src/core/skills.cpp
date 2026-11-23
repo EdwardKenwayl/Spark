@@ -386,8 +386,9 @@ std::string SkillInvocationContext(const std::vector<SkillInfo>& skills, size_t 
     if (skills.empty()) return {};
     std::string block;
     block +=
-        "The user explicitly invoked the following skill(s) for this turn. Follow their instructions where "
-        "they do not conflict with system instructions, safety rules, or the approval policy.\n";
+        "The user explicitly invoked the following skill(s) for the request in this message. "
+        "They also apply when resuming that request, but not to later requests unless invoked again. "
+        "Follow them where compatible with system instructions, safety rules, and the approval policy.\n";
     for (const SkillInfo& skill : skills) {
         std::string read_error;
         const auto contents = ReadFileUtf8(skill.path, &read_error);

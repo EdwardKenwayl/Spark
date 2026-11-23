@@ -451,6 +451,8 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
                 {"elapsed_ms", MonotonicMillis() - started},
                 {"summary_source", summary_source},
                 {"summary_passes", summary_passes},
+                {"summary_input_tokens", generated.ok ? generated.value.billed_input_tokens : uint64_t{0}},
+                {"summary_cached_input_tokens", generated.ok ? generated.value.cached_input_tokens : uint64_t{0}},
                 {"summary", summary},
                 {"context_messages", replacement},
             };
@@ -474,7 +476,6 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
         return Result<void>::Success();
     };
 
-    std::vector<ChatMessage> turn_extra_context;
     auto complete_request = [&](const std::vector<ToolDefinition>& request_tools,
                                 std::vector<ChatMessage> request_messages,
                                 const std::string& request_status,
@@ -499,11 +500,6 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
         system.role = MessageRole::System;
         system.content = system_prompt;
         request.messages.insert(request.messages.begin(), std::move(system));
-        // Skill instructions are turn-scoped context: they are injected for the
-        // whole turn but never written into the visible transcript.
-        if (!turn_extra_context.empty()) {
-            request.messages.insert(request.messages.begin() + 1, turn_extra_context.begin(), turn_extra_context.end());
-        }
         const uint64_t estimated_request_tokens = EstimateContextTokens(request.messages, request.tools, {});
 
         ProviderCallbacks provider_callbacks;
@@ -605,6 +601,7 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
             for (const auto& message : reply.value.assistant_messages) phases.push_back(message.phase);
             journal_->Append("turn.response", {{"provider", provider->id}, {"model", model->id},
                 {"finish_reason", reply.value.finish_reason}, {"needs_follow_up", reply.value.needs_follow_up},
+                {"input_tokens", reply.value.input_tokens}, {"cached_input_tokens", reply.value.cached_input_tokens},
                 {"message_phases", phases}, {"tool_calls", reply.value.tool_calls.size()}});
         }
         if (callbacks.on_model_usage) {
@@ -659,6 +656,7 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
     }
 
     ChatMessage turn_message;
+    std::string invoked_skill_names;
     if (continue_interrupted) {
         turn_message.role = MessageRole::System;
         turn_message.content =
@@ -669,6 +667,19 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
         turn_message.role = MessageRole::User;
         turn_message.content = user_text;
         turn_message.image_paths = image_paths;
+        if (!skills_.empty()) {
+            const auto invoked = SelectExplicitSkills(skills_, user_text);
+            turn_message.turn_context = SkillInvocationContext(invoked);
+            constexpr size_t kTurnContextBytes = 32768;
+            if (turn_message.turn_context.size() > kTurnContextBytes) {
+                turn_message.turn_context = TruncateUtf8(turn_message.turn_context, kTurnContextBytes) +
+                    "\n[Skill context truncated. Use read_skill for the complete instructions.]\n";
+            }
+            for (const auto& skill : invoked) {
+                if (!invoked_skill_names.empty()) invoked_skill_names += ", ";
+                invoked_skill_names += skill.name;
+            }
+        }
     }
     turn_message.timestamp = UnixTimeSeconds();
     append_message(turn_message);
@@ -687,23 +698,7 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
     }
     if (!continue_interrupted && callbacks.on_user_message_appended) callbacks.on_user_message_appended();
 
-    if (!continue_interrupted && !skills_.empty()) {
-        const std::vector<SkillInfo> invoked = SelectExplicitSkills(skills_, user_text);
-        if (!invoked.empty()) {
-            ChatMessage skill_context;
-            skill_context.role = MessageRole::System;
-            skill_context.content = SkillInvocationContext(invoked);
-            if (!skill_context.content.empty()) {
-                std::string names;
-                for (const SkillInfo& skill : invoked) {
-                    if (!names.empty()) names += ", ";
-                    names += skill.name;
-                }
-                turn_extra_context.push_back(std::move(skill_context));
-                if (callbacks.on_status) callbacks.on_status("已加载技能：" + names);
-            }
-        }
-    }
+    if (!invoked_skill_names.empty() && callbacks.on_status) callbacks.on_status("已加载技能：" + invoked_skill_names);
 
     for (bool first_request = true;; first_request = false) {
         if (cancellation != nullptr && cancellation->IsCancelled()) {

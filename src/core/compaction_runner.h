@@ -15,6 +15,8 @@ struct CompactionSummaryResult {
     std::string source = "model";
     int passes = 0;
     uint64_t before_tokens = 0;
+    uint64_t billed_input_tokens = 0;
+    uint64_t cached_input_tokens = 0;
 };
 
 Result<CompactionSummaryResult> GenerateCompactionSummary(

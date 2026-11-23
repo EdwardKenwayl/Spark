@@ -68,11 +68,13 @@ void to_json(nlohmann::json& output, const ChatMessage& message) {
     if (!message.sources.empty()) output["sources"] = message.sources;
     if (message.timestamp != 0) output["timestamp"] = message.timestamp;
     if (message.phase == "commentary" || message.phase == "final_answer") output["phase"] = message.phase;
+    if (!message.turn_context.empty()) output["turn_context"] = message.turn_context;
 }
 
 void from_json(const nlohmann::json& input, ChatMessage& message) {
     message.role = MessageRoleFromString(input.value("role", std::string("user")));
     message.content = input.value("content", std::string{});
+    message.turn_context = input.value("turn_context", std::string{});
     if (input.contains("image_paths") && input["image_paths"].is_array()) {
         message.image_paths = input["image_paths"].get<std::vector<std::string>>();
     }

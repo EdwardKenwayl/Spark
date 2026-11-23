@@ -21,6 +21,80 @@ void Check(bool condition, const char* message) {
 
 enum class Ending { Complete, Cancel, ProviderError };
 
+void TestPromptCachePrefix(std::string protocol) {
+    const bool responses = protocol == "responses";
+    const auto root = fs::temp_directory_path() / Utf8ToWide("spark-cache-prefix-" + NewSessionId());
+    const std::string workspace = PathToUtf8(root);
+    const std::string skill_path = JoinPath(workspace, "fixture-skill/SKILL.md");
+    fs::create_directories(root / "fixture-skill");
+    Check(WriteFileUtf8Atomic(skill_path,
+          "---\nname: fixture-skill\ndescription: A fixture skill.\n---\nUnique skill body.\n"),
+          "cache fixture skill is created");
+
+    Server server([&](Server::Connection& connection, size_t) {
+        const std::string body = responses
+            ? R"({"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Done."}]}]})"
+            : R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done."}}]})";
+        connection.Send(Server::Headers(200, body.size(), "Content-Type: application/json\r\n") + body);
+    }, 4);
+    AppConfig config;
+    config.workspace.path = workspace;
+    config.storage.data_dir = JoinPath(workspace, "data");
+    config.skills.enabled = true;
+    config.skills.include_workspace_root = false;
+    config.skills.include_user_root = false;
+    config.skills.roots = {JoinPath(workspace, "fixture-skill")};
+    ProviderConfig provider;
+    provider.id = "fixture";
+    provider.protocol = protocol;
+    provider.base_url = server.Url("/v1");
+    provider.api_key = "synthetic-fixture";
+    ModelConfig model;
+    model.id = "fixture-model";
+    model.capabilities.streaming = false;
+    provider.models.push_back(model);
+    config.providers.push_back(provider);
+    config.active = {provider.id, model.id, ""};
+
+    SessionJournal journal;
+    Check(journal.Open(config.storage.data_dir, workspace).ok, "cache fixture session opens");
+    Agent agent(config, &journal, nullptr);
+    Check(agent.RunTurn("First request.", {}, {}, nullptr).ok, "cache fixture initial request completes");
+    Check(agent.RunTurn("Use $fixture-skill.", {}, {}, nullptr).ok, "cache fixture skill request completes");
+
+    SessionJournal restored;
+    Check(restored.Resume(journal.Path()).ok, "cache fixture session reloads");
+    Agent resumed(config, &restored, nullptr);
+    Check(resumed.RunTurn("", {}, {}, nullptr, true).ok, "cache fixture continuation completes");
+    Check(resumed.RunTurn("Next request.", {}, {}, nullptr).ok, "cache fixture next user request completes");
+
+    const auto requests = server.Requests();
+    Check(requests.size() == 4 && server.Error().empty(), "all cache fixture requests reached the loopback server");
+    if (requests.size() == 4) {
+        const char* items_key = responses ? "input" : "messages";
+        auto previous = nlohmann::json::parse(requests.front().body);
+        for (size_t index = 1; index < requests.size(); ++index) {
+            const auto current = nlohmann::json::parse(requests[index].body);
+            if (responses) {
+                Check(current["instructions"] == previous["instructions"] &&
+                      current["prompt_cache_key"] == previous["prompt_cache_key"],
+                      "Responses instructions and routing key are stable across turns and restart");
+            }
+            Check(current["tools"] == previous["tools"], "tool definitions are stable");
+            Check(current[items_key].size() > previous[items_key].size() &&
+                  std::equal(previous[items_key].begin(), previous[items_key].end(), current[items_key].begin()),
+                  "every previously sent item remains an exact prefix after skill activation and resume");
+            Check(requests[index].body.find("Unique skill body.") != std::string::npos,
+                  "invoked skill context remains at its original position after reload");
+            previous = current;
+        }
+    }
+    Check(journal.State().messages.size() > 2 && journal.State().messages[2].content == "Use $fixture-skill.",
+          "skill expansion does not rewrite the user's visible message");
+    std::error_code ignored;
+    fs::remove_all(root, ignored);
+}
+
 void TestCompactionUserBudget() {
     std::vector<ChatMessage> history;
     for (size_t index = 0; index < 40; ++index) {
@@ -377,6 +451,8 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
 }  // namespace
 
 int main() {
+    TestPromptCachePrefix("responses");
+    TestPromptCachePrefix("chat_completions");
     TestCompactionUserBudget();
     TestCompactionReplayAndContinue();
     for (bool streaming : {false, true})

@@ -120,6 +120,8 @@ Result<CompactionSummaryResult> GenerateCompactionSummary(
 
         const auto reply = adapter.Complete(request, {}, cancellation);
         if (!reply.ok) return Result<CompactionSummaryResult>::Failure(reply.error);
+        result.billed_input_tokens += static_cast<uint64_t>(std::max(0, reply.value.input_tokens));
+        result.cached_input_tokens += static_cast<uint64_t>(std::max(0, reply.value.cached_input_tokens));
         rolling_summary = Trim(reply.value.text);
         if (rolling_summary.empty()) {
             return Result<CompactionSummaryResult>::Failure("the model returned an empty compaction summary");

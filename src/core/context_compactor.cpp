@@ -62,6 +62,7 @@ uint64_t EstimateTextTokens(const std::string& text) {
 uint64_t EstimateMessageTokens(const ChatMessage& message) {
     uint64_t tokens = 4 + EstimateTextTokens(message.content) + EstimateTextTokens(message.name) +
                       EstimateTextTokens(message.tool_call_id);
+    if (!message.turn_context.empty()) tokens += EstimateTextTokens(message.turn_context);
     for (const std::string& path : message.image_paths) {
         // Vision inputs are decoded images, not tokenized base64 text. BMP and PNG
         // of the same picture must not differ by hundreds of thousands of tokens.
@@ -241,10 +242,12 @@ std::vector<ChatMessage> BuildCompactedHistory(const std::vector<ChatMessage>& m
     };
 
     size_t tail_start = messages.size();
+    size_t latest_user = messages.size();
     bool has_user_turn = false;
     for (size_t index = messages.size(); index > 0; --index) {
         if (messages[index - 1].role == MessageRole::User) {
             tail_start = index - 1;
+            latest_user = tail_start;
             has_user_turn = true;
             break;
         }
@@ -285,6 +288,7 @@ std::vector<ChatMessage> BuildCompactedHistory(const std::vector<ChatMessage>& m
          index > 0 && remaining_user_bytes && retained_user_text_tokens && recent_users.size() < 16; --index) {
         if (messages[index - 1].role != MessageRole::User) continue;
         ChatMessage user = messages[index - 1];
+        if (index - 1 != latest_user) user.turn_context.clear();
         user.content = TruncateUtf8(user.content, remaining_user_bytes);
         if (EstimateTextTokens(user.content) > retained_user_text_tokens) {
             size_t lower = 0, upper = user.content.size();
