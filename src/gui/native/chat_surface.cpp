@@ -279,7 +279,27 @@ NativeChatSurface::NativeChatSurface(wxWindow* parent)
 }
 wxColour NativeChatSurface::Foreground() const { return dark_ ? wxColour(236, 237, 240) : wxColour(31, 32, 35); }
 wxColour NativeChatSurface::Muted() const { return dark_ ? wxColour(150, 153, 160) : wxColour(103, 106, 112); }
-void NativeChatSurface::SetDark(bool dark) { dark_ = dark; row_cache_.clear(); dirty_ = true; Refresh(false); }
+void NativeChatSurface::SetDark(bool dark) {
+    if (dark_ == dark) return;
+    dark_ = dark;
+    row_cache_.clear();
+    Changed();
+}
+
+void NativeChatSurface::RefreshLocalization() {
+    if (!follow_) {
+        const int scroll = GetViewStart().y;
+        for (const auto index : rows_) {
+            const auto found = row_cache_.find(index);
+            if (found != row_cache_.end() && found->second.bounds.GetBottom() >= scroll) {
+                anchor_item_ = index;
+                anchor_offset_ = scroll - found->second.bounds.y;
+                break;
+            }
+        }
+    }
+    Changed();
+}
 void NativeChatSurface::SetEmptyTitle(const wxString& title) { empty_title_ = title; Refresh(false); }
 void NativeChatSurface::SetLoading(uint64_t started) { loading_ = started; Refresh(false); }
 void NativeChatSurface::SetTranscript(Transcript* transcript, bool reset_scroll) {

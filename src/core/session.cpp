@@ -108,6 +108,25 @@ void RecordPermission(SessionState& state, const nlohmann::json& payload) {
         (mode == "full_access" || mode == "approve_for_me" || mode == "read_only") ? mode : "ask";
 }
 
+bool ApplyPauseEvent(SessionState& state, const std::string& type, const nlohmann::json& payload) {
+    if (type == "turn.paused") {
+        state.metadata["paused_turn"] = payload;
+    } else if (type == "turn.pause_cleared") {
+        if (payload.value("discard_marker", false)) {
+            for (auto* messages : {&state.messages, &state.context_messages}) {
+                if (!messages->empty() && messages->back().role == MessageRole::System &&
+                    messages->back().content == kInterruptedTurnMarker) {
+                    messages->pop_back();
+                }
+            }
+        }
+        state.metadata.erase("paused_turn");
+    } else {
+        return false;
+    }
+    return true;
+}
+
 void RecordToolExecution(SessionState& state, const nlohmann::json& payload) {
     const std::string call_id = Trim(payload.value("tool_call_id", std::string{}));
     if (call_id.empty()) return;
@@ -342,8 +361,14 @@ const std::vector<ChatMessage>& ModelContextMessages(const SessionState& state) 
 
 SessionJournal::~SessionJournal() = default;
 
+SessionState& SessionJournal::MutableState() {
+    if (shared_state_.use_count() != 1) shared_state_ = std::make_shared<SessionState>(*shared_state_);
+    return *shared_state_;
+}
+
 Result<void> SessionJournal::Open(const std::string& data_directory, const std::string& workspace) {
-    state_ = {};
+    shared_state_ = std::make_shared<SessionState>();
+    auto& state_ = *shared_state_;
     state_.workspace = AbsolutePath(workspace);
     state_.created_at = UnixTimeSeconds();
     state_.updated_at = state_.created_at;
@@ -392,12 +417,9 @@ void SessionJournal::SetStorageRoot(const std::string& data_directory) {
 }
 
 Result<void> SessionJournal::LoadEvents(std::istream& stream, const CancellationToken* cancellation) {
-    state_ = {};
+    shared_state_ = std::make_shared<SessionState>();
+    auto& state_ = *shared_state_;
     bool context_override = false;
-    nlohmann::json replayed_durations = nlohmann::json::array();
-    nlohmann::json replayed_usages = nlohmann::json::array();
-    nlohmann::json replayed_tool_durations = nlohmann::json::object();
-    nlohmann::json replayed_turn_errors = nlohmann::json::array();
     std::string scope;
     std::string line;
     bool first_line = true;
@@ -411,9 +433,11 @@ Result<void> SessionJournal::LoadEvents(std::istream& stream, const Cancellation
         try {
             const nlohmann::json event = nlohmann::json::parse(line);
             const std::string type = event.value("type", std::string{});
-            const nlohmann::json payload = event.value("payload", nlohmann::json::object());
+            const nlohmann::json empty_payload = nlohmann::json::object();
+            const auto found_payload = event.find("payload");
+            const auto& payload = found_payload == event.end() ? empty_payload : *found_payload;
             const uint64_t event_timestamp = event.value("timestamp", uint64_t{0});
-            if (ApplyLiveEvent(state_, type, payload)) {
+            if (ApplyLiveEvent(state_, type, payload) || ApplyPauseEvent(state_, type, payload)) {
             } else if (type == "session.created") {
                 state_.id = payload.value("session_id", std::string{});
                 state_.workspace = payload.value("workspace", std::string{});
@@ -428,8 +452,8 @@ Result<void> SessionJournal::LoadEvents(std::istream& stream, const Cancellation
             } else if (type == "message") {
                 ChatMessage message = payload.get<ChatMessage>();
                 if (message.timestamp == 0) message.timestamp = event_timestamp;
-                state_.messages.push_back(message);
-                if (context_override) state_.context_messages.push_back(std::move(message));
+                if (context_override && !state_.context_messages.empty()) state_.context_messages.push_back(message);
+                state_.messages.push_back(std::move(message));
             } else if (type == "context.compacted") {
                 ApplyContextCompaction(state_, payload);
                 // The following legacy snapshot stores only the compacted model context. Keep
@@ -437,16 +461,12 @@ Result<void> SessionJournal::LoadEvents(std::istream& stream, const Cancellation
                 context_override = true;
             } else if (type == "turn.completed" || type == "turn.duration") {
                 RecordTurnDuration(state_, payload);
-                replayed_durations = state_.metadata["turn_durations_ms"];
             } else if (type == "turn.usage") {
                 RecordTurnUsage(state_, payload);
-                replayed_usages = state_.metadata["turn_usages"];
             } else if (type == "tool.execution") {
                 RecordToolExecution(state_, payload);
-                replayed_tool_durations = state_.metadata["tool_durations_ms"];
             } else if (type == "turn.error" || type == "turn.dsml.error") {
                 RecordTurnError(state_, payload, event_timestamp);
-                replayed_turn_errors = state_.metadata["turn_errors"];
             } else if (type == "snapshot") {
                 SessionState snapshot = StateFromJson(payload);
                 const bool snapshot_has_context =
@@ -470,25 +490,26 @@ Result<void> SessionJournal::LoadEvents(std::istream& stream, const Cancellation
                     }
                 }
                 context_override = !snapshot.context_messages.empty();
-                state_ = std::move(snapshot);
-                if (!state_.metadata.is_object()) state_.metadata = nlohmann::json::object();
+                if (!snapshot.metadata.is_object()) snapshot.metadata = nlohmann::json::object();
                 // Missing keys belong to legacy snapshots. Present keys, including
                 // empty arrays, authoritatively replace the previous branch.
-                const auto restore_metadata = [&](const char* key, nlohmann::json& replayed) {
-                    if (!state_.metadata.contains(key)) state_.metadata[key] = replayed;
-                    replayed = state_.metadata[key];
+                const auto restore_metadata = [&](const char* key, nlohmann::json fallback) {
+                    if (snapshot.metadata.contains(key)) return;
+                    const auto prior = state_.metadata.find(key);
+                    snapshot.metadata[key] = prior == state_.metadata.end() ? std::move(fallback) : std::move(*prior);
                 };
-                restore_metadata("turn_durations_ms", replayed_durations);
-                restore_metadata("turn_usages", replayed_usages);
-                restore_metadata("tool_durations_ms", replayed_tool_durations);
-                restore_metadata("turn_errors", replayed_turn_errors);
-                if (replayed_turn_errors.is_array()) {
-                    state_.metadata["turn_errors"] = nlohmann::json::array();
-                    for (const auto& error : replayed_turn_errors) {
-                        if (error.is_object()) RecordTurnError(state_, error, event_timestamp);
+                restore_metadata("turn_durations_ms", nlohmann::json::array());
+                restore_metadata("turn_usages", nlohmann::json::array());
+                restore_metadata("tool_durations_ms", nlohmann::json::object());
+                restore_metadata("turn_errors", nlohmann::json::array());
+                if (snapshot.metadata["turn_errors"].is_array()) {
+                    auto errors = std::move(snapshot.metadata["turn_errors"]);
+                    snapshot.metadata["turn_errors"] = nlohmann::json::array();
+                    for (const auto& error : errors) {
+                        if (error.is_object()) RecordTurnError(snapshot, error, event_timestamp);
                     }
-                    replayed_turn_errors = state_.metadata["turn_errors"];
                 }
+                state_ = std::move(snapshot);
             }
             state_.updated_at = event_timestamp == 0 ? state_.updated_at : event_timestamp;
         } catch (const std::exception&) {
@@ -539,8 +560,9 @@ Result<void> SessionJournal::Append(const std::string& event_type, const nlohman
     if (!AppendJournalRecord(path_, event.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) + "\n", &error)) {
         return Result<void>::Failure("could not append session event: " + error);
     }
+    auto& state_ = MutableState();
     state_.updated_at = event["timestamp"].get<uint64_t>();
-    if (ApplyLiveEvent(state_, event_type, payload)) {
+    if (ApplyLiveEvent(state_, event_type, payload) || ApplyPauseEvent(state_, event_type, payload)) {
     } else if (event_type == "turn.completed" || event_type == "turn.duration") {
         RecordTurnDuration(state_, payload);
     } else if (event_type == "turn.usage") {
@@ -561,7 +583,21 @@ Result<void> SessionJournal::SaveSnapshot() {
     if (path_.empty()) {
         return Result<void>::Failure("session journal is not open");
     }
-    return Append("snapshot", StateToJson(state_));
+    return Append("snapshot", StateToJson(State()));
+}
+
+Result<void> SessionJournal::SavePause(uint64_t elapsed_ms) {
+    return Append("turn.paused", {{"elapsed_ms", elapsed_ms}, {"interrupted_at", UnixTimeSeconds()}});
+}
+
+Result<void> SessionJournal::ClearPause() {
+    if (!State().metadata.contains("paused_turn")) return Result<void>::Success();
+    return Append("turn.pause_cleared", nlohmann::json::object());
+}
+
+Result<void> SessionJournal::DiscardPause() {
+    if (!State().metadata.contains("paused_turn")) return Result<void>::Success();
+    return Append("turn.pause_cleared", {{"discard_marker", true}});
 }
 
 Result<std::vector<std::string>> SessionJournal::ListRecent(int limit) const {

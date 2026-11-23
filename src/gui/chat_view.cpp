@@ -1533,6 +1533,7 @@ void ChatView::SetLinkBaseDirectory(const std::string& directory) {
 }
 
 void ChatView::RefreshLocalization() {
+    bool reflow = false;
     for (size_t index = 0; index < items_.size(); ++index) {
         ChatItem& item = items_[index];
         if (item.kind == ChatItemKind::Quota) {
@@ -1540,7 +1541,7 @@ void ChatView::RefreshLocalization() {
             if (item.text != text) {
                 item.text = text;
                 InvalidateItemHeight(index);
-                rail_dirty_ = true;
+                reflow = true;
             }
         }
         if (item.kind == ChatItemKind::Compaction) {
@@ -1549,17 +1550,21 @@ void ChatView::RefreshLocalization() {
             if (item.text != text) {
                 item.text = text;
                 InvalidateItemHeight(index);
-                rail_dirty_ = true;
+                reflow = true;
             }
         }
         if (item.kind == ChatItemKind::UsageStats) {
             // Preserve transcript and Markdown caches; only translated wrapping changes.
             InvalidateItemHeight(index);
-            rail_dirty_ = true;
+            reflow = true;
         }
     }
-    Rebuild();
-    if (window_ != nullptr) InvalidateRect(window_, nullptr, FALSE);
+    if (reflow) {
+        rail_dirty_ = true;
+        Rebuild();
+    } else if (window_ != nullptr) {
+        InvalidateRect(window_, nullptr, FALSE);
+    }
 }
 
 void ChatView::SetActivityFrame(int frame) {

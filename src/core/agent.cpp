@@ -459,14 +459,8 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
             const auto appended = journal_->Append("context.compacted", payload);
             if (!appended.ok) return appended;
         }
-        if (journal_ != nullptr) {
-            journal_->MutableState().context_messages = std::move(replacement);
-        } else {
+        if (journal_ == nullptr) {
             local_context = std::move(replacement);
-        }
-        if (journal_ != nullptr) {
-            const auto snapshot = journal_->SaveSnapshot();
-            if (!snapshot.ok) return snapshot;
         }
         if (callbacks.on_status) {
             callbacks.on_status("上下文已压缩：" + std::to_string(before) + " → " + std::to_string(after) + " tokens");
@@ -689,11 +683,8 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
         if (continue_interrupted) {
             // Clear the pause marker only after the resume event has been durably appended. If the
             // turn cannot start, the UI keeps the play button instead of silently becoming a no-op.
-            SessionState& state = journal_->MutableState();
-            if (state.metadata.is_object() && state.metadata.erase("paused_turn") > 0) {
-                const auto snapshot = journal_->SaveSnapshot();
-                if (!snapshot.ok) return snapshot;
-            }
+            const auto cleared = journal_->ClearPause();
+            if (!cleared.ok) return cleared;
         }
     }
     if (!continue_interrupted && callbacks.on_user_message_appended) callbacks.on_user_message_appended();

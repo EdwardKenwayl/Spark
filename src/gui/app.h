@@ -5,6 +5,7 @@
 #include "gui/chat_view.h"
 #include "gui/settings_window.h"
 #include "gui/session_loader.h"
+#include "gui/native/history_loader.h"
 #include "gui/summary_view.h"
 #include "gui/add_menu.h"
 #include "gui/completion_notification.h"
@@ -436,6 +437,12 @@ private:
     AppConfig config_;
     SessionJournal journal_;
     SessionLoader session_loader_;
+    NativeHistoryLoader history_loader_{240};
+    std::vector<TranscriptHistory> sidebar_history_;
+    std::string sidebar_history_root_;
+    bool applying_sidebar_history_ = false;
+    bool sidebar_history_loading_ = false;
+    bool sidebar_history_dirty_ = false;
     std::string session_load_path_;
     uint64_t session_load_generation_ = 0;
     bool session_view_loading_ = false;

@@ -18,6 +18,7 @@ public:
     explicit NativeChatSurface(wxWindow* parent);
     void SetTranscript(Transcript* transcript, bool reset_scroll = false);
     void SetDark(bool dark);
+    void RefreshLocalization();
     void SetEmptyTitle(const wxString& title);
     void SetLoading(uint64_t started);
     bool Loading() const { return loading_ != 0; }

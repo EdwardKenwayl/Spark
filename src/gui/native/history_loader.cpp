@@ -8,7 +8,6 @@
 
 namespace spark {
 namespace {
-constexpr int kHistoryLimit = 1000;
 constexpr size_t kCacheLimit = 1024;
 
 struct FileStamp {
@@ -40,14 +39,15 @@ struct SummaryCache {
     std::map<std::string, CachedSummary> entries;
     uint64_t clock = 0;
 
-    std::vector<TranscriptHistory> Load(const std::string& directory, const CancellationToken& cancellation) {
+    std::vector<TranscriptHistory> Load(const std::string& directory, int limit,
+                                        const CancellationToken& cancellation) {
         std::vector<TranscriptHistory> summaries;
         if (directory.empty() || cancellation.IsCancelled()) return summaries;
         const auto root = AbsolutePath(directory);
         if (root.empty()) return summaries;
         SessionJournal journal;
         journal.SetStorageRoot(root);
-        const auto recent = journal.ListRecent(kHistoryLimit);
+        const auto recent = journal.ListRecent(limit);
         if (!recent.ok) return summaries;
         summaries.reserve(recent.value.size());
         for (const auto& filename : recent.value) {
@@ -141,7 +141,7 @@ void NativeHistoryLoader::ReadRequests() {
         }
         std::vector<TranscriptHistory> summaries;
         try {
-            summaries = cache.Load(directory, cancellation_);
+            summaries = cache.Load(directory, limit_, cancellation_);
         } catch (const std::exception&) {
             // Directory enumeration errors are a completed, empty result, not a worker failure.
         }

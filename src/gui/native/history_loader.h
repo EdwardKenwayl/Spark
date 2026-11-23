@@ -13,6 +13,7 @@ namespace spark {
 
 class NativeHistoryLoader {
 public:
+    explicit NativeHistoryLoader(int limit = 1000) : limit_(limit) {}
     ~NativeHistoryLoader();
     // Same-root requests coalesce until the active scan's result is consumed by Poll.
     void Request(std::string data_directory);
@@ -24,6 +25,7 @@ public:
 private:
     void ReadRequests();
 
+    const int limit_;
     std::mutex mutex_;
     std::condition_variable changed_;
     std::thread worker_;

@@ -255,16 +255,16 @@ void NativeFrame::Consume(const NativeEvent& event) {
     } else if (event.kind == NativeEvent::Kind::Done) {
         const bool cancelled = cancelled_completion_paths_.erase(event.path) != 0;
         if (event.path == active_) RefreshSummary();
-        const auto completed = runtime_.FinishedJournal(event.path);
+        auto completed = runtime_.FinishedJournal(event.path);
         if (completed.ok) {
-            view.journal = completed.value;
+            view.journal = std::move(completed.value);
             finish_assistant();
             HideReasoning(view.transcript, view.reasoning);
             const auto& metadata = view.journal.State().metadata;
             const bool paused = metadata.contains("paused_turn");
-            const auto& durations = metadata.value("turn_durations_ms", nlohmann::json::array());
+            const auto durations = metadata.find("turn_durations_ms");
             ChatItem final;
-            final.elapsed_ms = durations.empty() ? 0 : durations.back().get<uint64_t>();
+            final.elapsed_ms = durations == metadata.end() || durations->empty() ? 0 : durations->back().get<uint64_t>();
             for (const auto& tool : view.tools) {
                 final.success = false;
                 final.result = paused ? "Interrupted" : "Tool did not complete";
@@ -276,9 +276,9 @@ void NativeFrame::Consume(const NativeEvent& event) {
                                        view.status, final}, Now());
             if (!event.success && !event.first.empty())
                 Add(view.transcript, IsQuotaExhaustedError(event.first) ? ChatItemKind::Quota : ChatItemKind::Error, event.first);
-            const auto& usages = metadata.value("turn_usages", nlohmann::json::array());
-            if (!usages.empty()) {
-                const auto& usage = usages.back();
+            const auto usages = metadata.find("turn_usages");
+            if (usages != metadata.end() && !usages->empty()) {
+                const auto& usage = usages->back();
                 ChatItem row;
                 row.kind = ChatItemKind::UsageStats;
                 row.input_tokens = usage.value("input_tokens", uint64_t{0});

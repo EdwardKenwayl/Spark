@@ -55,6 +55,27 @@ int main() {
               "duration and latest error survive restart");
         Check(resumed.State().metadata["context_compactions"].size() == 1,
               "compaction notification survives restart");
+        SessionJournal worker = resumed;
+        Check(&worker.State() == &resumed.State(), "starting a worker shares the loaded transcript");
+        ChatMessage marker;
+        marker.role = MessageRole::System;
+        marker.content = kInterruptedTurnMarker;
+        worker.MutableState().messages.push_back(marker);
+        worker.MutableState().context_messages.push_back(marker);
+        Check(worker.Append("message", marker).ok && worker.SavePause(3'000).ok,
+              "persist pause as a small journal event");
+        Check(!resumed.State().metadata.contains("paused_turn") && resumed.State().messages.size() == 1,
+              "worker writes do not change the view snapshot");
+        SessionJournal reopened;
+        Check(reopened.Resume(worker.Path()).ok && reopened.State().messages.size() == 2 &&
+                  reopened.State().metadata.value("paused_turn", nlohmann::json::object())
+                      .value("elapsed_ms", uint64_t{0}) == 3'000,
+              "restarting restores the paused turn and elapsed time");
+        Check(worker.DiscardPause().ok && reopened.Resume(worker.Path()).ok &&
+                  !reopened.State().metadata.contains("paused_turn") &&
+                  nlohmann::json(reopened.State().messages) == nlohmann::json(resumed.State().messages) &&
+                  nlohmann::json(reopened.State().context_messages) == nlohmann::json(resumed.State().context_messages),
+              "abandoning a pause removes only the marker from transcript and compacted context");
         SessionJournal cold_start;
         cold_start.SetStorageRoot(PathToUtf8(root / "data"));
         const auto recent = cold_start.ListRecent(1);

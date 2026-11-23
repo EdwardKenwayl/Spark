@@ -124,6 +124,7 @@ UINT TaskbarCreatedMessage() {
 constexpr UINT_PTR kComposerTimer = 1;
 constexpr UINT_PTR kActivityTimer = 3;
 constexpr UINT_PTR kExternalPollTimer = 4;
+constexpr UINT_PTR kSidebarHistoryTimer = 7;
 // 100 ms keeps the status-line shimmer and the sidebar spinner smooth while limiting
 // repaint work on older Win7 machines.
 constexpr UINT kActivityIntervalMs = 100;
@@ -160,15 +161,7 @@ COLORREF kSidebarHoverText = RGB(250, 250, 250);
 
 using DwmSetWindowAttributeFn = HRESULT(WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
 
-struct SessionSummary {
-    std::string path;
-    std::string title;
-    std::string workspace;
-    std::string scope;
-    uint64_t updated_at = 0;
-    bool pinned = false;
-    bool has_messages = false;
-};
+using SessionSummary = TranscriptHistory;
 
 struct CachedSessionSummary {
     ULONGLONG size = 0;
@@ -2217,15 +2210,10 @@ void AppWindow::RefreshProjectRows() {
 
     const std::string active_path = pending_new_conversation_ ? std::string{} : NormalizePathForComparison(journal_.Path());
     std::vector<SessionSummary> sessions;
-    const auto recent = journal_.ListRecent(240);
-    if (recent.ok) {
-        for (const std::string& filename : recent.value) {
-            const std::string path = JoinPath(JoinPath(config_.storage.data_dir, "sessions"), filename);
-            SessionSummary summary = ReadSessionSummary(path);
-            summary.title = Trim(summary.title);
-            if (summary.title.empty() || IsPlaceholderSession(summary)) continue;
-            sessions.push_back(std::move(summary));
-        }
+    for (auto summary : sidebar_history_) {
+        summary.title = Trim(summary.title);
+        if (summary.title.empty() || IsPlaceholderSession(summary)) continue;
+        sessions.push_back(std::move(summary));
     }
     int selected = -1;
     for (size_t project_index = 0; project_index < projects_.size(); ++project_index) {
@@ -2657,6 +2645,21 @@ void AppWindow::ApplyModelSelection() {
 
 void AppWindow::RefreshHistory() {
     EnsureJournalStorageRoot();
+    if (!applying_sidebar_history_) {
+        if (sidebar_history_root_ != config_.storage.data_dir) {
+            sidebar_history_root_ = config_.storage.data_dir;
+            sidebar_history_.clear();
+            sidebar_history_loading_ = false;
+            sidebar_history_dirty_ = false;
+        }
+        if (sidebar_history_loading_) {
+            sidebar_history_dirty_ = true;
+        } else {
+            history_loader_.Request(sidebar_history_root_);
+            sidebar_history_loading_ = true;
+            SetTimer(window_, kSidebarHistoryTimer, 50, nullptr);
+        }
+    }
     populating_ = true;
     SendMessageW(history_list_, LB_RESETCONTENT, 0, 0);
     SendMessageW(history_list_, LB_SETCURSEL, static_cast<WPARAM>(-1), 0);
@@ -2666,14 +2669,9 @@ void AppWindow::RefreshHistory() {
     pending_history_action_ = 0;
     pending_history_more_ = false;
     hovered_history_item_ = -1;
-    const auto recent = journal_.ListRecent(80);
-    if (!recent.ok) {
-        populating_ = false;
-        UpdateSidebarScrollbar();
-        return;
-    }
     std::vector<SessionSummary> summaries;
-    summaries.reserve(recent.value.size());
+    const size_t recent_count = std::min<size_t>(80, sidebar_history_.size());
+    summaries.reserve(recent_count);
     const auto belongs_to_project = [this](const std::string& workspace) {
         if (workspace.empty()) return false;
         const std::string normalized_workspace = NormalizePathForComparison(workspace);
@@ -2685,9 +2683,8 @@ void AppWindow::RefreshHistory() {
         }
         return false;
     };
-    for (const std::string& filename : recent.value) {
-        const std::string path = JoinPath(JoinPath(config_.storage.data_dir, "sessions"), filename);
-        SessionSummary summary = ReadSessionSummary(path);
+    for (size_t index = 0; index < recent_count; ++index) {
+        SessionSummary summary = sidebar_history_[index];
         summary.title = Trim(summary.title);
         if (summary.scope.empty() && belongs_to_project(summary.workspace)) continue;
         if (summary.scope == "project") continue;
@@ -3740,12 +3737,7 @@ void AppWindow::StartTurn() {
     if (runtime->permission_mode != runtime->config.permissions.default_mode) {
         ApplyPermissionMode(&runtime->config, runtime->permission_mode);
     }
-    const auto resumed = runtime->journal.Resume(runtime->path);
-    if (!resumed.ok) {
-        SetStatus(i18n::Text(L"Could not create a session copy for the parallel turn: ") + Utf8ToWide(resumed.error));
-        return;
-    }
-    runtime->journal.Append("session.permission", {{"mode", permission_mode_}});
+    runtime->journal = journal_;
     const uint64_t now_tick = spark::MonotonicMillis();
     runtime->started_tick = resuming && resume_elapsed_ms <= now_tick ? now_tick - resume_elapsed_ms : now_tick;
     runtime->resume_turn = resuming;
@@ -3781,15 +3773,6 @@ void AppWindow::StartTurn() {
     attached_turn_key_ = runtime->session_key;
     active_turns_[runtime->session_key] = runtime;
     if (resuming) {
-        const auto reloaded = runtime->journal.Resume(runtime->path);
-        if (!reloaded.ok) {
-            active_turns_.erase(runtime->session_key);
-            runtime->ui_attached = false;
-            attached_turn_key_.clear();
-            SetStatus(i18n::Text(L"Could not resume the interrupted turn: ") + Utf8ToWide(reloaded.error));
-            UpdateTurnUi();
-            return;
-        }
         ReloadSessionIntoView();
         // ReloadSessionIntoView starts by detaching the old chat view, so reattach the
         // resumed runtime after the transcript has been rebuilt.
@@ -3835,6 +3818,7 @@ void AppWindow::StartTurn() {
             last_reasoning_post = spark::MonotonicMillis();
         };
         try {
+            runtime->journal.Append("session.permission", {{"mode", runtime->permission_mode}});
             McpManager* turn_mcp = nullptr;
             {
                 std::lock_guard<std::mutex> mcp_lock(mcp_mutex_);
@@ -4072,18 +4056,14 @@ void AppWindow::PollExternalRuns() {
         FILETIME write_time{};
         if (ReadFileStamp(journal_.Path(), &size, &write_time)) {
             const auto stamp = external_session_stamps_.find(session_key);
-            const bool stamp_changed =
-                stamp == external_session_stamps_.end() || stamp->second.first != size ||
-                CompareFileTime(&stamp->second.second, &write_time) != 0;
+            const bool stamp_changed = stamp != external_session_stamps_.end() &&
+                (stamp->second.first != size || CompareFileTime(&stamp->second.second, &write_time) != 0);
             if (stamp_changed) {
                 reload_active = true;
-                external_session_stamps_[session_key] = {size, write_time};
             }
+            external_session_stamps_[session_key] = {size, write_time};
         }
-        if (reload_active && journal_.Resume(journal_.Path()).ok) {
-            ReloadSessionIntoView();
-            RefreshContextLabel();
-        }
+        if (reload_active) QueueSessionLoad(journal_.Path());
     }
 
     if (!external_running_sessions_.empty()) {
@@ -4449,7 +4429,11 @@ void AppWindow::FinishTurn(const std::shared_ptr<TurnRuntime>& runtime, bool suc
         // The final duration and transcript were written after the reader's snapshot.
         QueueSessionLoad(runtime->path);
     } else if (active) {
-        journal_.Resume(runtime->path);
+        journal_ = std::move(runtime->journal);
+        ULONGLONG file_size = 0;
+        FILETIME write_time{};
+        if (ReadFileStamp(runtime->path, &file_size, &write_time))
+            external_session_stamps_[runtime->session_key] = {file_size, write_time};
         RefreshSummaryPanel();
         if (!attached) {
             ReloadSessionIntoView();
@@ -4525,12 +4509,7 @@ void AppWindow::PersistInterruptedTurn(const std::shared_ptr<TurnRuntime>& runti
     marker.timestamp = UnixTimeSeconds();
     append_message(marker);
 
-    if (!state.metadata.is_object()) state.metadata = nlohmann::json::object();
-    state.metadata["paused_turn"] = {
-        {"elapsed_ms", elapsed_ms},
-        {"interrupted_at", UnixTimeSeconds()},
-    };
-    runtime->journal.SaveSnapshot();
+    runtime->journal.SavePause(elapsed_ms);
 }
 
 bool AppWindow::HasPausedTurn() const {
@@ -4545,27 +4524,11 @@ uint64_t AppWindow::PausedTurnElapsedMs() const {
 }
 
 void AppWindow::ClearPausedTurn(SessionJournal& journal) {
-    nlohmann::json& metadata = journal.MutableState().metadata;
-    if (!metadata.is_object() || metadata.erase("paused_turn") == 0) return;
-    journal.SaveSnapshot();
+    journal.ClearPause();
 }
 
 void AppWindow::DiscardPausedTurnForNewMessage(SessionJournal& journal) {
-    SessionState& state = journal.MutableState();
-    bool changed = false;
-    const auto remove_tail_marker = [](std::vector<ChatMessage>& messages) {
-        if (messages.empty()) return false;
-        const ChatMessage& last = messages.back();
-        if (last.role != MessageRole::System || last.content != kInterruptedTurnMarker) return false;
-        messages.pop_back();
-        return true;
-    };
-    changed = remove_tail_marker(state.messages) || changed;
-    if (!state.context_messages.empty()) {
-        changed = remove_tail_marker(state.context_messages) || changed;
-    }
-    if (state.metadata.is_object() && state.metadata.erase("paused_turn") > 0) changed = true;
-    if (changed) journal.SaveSnapshot();
+    journal.DiscardPause();
 }
 
 bool AppWindow::AskApproval(const std::shared_ptr<TurnRuntime>& runtime, const ApprovalRequest& request) {
@@ -6798,6 +6761,23 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                 PollExternalRuns();
                 return 0;
             }
+            if (wparam == kSidebarHistoryTimer) {
+                if (auto updated = history_loader_.Poll()) {
+                    sidebar_history_ = std::move(*updated);
+                    applying_sidebar_history_ = true;
+                    RefreshHistory();
+                    RefreshProjectRows();
+                    applying_sidebar_history_ = false;
+                    if (sidebar_history_dirty_) {
+                        sidebar_history_dirty_ = false;
+                        history_loader_.Request(sidebar_history_root_);
+                    } else {
+                        sidebar_history_loading_ = false;
+                        KillTimer(window_, kSidebarHistoryTimer);
+                    }
+                }
+                return 0;
+            }
             return 0;
         case kApprovalMessage: {
             auto* context = reinterpret_cast<ApprovalContext*>(lparam);
@@ -6838,6 +6818,7 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             completion_notifications_.Close();
             SaveWindowsWindowGeometry(window_, DataDirectory());
             session_loader_.Stop();
+            history_loader_.Stop();
             session_replay_step_ = {};
             KillTimer(window_, kSessionLoadTimer);
             snapshot_shortcut_.Stop();

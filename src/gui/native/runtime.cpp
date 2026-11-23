@@ -122,6 +122,10 @@ Result<void> NativeRuntime::Start(const AppConfig& config, const SessionJournal&
         Result<void> outcome;
         bool quota_blocked = false;
         try {
+            if (!resume) {
+                const auto discarded = run->journal.DiscardPause();
+                if (!discarded.ok) throw std::runtime_error(discarded.error);
+            }
             run->journal.Append("session.permission", {{"mode", run->config.permissions.default_mode}});
             const auto discovered = run->mcp->DiscoverEnabled(&run->cancellation);
             if (!discovered.ok) {
@@ -181,9 +185,9 @@ Result<void> NativeRuntime::Start(const AppConfig& config, const SessionJournal&
             if (!run->journal.State().context_messages.empty())
                 run->journal.MutableState().context_messages.push_back(marker);
             run->journal.Append("message", marker);
-            run->journal.MutableState().metadata["paused_turn"] = {{"elapsed_ms", elapsed}};
+            run->journal.SavePause(elapsed);
         } else {
-            run->journal.MutableState().metadata.erase("paused_turn");
+            run->journal.ClearPause();
         }
         run->journal.Append("turn.duration", {{"elapsed_ms", elapsed}});
         run->journal.Append("turn.usage", {{"input_tokens", input}, {"output_tokens", output},
@@ -191,7 +195,6 @@ Result<void> NativeRuntime::Start(const AppConfig& config, const SessionJournal&
             {"context_limit_tokens", limit}, {"elapsed_ms", elapsed}});
         if (!outcome.ok && !run->cancellation.IsCancelled() && !quota_blocked)
             run->journal.Append("turn.error", {{"error", outcome.error}});
-        run->journal.SaveSnapshot();
         run->done.store(true, std::memory_order_release);
         event(NativeEvent::Kind::Done, run->cancellation.IsCancelled() ? std::string{} : outcome.error,
               {}, {}, outcome.ok);

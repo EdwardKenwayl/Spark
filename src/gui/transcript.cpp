@@ -527,7 +527,9 @@ Result<TranscriptHistory> ReadTranscriptHistory(const std::string& path, const C
         try {
             const auto event = nlohmann::json::parse(line);
             const auto type = event.value("type", std::string{});
-            const auto payload = event.value("payload", nlohmann::json::object());
+            const auto found_payload = event.find("payload");
+            const auto empty_payload = nlohmann::json::object();
+            const auto& payload = found_payload == event.end() ? empty_payload : *found_payload;
             summary.updated_at = event.value("timestamp", summary.updated_at);
             if (type == "session.created") {
                 summary.title = payload.value("title", std::string(u8"\u65b0\u5bf9\u8bdd"));

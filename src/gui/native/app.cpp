@@ -258,6 +258,7 @@ const ModelConfig* NativeFrame::SelectedModel() const {
     return provider ? FindModel(*provider, config_.active.model) : nullptr;
 }
 void NativeFrame::ApplyConfig(const AppConfig& config) {
+    const bool language_changed = config_.ui.language != config.ui.language;
     config_ = config;
     i18n::SetLocale(config_.ui.language);
     const bool dark = config_.ui.theme == "dark" ||
@@ -278,6 +279,7 @@ void NativeFrame::ApplyConfig(const AppConfig& config) {
     composer_hint_->SetForegroundColour(palette.muted);
     composer_hint_->SetLabel(T(L"Message Spark"));
     chat_->SetDark(dark);
+    if (language_changed) chat_->RefreshLocalization();
     side_panel_->SetDark(dark);
     for (const auto& label : labels_) label.first->SetLabel(T(label.second.c_str()));
     for (const auto& label : tooltips_) label.first->SetToolTip(T(label.second.c_str()));

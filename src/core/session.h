@@ -3,8 +3,9 @@
 #include "core/agent_types.h"
 #include "core/common.h"
 
-#include <string>
 #include <iosfwd>
+#include <memory>
+#include <string>
 #include <vector>
 
 namespace spark {
@@ -44,16 +45,20 @@ public:
     void SetStorageRoot(const std::string& data_directory);
     Result<void> Append(const std::string& event_type, const nlohmann::json& payload);
     Result<void> SaveSnapshot();
+    Result<void> SavePause(uint64_t elapsed_ms);
+    Result<void> ClearPause();
+    Result<void> DiscardPause();
     Result<std::vector<std::string>> ListRecent(int limit = 50) const;
 
-    const SessionState& State() const { return state_; }
-    SessionState& MutableState() { return state_; }
+    const SessionState& State() const { return *shared_state_; }
+    SessionState& MutableState();
     const std::string& Path() const { return path_; }
 
 private:
     Result<void> LoadEvents(std::istream& stream, const CancellationToken* cancellation);
 
-    SessionState state_;
+    // A worker starts from the view's loaded state and detaches on its first write.
+    std::shared_ptr<SessionState> shared_state_ = std::make_shared<SessionState>();
     std::string path_;
     std::string data_directory_;
 };

@@ -638,6 +638,15 @@ struct AppWindowSessionLoadTest {
         Check(app.active_session_scope_ == "project" && app.active_project_name_ == "Project B" &&
                   app.active_workspace_path_ == b.workspace && app.ComposerText() == "B draft" &&
                   app.goal_ == "B goal" && app.plan_mode_, "latest selection retains registered project scope and B draft");
+        app.SetSettingsMode(true);
+        const auto original_language = app.config_.ui.language;
+        app.config_.ui.language = "ja-JP";
+        app.settings_language_dirty_ = true;
+        app.SetSettingsMode(false);
+        Check(Loaded(app, b) && app.ComposerText() == "B draft",
+              "returning from language settings keeps the conversation loaded and retains its draft");
+        app.config_.ui.language = original_language;
+        app.ApplyLocalization();
         SetWindowTextW(app.composer_, L"edited B draft");
         app.ResumeSessionPath(a.path);
         app.ResumeSessionPath(b.path);
