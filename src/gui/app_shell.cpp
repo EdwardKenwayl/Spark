@@ -1459,6 +1459,14 @@ void AppWindow::CreateControls() {
     model_button_ = button(L"", kModelButton);
     send_button_ = button(L"↑", kSend);
     jump_button_ = button(i18n::Text(L"Jump to latest"), kJumpToLatest);
+    ShowWindow(jump_button_, SW_HIDE);
+    chat_view_->SetJumpVisibilityAction([this](bool visible) {
+        visible = visible && !settings_mode_ && !SessionLoading();
+        if (visible != ((GetWindowLongW(jump_button_, GWL_STYLE) & WS_VISIBLE) != 0)) {
+            if (!visible) jump_hovered_ = false;
+            ShowWindow(jump_button_, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
+        }
+    });
     SetWindowSubclass(jump_button_, JumpButtonProc, 1, reinterpret_cast<DWORD_PTR>(this));
     workspace_label_ = label(L"", kWorkspaceLabel, SS_LEFT | SS_ENDELLIPSIS);
     status_label_ = label(L"", kStatusLabel, SS_LEFT | SS_ENDELLIPSIS);
@@ -2738,7 +2746,7 @@ void AppWindow::SetSettingsMode(bool enabled) {
         recent_label_, history_list_, recent_menu_button_, recent_new_button_, sidebar_scrollbar_, settings_button_,
         main_title_label_, context_label_, summary_button_, subagent_button_, model_label_, model_combo_, model_button_,
         permission_button_, plus_button_, side_title_label_, side_close_button_,
-        composer_, send_button_, jump_button_, workspace_label_, status_label_, empty_mark_, empty_title_,
+        composer_, send_button_, workspace_label_, status_label_, empty_mark_, empty_title_,
     };
     if (chat_view_ != nullptr && chat_view_->hwnd() != nullptr) controls.push_back(chat_view_->hwnd());
     if (side_chat_view_ != nullptr && side_chat_view_->hwnd() != nullptr) controls.push_back(side_chat_view_->hwnd());
@@ -2767,6 +2775,8 @@ void AppWindow::SetSettingsMode(bool enabled) {
         }
         InvalidateRect(window_, nullptr, FALSE);
     } else {
+        jump_hovered_ = false;
+        ShowWindow(jump_button_, SW_HIDE);
         InvalidateRect(window_, nullptr, FALSE);
     }
 }
@@ -4151,8 +4161,12 @@ bool AppWindow::ActivityRowVisible() const {
 void AppWindow::UpdateSendButton() {
     const bool running = IsActiveSessionRunning();
     if (jump_button_ != nullptr) {
-        EnableWindow(jump_button_, SessionLoading() ? FALSE : TRUE);
-        InvalidateRect(jump_button_, nullptr, FALSE);
+        if (SessionLoading()) {
+            jump_hovered_ = false;
+            ShowWindow(jump_button_, SW_HIDE);
+        } else {
+            InvalidateRect(jump_button_, nullptr, FALSE);
+        }
     }
     const bool has_text = !Trim(ComposerText()).empty();
     const bool paused = !running && HasPausedTurn();
@@ -4804,6 +4818,7 @@ void AppWindow::UpdateEmptyState() {
     if (chat_view_ != nullptr && chat_view_->hwnd() != nullptr) {
         ShowWindow(chat_view_->hwnd(), empty ? SW_HIDE : SW_SHOW);
     }
+    if (empty && jump_button_ != nullptr) ShowWindow(jump_button_, SW_HIDE);
     ShowWindow(empty_mark_, empty ? SW_SHOW : SW_HIDE);
     ShowWindow(empty_title_, empty ? SW_SHOW : SW_HIDE);
     if (active_session_scope_ == "project" && !active_project_name_.empty()) {
@@ -6650,7 +6665,10 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                 return 0;
             }
             if (id == kJumpToLatest && notification == BN_CLICKED) {
-                if (chat_view_ != nullptr && !SessionLoading()) chat_view_->JumpToLatest();
+                if (chat_view_ != nullptr && !SessionLoading()) {
+                    chat_view_->JumpToLatest();
+                    SetFocus(chat_view_->hwnd());
+                }
                 return 0;
             }
             if (id == kPlusButton && notification == BN_CLICKED) {

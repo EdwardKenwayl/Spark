@@ -87,6 +87,7 @@ struct NativeGuiTestAccess {
     static Transcript& Model(NativeFrame& frame) { return frame.Active()->transcript; }
     static Transcript* Displayed(NativeChatSurface& surface) { return surface.transcript_; }
     static void Browse(NativeChatSurface& surface, size_t turn) { surface.BrowseTurn(turn); }
+    static void ScrollBy(NativeChatSurface& surface, int pixels) { surface.ScrollBy(pixels); }
     static void ScrollPastBottom(NativeChatSurface& surface) {
         surface.Scroll(0, surface.GetVirtualSize().y);
         surface.ScrollBy(surface.GetVirtualSize().y);
@@ -373,6 +374,14 @@ void CheckNativeHistoryActivity(spark::AppConfig config) {
     std::cout << "history stage: seeded recent window" << std::endl;
     Events();
     auto* surface = NativeGuiTestAccess::Surface(*frame);
+    auto* jump = wxWindow::FindWindowByName("spark.jump-latest", frame);
+    Check(jump && !jump->IsShown(), "the jump control is hidden at the live bottom");
+    NativeGuiTestAccess::ScrollBy(*surface, -100);
+    Events();
+    Check(jump && jump->IsShown(), "scrolling up from the live bottom reveals the jump control");
+    NativeGuiTestAccess::ScrollBy(*surface, 100);
+    Events();
+    Check(jump && !jump->IsShown(), "scrolling down to the live bottom hides the jump control");
     Check(NativeGuiTestAccess::Model(*frame).HistoryFirstMessage() == 24,
           "native first paint replays the newest eight turns");
     NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Phase);
@@ -402,11 +411,13 @@ void CheckNativeHistoryActivity(spark::AppConfig config) {
           "scrolling back down reaches the live transcript");
     Check(NativeGuiTestAccess::Activity(*surface).Contains("still receiving live deltas"),
           "live deltas received during the older-page replay stay visible on return");
+    NativeGuiTestAccess::ScrollBy(*surface, surface->GetVirtualSize().y);
+    Events();
+    Check(jump && !jump->IsShown(), "the jump control stays hidden while following live output");
 
     NativeGuiTestAccess::Browse(*surface, 0);
     surface->Tick();
     Events();
-    auto* jump = wxWindow::FindWindowByName("spark.jump-latest", frame);
     Check(jump && jump->IsShown() && jump->IsEnabled(), "the jump control is available from an older page");
     if (jump) {
         wxCommandEvent click(wxEVT_BUTTON, jump->GetId());
@@ -416,6 +427,7 @@ void CheckNativeHistoryActivity(spark::AppConfig config) {
         Check(NativeGuiTestAccess::Displayed(*surface) == &NativeGuiTestAccess::Model(*frame) &&
                   NativeGuiTestAccess::Activity(*surface).Contains("still receiving live deltas"),
               "the jump control restores the latest transcript and ongoing output");
+        Check(!jump->IsShown(), "clicking the jump control hides it at the live bottom");
     }
 
     NativeGuiTestAccess::Event(*frame, NativeEvent::Kind::Phase);

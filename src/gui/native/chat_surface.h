@@ -35,6 +35,7 @@ public:
     std::function<void(size_t)> edit;
     std::function<void(const std::string&)> open_image;
     std::function<void()> load_earlier;
+    std::function<void(bool)> update_jump_visibility;
 
 private:
     friend struct NativeGuiTestAccess;

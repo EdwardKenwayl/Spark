@@ -34,6 +34,7 @@ public:
     void SetActions(Action toggle_tool, Action copy_item, Action edit_item);
     void SetGroupAction(Action toggle_group);
     void SetHistoryAction(std::function<void()> load_earlier);
+    void SetJumpVisibilityAction(std::function<void(bool)> action);
     void SetEarlierHistory(bool available);
     void PreserveHistoryAnchor(const std::string& text, uint64_t timestamp);
     void EnableHistory(HistoryBrowser::Source source);
@@ -165,6 +166,7 @@ private:
     Action copy_item_;
     Action edit_item_;
     std::function<void()> load_earlier_;
+    std::function<void(bool)> update_jump_visibility_;
     bool earlier_history_ = false;
     std::unique_ptr<HistoryBrowser> history_browser_;
     std::unique_ptr<ChatView> history_view_;

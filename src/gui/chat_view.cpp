@@ -1626,6 +1626,10 @@ void ChatView::SetActions(Action toggle_tool, Action copy_item, Action edit_item
 
 void ChatView::SetGroupAction(Action toggle_group) { toggle_group_ = std::move(toggle_group); }
 
+void ChatView::SetJumpVisibilityAction(std::function<void(bool)> action) {
+    update_jump_visibility_ = std::move(action);
+}
+
 void ChatView::SetHistoryAction(std::function<void()> load_earlier) {
     load_earlier_ = std::move(load_earlier);
 }
@@ -1704,6 +1708,7 @@ void ChatView::OpenHistoryTurn(size_t turn) {
                  SWP_SHOWWINDOW | SWP_NOACTIVATE);
     if (GetFocus() == window_) SetFocus(history_view_->window_);
     SetTimer(window_, kHistoryReplayTimer, 10, nullptr);
+    if (update_jump_visibility_) update_jump_visibility_(true);
 }
 
 void ChatView::LoadHistoryPage() {
@@ -3259,7 +3264,16 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             }
 
             BitBlt(target, 0, 0, client.right, client.bottom, buffer, 0, 0, SRCCOPY);
-            if (!printing) EndPaint(window_, &paint);
+            if (!printing) {
+                EndPaint(window_, &paint);
+                if (update_jump_visibility_) {
+                    const bool browsing = history_browser_ && history_browser_->page.end_turn != 0;
+                    const int content_bottom = content_height_ + Scale(kContentBottomPadding) +
+                        (activity_visible_ ? Scale(30) : 0);
+                    const bool above_bottom = !items_.empty() && scroll_y_ < content_bottom - client.bottom;
+                    update_jump_visibility_(browsing || above_bottom);
+                }
+            }
             return 0;
         }
         case WM_MOUSEMOVE: {

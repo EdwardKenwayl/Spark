@@ -881,6 +881,12 @@ void NativeChatSurface::Paint(wxPaintEvent&) {
     dc.SetBackground(wxBrush(dark_ ? wxColour(28, 29, 31) : wxColour(250, 250, 250)));
     dc.Clear();
     if (dirty_ || layout_width_ != GetClientSize().x) Reflow(dc);
+    if (update_jump_visibility) {
+        const bool browsing = history_browser_ && history_browser_->page.end_turn != 0;
+        const bool above_bottom = !loading_ && transcript_ && transcript_->Count() &&
+            GetViewStart().y < GetVirtualSize().y - GetClientSize().y;
+        update_jump_visibility(browsing || above_bottom);
+    }
     if (loading_) {
         if (MonotonicMillis() - loading_ < 150) return;
         const int cx = GetClientSize().x / 2, cy = GetClientSize().y / 2;

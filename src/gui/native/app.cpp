@@ -163,8 +163,15 @@ void NativeFrame::CreateChat() {
     jump_->SetName("spark.jump-latest");
     jump_->SetMinSize(FromDIP(wxSize(28, 28)));
     tooltips_.push_back({jump_, L"Jump to latest"});
-    jump_->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { chat_->ScrollToLatest(); });
-    chat_sizer_->Add(jump_, 0, wxALIGN_CENTER_HORIZONTAL | wxBOTTOM, FromDIP(4));
+    jump_->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        chat_->ScrollToLatest();
+        chat_->SetFocus();
+    });
+    chat_sizer_->Add(jump_, 0, wxALIGN_CENTER_HORIZONTAL | wxBOTTOM | wxRESERVE_SPACE_EVEN_IF_HIDDEN, FromDIP(4));
+    jump_->Hide();
+    chat_->update_jump_visibility = [this](bool visible) {
+        jump_->Show(visible && loading_path_.empty());
+    };
     composer_host_ = new wxPanel(chat_page_);
     auto* centered = new wxBoxSizer(wxHORIZONTAL);
     centered->AddStretchSpacer();
@@ -318,7 +325,7 @@ void NativeFrame::Error(const std::string& message) { wxMessageBox(U(message), "
 void NativeFrame::UpdateControls() {
     const bool running = runtime_.Running(active_) || external_.count(active_) != 0;
     jump_->SetArt(running ? wxArtID("spark.jump-busy") : wxArtID("spark.jump-latest"));
-    jump_->Enable(loading_path_.empty());
+    if (!loading_path_.empty()) jump_->Hide();
     const auto remote = external_.find(active_);
     if (remote != external_.end()) {
         const auto mode = remote->second.value("permission_mode", std::string("ask"));
