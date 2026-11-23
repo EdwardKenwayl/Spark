@@ -772,9 +772,12 @@ public:
             return model_id == name || model_id.rfind(name + "-", 0) == 0 ||
                    model_id.rfind(name + ".", 0) == 0;
         };
-        // GPT-6.2 does not cache the top-level instructions field. Put the stable
-        // developer message first, as Codex does, without changing other relays.
+        // Keep the full GPT-6.2 instructions in the cacheable input. Some
+        // Responses gateways add a large default prompt if instructions is absent.
         const bool instructions_in_input = model_id == "gpt-6.2" || model_id.rfind("gpt-6.2-", 0) == 0;
+        if (instructions_in_input) {
+            payload["instructions"] = "Follow the developer instructions in the input.";
+        }
         if (request.model->capabilities.reasoning) {
             if (!request.reasoning_effort.empty()) payload["reasoning"]["effort"] = request.reasoning_effort;
             // Provider names are user-defined, and other Responses implementations

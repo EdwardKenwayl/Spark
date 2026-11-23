@@ -175,9 +175,10 @@ void ResponsesToolFollowUp(const std::string& model_id, bool cached_instructions
     if (cached_instructions) {
         const Json prefix = {{"type", "message"}, {"role", "developer"},
             {"content", Json::array({{{"type", "input_text"}, {"text", "Stable project instructions"}}})}};
-        Check(!initial.contains("instructions") && !payload.contains("instructions") &&
+        Check(initial.value("instructions", "") == "Follow the developer instructions in the input." &&
+              payload["instructions"] == initial["instructions"] &&
               initial["input"].size() == 2 && initial["input"][0] == prefix,
-              "GPT-6.2 starts its cacheable input with stable developer instructions");
+              "GPT-6.2 sends a short stable instruction and keeps full project rules in cacheable input");
     } else {
         Check(initial.value("instructions", "") == "Stable project instructions" &&
               payload.value("instructions", "") == "Stable project instructions" && initial["input"].size() == 1,
