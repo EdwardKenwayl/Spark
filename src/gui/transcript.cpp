@@ -225,6 +225,7 @@ size_t Transcript::Apply(const TranscriptEvent& event, TranscriptTime now) {
             if (item.kind == ChatItemKind::Tool) {
                 item.success = value.success;
                 item.result = SanitizeDisplayText(value.result);
+                item.image_paths = value.image_paths;
                 item.elapsed_ms = value.elapsed_ms > 0 ? value.elapsed_ms :
                     (item.start_tick_ms == 0 || now.tick_ms < item.start_tick_ms ? 0 : now.tick_ms - item.start_tick_ms);
             }
@@ -520,6 +521,7 @@ bool Transcript::ReplayStep(uint64_t generation, size_t max_messages) {
             }
             replay.turn_tools[message.tool_call_id] = index;
             item.result = message.content;
+            item.image_paths = message.image_paths;
             const auto& durations = Metadata(replay.state, "tool_durations_ms");
             if (durations.is_object() && durations.contains(message.tool_call_id))
                 item.elapsed_ms = Number(durations[message.tool_call_id]);
@@ -553,6 +555,11 @@ bool Transcript::ReplayStep(uint64_t generation, size_t max_messages) {
                 if (!item.finished) {
                     ChatItem completion;
                     completion.result = tool.value("output", std::string{});
+                    const auto images = tool.find("image_paths");
+                    if (images != tool.end() && images->is_array()) {
+                        for (const auto& path : *images)
+                            if (path.is_string()) completion.image_paths.push_back(path.get<std::string>());
+                    }
                     Apply({TranscriptEventKind::Finish, index, completion}, replay.now);
                 }
                 item.success = tool.value("success", false);

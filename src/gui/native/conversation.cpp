@@ -229,6 +229,7 @@ void NativeFrame::Consume(const NativeEvent& event) {
         const auto item = view.tools.find(event.first);
         if (item != view.tools.end()) {
             ChatItem result; result.success = event.success; result.result = event.third;
+            result.image_paths = event.image_paths;
             view.transcript.Apply({TranscriptEventKind::Finish, item->second, result}, Now());
             view.tools.erase(item);
         }

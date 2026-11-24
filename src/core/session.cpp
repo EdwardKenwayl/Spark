@@ -273,6 +273,8 @@ void RecordLiveToolFinish(SessionState& state, const nlohmann::json& payload) {
         item["success"] = payload.value("success", false);
         item["output"] = payload.value("output", std::string{});
         item["elapsed_ms"] = payload.value("elapsed_ms", uint64_t{0});
+        const auto images = payload.find("image_paths");
+        if (images != payload.end() && images->is_array()) item["image_paths"] = *images;
         return;
     }
 }

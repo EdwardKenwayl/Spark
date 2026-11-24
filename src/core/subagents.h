@@ -50,6 +50,7 @@ struct SubAgentInfo {
 struct ToolResult {
     bool ok = false;
     std::string output;
+    std::vector<std::string> image_paths;
 };
 
 struct TokenUsage {

@@ -794,7 +794,9 @@ void TestParallelToolCallIDs() {
         starts.emplace_back(call_id, name);
     };
     callbacks.on_tool_finish = [&](const std::string& call_id, const std::string& name, bool,
-                                   const std::string&) { finishes.emplace_back(call_id, name); };
+                                   const std::string&, const std::vector<std::string>&) {
+        finishes.emplace_back(call_id, name);
+    };
     spark::Agent agent(config, &journal, nullptr);
     const auto result = agent.RunTurn("read both files", [](const spark::ApprovalRequest&) { return true; }, callbacks,
                                       nullptr);

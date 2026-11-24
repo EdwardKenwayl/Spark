@@ -465,8 +465,8 @@ Result<void> ExternalAgentManager::StartTask(const std::shared_ptr<Run>& run, co
             run->info.active_tool_name = name;
             run->info.active_tool_arguments = arguments;
         };
-        callbacks.on_tool_finish = [run](const std::string& call_id, const std::string& name,
-                                         bool success, const std::string& output) {
+        callbacks.on_tool_finish = [run](const std::string&, const std::string&, bool success,
+                                         const std::string&, const std::vector<std::string>&) {
             std::lock_guard<std::mutex> lock(run->mutex);
             run->info.active_tool_name.clear();
             run->info.active_tool_arguments.clear();

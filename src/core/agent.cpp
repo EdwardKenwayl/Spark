@@ -817,7 +817,8 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
             std::string output = JsonResultText(executed.value);
             if (config_.storage.redact_secrets) output = RedactSecrets(output, CollectConfiguredSecrets(config_));
             if (callbacks.on_tool_finish) {
-                callbacks.on_tool_finish(call.id, call.name, executed.value.ok, ShortText(output, 8000));
+                callbacks.on_tool_finish(call.id, call.name, executed.value.ok, ShortText(output, 8000),
+                                         executed.value.image_paths);
             }
             ChatMessage tool_message;
             tool_message.role = MessageRole::Tool;

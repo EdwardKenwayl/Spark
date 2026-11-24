@@ -46,6 +46,44 @@ void TestEditedImageReplay(const fs::path& root) {
           "edited images remain structured and visible after journal reload and transcript replay");
 }
 
+void TestToolImageReplay(const fs::path& root) {
+    const std::vector<std::string> paths{PathToUtf8(root / "one.png"), PathToUtf8(root / "two.jpg")};
+    SessionJournal journal;
+    Check(journal.Open(PathToUtf8(root), PathToUtf8(root)).ok, "tool image journal opens");
+    ChatMessage user;
+    user.role = MessageRole::User;
+    user.content = "Inspect the images";
+    ChatMessage call;
+    call.role = MessageRole::Assistant;
+    call.tool_calls = {{"saved-image", "view_image", "{}"}};
+    ChatMessage result;
+    result.role = MessageRole::Tool;
+    result.name = "view_image";
+    result.tool_call_id = "saved-image";
+    result.content = "Images ready";
+    result.image_paths = paths;
+    journal.MutableState().messages = {user, call, result};
+    journal.SaveSnapshot();
+    journal.Append("turn.tool_start", {{"tool_call_id", "live-image"}, {"name", "view_image"}});
+    journal.Append("turn.tool_finish", {{"tool_call_id", "live-image"}, {"output", "Images ready"},
+                                        {"success", true}, {"image_paths", paths}});
+    SessionJournal restored;
+    Check(restored.Resume(journal.Path()).ok, "tool image journal reloads");
+    Transcript model;
+    const auto replay = model.BeginReplay(restored.State(), {123, 1000});
+    while (!model.ReplayStep(replay)) {}
+    size_t found = 0;
+    for (const auto& item : model.Items()) {
+        if (item.kind != ChatItemKind::Tool) continue;
+        if (item.call_id == "saved-image" || item.call_id == "live-image") {
+            ++found;
+            Check(item.finished && item.success && item.image_paths == paths,
+                  "saved and live-journal tool completions retain all image paths");
+        }
+    }
+    Check(found == 2, "each tool image result stays on its own tool row");
+}
+
 void TestEventsAndTimers() {
     Transcript transcript;
     Add(transcript, ChatItemKind::User, "question");
@@ -986,6 +1024,7 @@ int main() {
     try {
         TestEventsAndTimers();
         TestEditedImageReplay(root);
+        TestToolImageReplay(root);
         TestCompactionActivity();
         TestReconnectActivity();
         TestResumeReplay(root);

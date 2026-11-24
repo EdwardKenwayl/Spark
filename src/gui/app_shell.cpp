@@ -1917,6 +1917,7 @@ void AppWindow::ApplyConfiguration(AppConfig config) {
             event->second = call.name;
             event->third = result.output;
             event->success = result.ok;
+            event->image_paths = result.image_paths;
             if (!PostMessageW(window_, kUiEventMessage, 0, reinterpret_cast<LPARAM>(event))) delete event;
         };
         callbacks.on_finished = [post_subagent_event](const SubAgentInfo& info, bool success,
@@ -3761,7 +3762,8 @@ void AppWindow::StartTurn() {
     runtime->worker = std::thread([this, runtime, turn_text, turn_image_paths] {
         const auto post_event = [this, runtime](EventKind kind, std::string first = {}, std::string second = {},
                                        std::string third = {}, bool success = false,
-                                       AgentPhase phase = AgentPhase::WaitingModel) {
+                                       AgentPhase phase = AgentPhase::WaitingModel,
+                                       std::vector<std::string> image_paths = {}) {
             runtime->last_progress_tick.store(spark::MonotonicMillis());
             auto* event = new UiEvent;
             event->kind = kind;
@@ -3771,6 +3773,7 @@ void AppWindow::StartTurn() {
             event->third = std::move(third);
             event->success = success;
             event->phase = phase;
+            event->image_paths = std::move(image_paths);
             if (!PostMessageW(window_, kUiEventMessage, 0, reinterpret_cast<LPARAM>(event))) delete event;
         };
         std::string pending_text;
@@ -3841,10 +3844,10 @@ void AppWindow::StartTurn() {
                 post_event(EventKind::ToolStart, call_id, name, arguments);
             };
             callbacks.on_tool_finish = [&](const std::string& call_id, const std::string& name, bool success,
-                                           const std::string& output) {
+                                           const std::string& output, const std::vector<std::string>& image_paths) {
                 flush_reasoning();
                 flush_text();
-                post_event(EventKind::ToolFinish, call_id, name, output, success);
+                post_event(EventKind::ToolFinish, call_id, name, output, success, AgentPhase::RunningTool, image_paths);
             };
             callbacks.on_model_usage = [runtime](int input_tokens, int output_tokens, int cached_input_tokens) {
                 const uint64_t input = static_cast<uint64_t>(std::max(0, input_tokens));
@@ -4275,7 +4278,7 @@ void AppWindow::HandleUiEvent(UiEvent* event) {
             if (entry >= chat_view_->Count()) {
                 entry = chat_view_->AddTool(event->second.empty() ? "tool" : event->second, "{}");
             }
-            chat_view_->FinishTool(entry, event->success, event->third);
+            chat_view_->FinishTool(entry, event->success, event->third, 0, 0, event->image_paths);
             break;
         }
         case EventKind::TurnFinished:
@@ -5041,12 +5044,12 @@ void AppWindow::ReloadSessionIntoView() {
                 const auto pending = pending_tools.find(message.tool_call_id);
                 if (pending != pending_tools.end()) {
                     chat_view_->FinishTool(pending->second, true, message.content, message.timestamp,
-                                           tool_elapsed_ms(message.tool_call_id));
+                                           tool_elapsed_ms(message.tool_call_id), message.image_paths);
                     pending_tools.erase(pending);
                 } else {
                     const size_t index = chat_view_->AddTool(message.name, "{}", message.timestamp);
                     chat_view_->FinishTool(index, true, message.content, message.timestamp,
-                                           tool_elapsed_ms(message.tool_call_id));
+                                           tool_elapsed_ms(message.tool_call_id), message.image_paths);
                 }
             }
         }

@@ -573,6 +573,20 @@ void NativeChatSurface::Reflow(wxDC& dc) {
             const int before = top;
             const bool status = item.kind == ChatItemKind::TurnStatus;
             const bool tool = item.kind == ChatItemKind::Tool;
+            const auto layout_images = [&](int x, int available, bool right_align) {
+                if (item.image_paths.empty()) return;
+                const int tile_width = std::min(std::max(1, available), FromDIP(144));
+                const int tile_height = FromDIP(108), gap = FromDIP(8);
+                const size_t columns = std::max(1, (available + gap) / (tile_width + gap));
+                for (size_t start = 0; start < item.image_paths.size(); start += columns) {
+                    const size_t count = std::min(columns, item.image_paths.size() - start);
+                    const int image_left = right_align ? x + available - static_cast<int>(count) * (tile_width + gap) + gap : x;
+                    for (size_t image = 0; image < count; ++image)
+                        row.images.emplace_back(image_left + static_cast<int>(image) * (tile_width + gap),
+                                                top, tile_width, tile_height);
+                    top += tile_height + gap;
+                }
+            };
             row.user = item.kind == ChatItemKind::User;
             if (row.user && item.timeline_separator && item.timestamp) {
                 row.timeline = wxString(FormatTimelineTime(item.timestamp));
@@ -641,6 +655,10 @@ void NativeChatSurface::Reflow(wxDC& dc) {
                             top + std::max(0, (FromDIP(28) - dc.GetTextExtent(duration).y) / 2)},
                             time_, dark_ ? wxColour(112, 115, 122) : wxColour(135, 138, 144)});
                         top += FromDIP(28);
+                        if (!item.image_paths.empty()) {
+                            top += FromDIP(3);
+                            layout_images(row.header.x + FromDIP(12), row.header.width - FromDIP(24), false);
+                        }
                         if (item.expanded) {
                             top += FromDIP(3);
                             const auto start = row.fragments.size();
@@ -673,18 +691,7 @@ void NativeChatSurface::Reflow(wxDC& dc) {
                 row.message = wxRect(left, top, width, height);
                 top += height + FromDIP(6);
             } else {
-                if (row.user && !item.image_paths.empty()) {
-                    const int tile_width = std::min(width, FromDIP(144)), tile_height = FromDIP(108), gap = FromDIP(8);
-                    const size_t columns = std::max(1, (width + gap) / (tile_width + gap));
-                    for (size_t start = 0; start < item.image_paths.size(); start += columns) {
-                        const size_t count = std::min(columns, item.image_paths.size() - start);
-                        const int image_left = left + width - static_cast<int>(count) * (tile_width + gap) + gap;
-                        for (size_t image = 0; image < count; ++image)
-                            row.images.emplace_back(image_left + static_cast<int>(image) * (tile_width + gap),
-                                                    top, tile_width, tile_height);
-                        top += tile_height + gap;
-                    }
-                }
+                if (row.user) layout_images(left, width, true);
                 const auto display_text = row.user ? ui::UserMessageText(item.text) : std::string{};
                 const int message_top = top;
                 int message_width = width;
@@ -974,9 +981,9 @@ void NativeChatSurface::Paint(wxPaintEvent&) {
         if (!row.bounds.Intersects(viewport)) continue;
         const auto* item = transcript_ ? transcript_->Item(row.item) : nullptr;
         if (!item) continue;
-        if (row.user) {
-            dc.SetFont(time_); dc.SetTextForeground(Muted());
-            if (!row.separator.IsEmpty()) dc.DrawLabel(row.timeline, row.separator, wxALIGN_CENTER);
+        if (!row.images.empty()) {
+            dc.SetFont(time_);
+            dc.SetTextForeground(Muted());
             for (size_t image = 0; image < row.images.size() && image < item->image_paths.size(); ++image) {
                 const auto& bounds = row.images[image];
                 if (!bounds.Intersects(viewport)) continue;
@@ -987,8 +994,16 @@ void NativeChatSurface::Paint(wxPaintEvent&) {
                 if (bitmap.IsOk())
                     dc.DrawBitmap(bitmap, bounds.x + (bounds.width - bitmap.GetWidth()) / 2,
                                   bounds.y + (bounds.height - bitmap.GetHeight()) / 2, true);
-                else dc.DrawLabel("...", bounds, wxALIGN_CENTER);
+                else {
+                    const auto label = U(PathToUtf8(NativePath(item->image_paths[image]).filename()));
+                    dc.DrawLabel(wxControl::Ellipsize(label, dc, wxELLIPSIZE_END,
+                        std::max(1, bounds.width - FromDIP(8))), bounds, wxALIGN_CENTER);
+                }
             }
+        }
+        if (row.user) {
+            dc.SetFont(time_); dc.SetTextForeground(Muted());
+            if (!row.separator.IsEmpty()) dc.DrawLabel(row.timeline, row.separator, wxALIGN_CENTER);
             dc.SetBrush(wxBrush(dark_ ? wxColour(52, 53, 57) : wxColour(232, 233, 235)));
             dc.SetPen(*wxTRANSPARENT_PEN);
             dc.DrawRoundedRectangle(row.bubble, FromDIP(12));
@@ -1138,8 +1153,10 @@ void NativeChatSurface::Click(wxMouseEvent& event) {
         case Action::Earlier: return;
         case Action::Image: {
             const auto* item = transcript_->Item(hit.item);
-            if (hit.image < item->image_paths.size()) {
+            if (item && hit.image < item->image_paths.size()) {
                 const auto path = item->image_paths[hit.image];
+                std::error_code error;
+                if (!spark::fs::is_regular_file(NativePath(path), error)) return;
                 if (open_image) open_image(path);
                 else wxLaunchDefaultApplication(U(path));
             }

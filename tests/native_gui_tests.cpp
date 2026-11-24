@@ -121,6 +121,11 @@ struct NativeGuiTestAccess {
             row.images.back().GetBottom() < row.bubble.y &&
             row.bubble.y <= row.fragments.front().origin.y;
     }
+    static bool ToolImagesFit(const NativeChatSurface& surface, size_t index) {
+        const auto& row = surface.row_cache_.at(index);
+        return row.images.size() == 2 && row.images.front().y > row.header.GetBottom() &&
+            row.images.back().GetBottom() <= row.bounds.GetBottom();
+    }
     static bool TimelineRow(const NativeChatSurface& surface, size_t index, uint64_t timestamp) {
         const auto& row = surface.row_cache_.at(index);
         return !row.separator.IsEmpty() && row.timeline == wxString(FormatTimelineTime(timestamp)) &&
@@ -563,6 +568,35 @@ void CheckNativeChatTimeline(const spark::fs::path& temporary) {
           "scrolling back reuses the decoded thumbnail without a placeholder or second decode");
     surface->SetTranscript(nullptr);
     Check(NativeGuiTestAccess::RequestedImages(*surface).empty(), "changing conversations invalidates queued thumbnails");
+    Transcript tool_transcript;
+    ChatItem tool;
+    tool.kind = ChatItemKind::Tool;
+    tool.tool_name = "view_image";
+    const auto tool_index = tool_transcript.Apply({TranscriptEventKind::Add, kNoChatItem, tool}, {timestamp, 1});
+    const auto missing_picture = PathToUtf8(temporary / "missing-image.png");
+    ChatItem result;
+    result.image_paths = {picture, missing_picture};
+    tool_transcript.Apply({TranscriptEventKind::Finish, tool_index, result}, {timestamp, 2});
+    const auto next_tool = tool_transcript.Apply({TranscriptEventKind::Add, kNoChatItem, tool}, {timestamp, 3});
+    tool_transcript.Apply({TranscriptEventKind::Finish, next_tool, {}}, {timestamp, 4});
+    surface->SetTranscript(&tool_transcript, true); Events();
+    Check(NativeGuiTestAccess::RequestedImages(*surface).empty(), "collapsed tool groups do not request image previews");
+    tool_transcript.ToggleToolGroup(tool_index);
+    surface->SetTranscript(&tool_transcript, true); Events();
+    Check(NativeGuiTestAccess::ToolImagesFit(*surface, tool_index) &&
+          NativeGuiTestAccess::RequestedImages(*surface) == std::set<std::string>{picture, missing_picture},
+          "expanded tool result fits both image tiles below the tool header");
+    for (int attempt = 0; attempt < 50 && !NativeGuiTestAccess::PreviewReady(*surface, picture); ++attempt) {
+        surface->Tick(); wxMilliSleep(10);
+    }
+    Check(NativeGuiTestAccess::PreviewReady(*surface, picture), "tool thumbnail decodes asynchronously");
+    opened.clear();
+    NativeGuiTestAccess::ClickImage(*surface, tool_index, 0);
+    Check(opened == picture, "tool image opens the original path");
+    opened.clear();
+    NativeGuiTestAccess::ClickImage(*surface, tool_index, 1);
+    Check(opened.empty(), "missing tool image cannot open another file");
+    surface->SetTranscript(nullptr);
     host->Destroy(); Events();
 }
 void CheckSummaryHistory() {

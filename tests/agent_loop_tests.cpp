@@ -227,7 +227,7 @@ void TestCompactionReplayAndContinue() {
     replaying.store(true);
     size_t tools = 0;
     AgentCallbacks callbacks;
-    callbacks.on_tool_finish = [&](const auto&, const auto&, bool ok, const auto&) {
+    callbacks.on_tool_finish = [&](const auto&, const auto&, bool ok, const auto&, const auto&) {
         Check(ok, "tool after journal-only restore succeeds"); ++tools;
     };
     const auto result = resumed.RunTurn("Continue.", approve, callbacks, nullptr);
@@ -309,7 +309,7 @@ void TestResponsesContinuation(bool streaming, int end_turn) {
     std::string visible;
     AgentCallbacks callbacks;
     callbacks.on_text_delta = [&](const std::string& delta) { visible += delta; };
-    callbacks.on_tool_finish = [&](const auto&, const auto&, bool ok, const auto&) {
+    callbacks.on_tool_finish = [&](const auto&, const auto&, bool ok, const auto&, const auto&) {
         Check(ok, "continuation tool succeeds"); ++tools;
     };
     callbacks.on_turn_finished = [&] { ++finished; };
@@ -416,7 +416,7 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
     int interrupted = 0;
     std::vector<std::string> reconnects;
     AgentCallbacks callbacks;
-    callbacks.on_tool_finish = [&](const std::string&, const std::string&, bool ok, const std::string&) {
+    callbacks.on_tool_finish = [&](const auto&, const auto&, bool ok, const auto&, const auto&) {
         Check(ok, "tool succeeds");
         if (++tools == tool_rounds && ending == Ending::Cancel) cancellation.Cancel();
     };

@@ -17,6 +17,7 @@ struct NativeEvent {
     uint64_t first_number = 0, second_number = 0;
     AgentPhase phase = AgentPhase::WaitingModel;
     SubAgentInfo child;
+    std::vector<std::string> image_paths;
 };
 
 // UI thread consumes events; workers own journals and never touch widgets.

@@ -86,7 +86,8 @@ Result<void> NativeRuntime::Start(const AppConfig& config, const SessionJournal&
     run->worker = std::thread([this, run, path, text, images, options, resume] {
         uint64_t input = 0, output = 0, cached = 0, calls = 0, context = 0, limit = 0;
         const auto event = [&](NativeEvent::Kind kind, std::string first = {}, std::string second = {},
-                                std::string third = {}, bool success = false) {
+                                std::string third = {}, bool success = false,
+                                std::vector<std::string> image_paths = {}) {
             NativeEvent item;
             item.path = path;
             item.kind = kind;
@@ -94,6 +95,7 @@ Result<void> NativeRuntime::Start(const AppConfig& config, const SessionJournal&
             item.second = std::move(second);
             item.third = std::move(third);
             item.success = success;
+            item.image_paths = std::move(image_paths);
             Emit(std::move(item));
         };
         const ApprovalCallback approve = [this, run, path](const ApprovalRequest& request) {
@@ -139,8 +141,8 @@ Result<void> NativeRuntime::Start(const AppConfig& config, const SessionJournal&
                 event(NativeEvent::Kind::ToolStart, id, name, arguments);
             };
             callbacks.on_tool_finish = [&](const std::string& id, const std::string& name, bool success,
-                                            const std::string& result) {
-                event(NativeEvent::Kind::ToolFinish, id, name, result, success);
+                                            const std::string& result, const std::vector<std::string>& image_paths) {
+                event(NativeEvent::Kind::ToolFinish, id, name, result, success, image_paths);
             };
             callbacks.on_phase = [&](AgentPhase phase, const std::string& detail) {
                 NativeEvent item;

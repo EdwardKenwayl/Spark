@@ -44,13 +44,15 @@ LiveTurn::LiveTurn(SessionJournal* journal, AgentCallbacks& callbacks, bool resu
     };
     const auto finish = callbacks.on_tool_finish;
     callbacks.on_tool_finish = [this, finish](const std::string& id, const std::string& name, bool ok,
-                                             const std::string& output) {
+                                             const std::string& output, const std::vector<std::string>& image_paths) {
         Flush();
         const auto found = tools_.find(id);
-        journal_->Append("turn.tool_finish", {{"tool_call_id", id}, {"success", ok}, {"output", output},
-            {"elapsed_ms", found == tools_.end() ? 0 : MonotonicMillis() - found->second}});
+        nlohmann::json payload = {{"tool_call_id", id}, {"success", ok}, {"output", output},
+            {"elapsed_ms", found == tools_.end() ? 0 : MonotonicMillis() - found->second}};
+        if (!image_paths.empty()) payload["image_paths"] = image_paths;
+        journal_->Append("turn.tool_finish", payload);
         tools_.erase(id);
-        if (finish) finish(id, name, ok, output);
+        if (finish) finish(id, name, ok, output, image_paths);
     };
 }
 void LiveTurn::Delta(const char* field, const std::string& text) {

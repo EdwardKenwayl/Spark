@@ -326,14 +326,16 @@ Result<std::string> SubAgentManager::Spawn(const AppConfig& config, McpManager* 
                     if (callbacks_.on_tool_started) callbacks_.on_tool_started(Snapshot(run), call);
                 };
                 callbacks.on_tool_finish = [this, run, &active_calls](const std::string& id, const std::string& name,
-                                                                     bool ok, const std::string& output) {
+                                                                     bool ok, const std::string& output,
+                                                                     const std::vector<std::string>& image_paths) {
                     ToolCall call{id, name, {}};
                     const auto found = active_calls.find(id);
                     if (found != active_calls.end()) {
                         call.arguments_json = std::move(found->second.arguments_json);
                         active_calls.erase(found);
                     }
-                    if (callbacks_.on_tool_finished) callbacks_.on_tool_finished(Snapshot(run), call, {ok, output});
+                    if (callbacks_.on_tool_finished)
+                        callbacks_.on_tool_finished(Snapshot(run), call, {ok, output, image_paths});
                 };
                 callbacks.on_model_usage = [this, run, &total_input, &total_output, &total_cached, &model_calls]
                                               (int input_tokens, int output_tokens, int cached_input_tokens) {

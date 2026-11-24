@@ -73,7 +73,7 @@ public:
     void FinishReasoning(size_t index, uint64_t timestamp = 0);
     void HideReasoning(size_t index);
     void FinishTool(size_t index, bool success, const std::string& result, uint64_t timestamp = 0,
-                    uint64_t elapsed_ms = 0);
+                    uint64_t elapsed_ms = 0, const std::vector<std::string>& image_paths = {});
     void ToggleTool(size_t index);
     void ToggleToolGroup(size_t index);
     void ToggleTurnStatus(size_t index);
@@ -99,6 +99,7 @@ private:
             ToolHeader,
             ToolGroup,
             Link,
+            Image,
             Copy,
             Edit,
             Rail,

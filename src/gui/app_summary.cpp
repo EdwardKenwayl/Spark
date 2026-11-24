@@ -325,7 +325,7 @@ void AppWindow::RefreshSubAgentChat() {
                 const size_t index = pending != side_tool_entries_.end()
                                          ? pending->second : side_chat_view_->AddTool(message.name, "{}", message.timestamp);
                 side_chat_view_->FinishTool(index, true, message.content, message.timestamp,
-                                           durations.value(message.tool_call_id, uint64_t{0}));
+                                           durations.value(message.tool_call_id, uint64_t{0}), message.image_paths);
                 side_tool_entries_.erase(message.tool_call_id);
             }
         }
@@ -440,7 +440,7 @@ bool AppWindow::HandleSubAgentEvent(UiEvent* event) {
             if (visible) {
                 const auto tool = side_tool_entries_.find(event->first);
                 if (tool != side_tool_entries_.end()) {
-                    side_chat_view_->FinishTool(tool->second, event->success, event->third);
+                    side_chat_view_->FinishTool(tool->second, event->success, event->third, 0, 0, event->image_paths);
                     side_tool_entries_.erase(tool);
                 }
             }

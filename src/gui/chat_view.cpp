@@ -1279,6 +1279,21 @@ ItemLayout LayoutItem(HDC device, const std::vector<ChatItem>& items, const std:
     const int content_right = content.right;
     const int content_width = content.width;
     const int max_text_width = std::max(120, content_width);
+    const auto layout_images = [&](int left, int width, int& y, bool right_align) {
+        if (item.image_paths.empty()) return;
+        const int tile_width = std::min(std::max(1, width), DpiScale(144));
+        const int tile_height = DpiScale(108), gap = DpiScale(8);
+        const size_t columns = std::max(1, (width + gap) / (tile_width + gap));
+        for (size_t start = 0; start < item.image_paths.size(); start += columns) {
+            const size_t count = std::min(columns, item.image_paths.size() - start);
+            const int row_left = right_align ? left + width - static_cast<int>(count) * (tile_width + gap) + gap : left;
+            for (size_t image = 0; image < count; ++image) {
+                const int x = row_left + static_cast<int>(image) * (tile_width + gap);
+                layout.images.push_back({RECT{x, y, x + tile_width, y + tile_height}, item.image_paths[start + image]});
+            }
+            y += tile_height + gap;
+        }
+    };
 
     if (item.kind == ChatItemKind::User) {
         if (item.timeline_separator) {
@@ -1286,20 +1301,7 @@ ItemLayout LayoutItem(HDC device, const std::vector<ChatItem>& items, const std:
             top += DpiScale(38);
         }
         const int bubble_max = std::max(180, std::min(max_text_width, static_cast<int>(content_width * 0.78)));
-        if (!item.image_paths.empty()) {
-            const int tile_width = std::min(bubble_max, DpiScale(144));
-            const int tile_height = DpiScale(108), gap = DpiScale(8);
-            const size_t columns = std::max(1, (bubble_max + gap) / (tile_width + gap));
-            for (size_t i = 0; i < item.image_paths.size(); ++i) {
-                const size_t row_start = i / columns * columns;
-                const int count = static_cast<int>(std::min(columns, item.image_paths.size() - row_start));
-                const int left = content_right - count * (tile_width + gap) + gap +
-                                 static_cast<int>(i % columns) * (tile_width + gap);
-                const int y = top + static_cast<int>(i / columns) * (tile_height + gap);
-                layout.images.push_back({RECT{left, y, left + tile_width, y + tile_height}, item.image_paths[i]});
-            }
-            top += static_cast<int>((item.image_paths.size() + columns - 1) / columns) * (tile_height + gap);
-        }
+        layout_images(content_right - bubble_max, bubble_max, top, true);
         const int text_width = std::max(80, bubble_max - kUserPaddingX * 2);
         const std::wstring text = Utf8ToWide(ui::UserMessageText(item.text));
         const int text_height = std::max(20, MeasureTextHeight(device, fonts.text, text, text_width));
@@ -1393,12 +1395,16 @@ ItemLayout LayoutItem(HDC device, const std::vector<ChatItem>& items, const std:
         const int indent = (group.leader || group.indented) ? 18 : 0;
         layout.tool_header = RECT{content_left + indent, cursor, content_left + width, cursor + kToolHeaderHeight};
         int bottom = layout.tool_header.bottom;
+        if (!item.image_paths.empty()) {
+            bottom += 3;
+            layout_images(content_left + indent + 12, width - indent - 24, bottom, false);
+        }
         if (item.expanded) {
             const std::wstring details = ToolDetails(item);
             const int details_width = std::max(120, width - indent - 28);
             const int details_height = std::max(24, MeasureTextHeight(device, fonts.mono, details, details_width));
-            layout.tool_body = RECT{content_left + indent + 12, layout.tool_header.bottom + 3, content_left + width - 12,
-                                    layout.tool_header.bottom + 3 + details_height};
+            layout.tool_body = RECT{content_left + indent + 12, bottom + 3, content_left + width - 12,
+                                    bottom + 3 + details_height};
             bottom = layout.tool_body.bottom + 8;
         }
         layout.message = RECT{content_left, top, content_left + width, bottom};
@@ -2192,10 +2198,11 @@ void ChatView::HideUnfinishedAssistant(size_t index) {
 }
 
 void ChatView::FinishTool(size_t index, bool success, const std::string& result, uint64_t timestamp,
-                          uint64_t elapsed_ms) {
+                          uint64_t elapsed_ms, const std::vector<std::string>& image_paths) {
     if (index >= items_.size() || items_[index].kind != ChatItemKind::Tool) return;
     items_[index].success = success;
     items_[index].result = SanitizeDisplayText(result);
+    items_[index].image_paths = image_paths;
     items_[index].finished = true;
     items_[index].elapsed_ms =
         elapsed_ms > 0 ? elapsed_ms
@@ -2714,6 +2721,14 @@ std::vector<ChatView::HitArea> ChatView::CalculateHitAreas(HDC device) {
                     areas.push_back(std::move(area));
                 }
             }
+            for (const auto& image : layout.images) {
+                HitArea area;
+                area.type = HitArea::Type::Image;
+                area.item = index;
+                area.rect = image.first;
+                area.destination = Utf8ToWide(image.second);
+                areas.push_back(std::move(area));
+            }
             if (items_[index].kind == ChatItemKind::TurnStatus) {
                 areas.push_back(HitArea{HitArea::Type::TurnStatus, index, layout.message});
             } else if (items_[index].kind == ChatItemKind::Tool) {
@@ -2726,14 +2741,6 @@ std::vector<ChatView::HitArea> ChatView::CalculateHitAreas(HDC device) {
                 }
                 areas.push_back(HitArea{HitArea::Type::ToolHeader, index, layout.tool_header});
             } else if (items_[index].kind == ChatItemKind::User) {
-                for (const auto& image : layout.images) {
-                    HitArea area;
-                    area.type = HitArea::Type::Link;
-                    area.item = index;
-                    area.rect = image.first;
-                    area.destination = Utf8ToWide(image.second);
-                    areas.push_back(std::move(area));
-                }
                 areas.push_back(HitArea{HitArea::Type::Copy, index, layout.copy});
                 if (index == last_user) areas.push_back(HitArea{HitArea::Type::Edit, index, layout.edit});
             } else if (items_[index].kind == ChatItemKind::Assistant && IsCopyableAssistant(items_, index)) {
@@ -3054,6 +3061,13 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                 const ItemLayout layout = LayoutItem(buffer, items_, groups, streaming_markdown_, index, last_user, y,
                                                      client.right - client.left, fonts, time_font_, known_text_height);
 
+                for (const auto& image : layout.images) {
+                    if (image.first.bottom < 0 || image.first.top > client.bottom) continue;
+                    DrawRoundPanel(buffer, image.first, kUserBubble, kUserBubble, 8);
+                    image_cache_.Paint(buffer, image.first, image.second);
+                }
+                if (!layout.images.empty() && image_cache_.Pending() && !image_timer_armed_)
+                    image_timer_armed_ = SetTimer(window_, kImageRenderTimer, 40, nullptr) != 0;
                 if (item.kind == ChatItemKind::User) {
                     if (!IsRectEmpty(&layout.timeline)) {
                         auto font = SelectObject(buffer, time_font_);
@@ -3063,13 +3077,6 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                         DrawTextW(buffer, label.c_str(), -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
                         SelectObject(buffer, font);
                     }
-                    for (const auto& image : layout.images) {
-                        if (image.first.bottom < 0 || image.first.top > client.bottom) continue;
-                        DrawRoundPanel(buffer, image.first, kUserBubble, kUserBubble, 8);
-                        image_cache_.Paint(buffer, image.first, image.second);
-                    }
-                    if (image_cache_.Pending() && !image_timer_armed_)
-                        image_timer_armed_ = SetTimer(window_, kImageRenderTimer, 40, nullptr) != 0;
                     DrawRoundPanel(buffer, layout.bubble, kUserBubble, kUserBubble, 12);
                     DrawWrappedText(buffer, text_font_, Utf8ToWide(ui::UserMessageText(item.text)), layout.text, kText);
                 } else if (item.kind == ChatItemKind::UsageStats) {
@@ -3357,7 +3364,8 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             const HitArea area = HitTest(point);
             const bool interactive = area.type == HitArea::Type::TurnStatus ||
                                      area.type == HitArea::Type::ToolHeader || area.type == HitArea::Type::ToolGroup ||
-                                     area.type == HitArea::Type::Link || area.type == HitArea::Type::Copy ||
+                                     area.type == HitArea::Type::Link || area.type == HitArea::Type::Image ||
+                                     area.type == HitArea::Type::Copy ||
                                      area.type == HitArea::Type::Edit ||
                                      area.type == HitArea::Type::Rail || area.type == HitArea::Type::EarlierHistory;
             SetCursor(LoadCursorW(nullptr, interactive ? IDC_HAND : IDC_ARROW));
@@ -3387,6 +3395,10 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             else if (area.type == HitArea::Type::ToolHeader && toggle_tool_) toggle_tool_(area.item);
             else if (area.type == HitArea::Type::Link) {
                 OpenMarkdownLink(window_, ResolveMarkdownLink(area.destination, link_base_directory_));
+            } else if (area.type == HitArea::Type::Image) {
+                std::error_code error;
+                if (spark::fs::is_regular_file(NativePath(WideToUtf8(area.destination)), error))
+                    OpenMarkdownLink(window_, {MarkdownLinkKind::File, area.destination});
             }
             else if (area.type == HitArea::Type::Copy && copy_item_) copy_item_(area.item);
             else if (area.type == HitArea::Type::Edit && edit_item_) edit_item_(area.item);
@@ -3395,7 +3407,7 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
         case WM_RBUTTONUP: {
             const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
             const HitArea area = HitTest(point);
-            if (area.type == HitArea::Type::Link) {
+            if (area.type == HitArea::Type::Link || area.type == HitArea::Type::Image) {
                 ShowMarkdownLinkMenu(window_, area.destination, link_base_directory_, point);
             }
             return 0;

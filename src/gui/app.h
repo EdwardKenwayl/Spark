@@ -79,6 +79,7 @@ private:
         std::string first;
         std::string second;
         std::string third;
+        std::vector<std::string> image_paths;
         AgentPhase phase = AgentPhase::WaitingModel;
         bool success = false;
         SubAgentInfo child_info;

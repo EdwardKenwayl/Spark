@@ -29,7 +29,8 @@ struct AgentCallbacks {
     std::function<void(const std::string&)> on_text_delta;
     std::function<void(const std::string&)> on_reasoning_delta;
     std::function<void(const std::string&, const std::string&, const std::string&)> on_tool_start;
-    std::function<void(const std::string&, const std::string&, bool, const std::string&)> on_tool_finish;
+    std::function<void(const std::string&, const std::string&, bool, const std::string&,
+                       const std::vector<std::string>&)> on_tool_finish;
     std::function<void(int, int, int)> on_model_usage;
     // Reports the live context size after every provider call and after every compaction so the
     // UI can show one number instead of guessing from local estimates.
