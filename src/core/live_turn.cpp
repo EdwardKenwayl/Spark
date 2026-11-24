@@ -26,11 +26,12 @@ LiveTurn::LiveTurn(SessionJournal* journal, AgentCallbacks& callbacks, bool resu
         Flush();
         if (value == AgentPhase::Reconnecting || (value == AgentPhase::WaitingModel && detail != "thinking"))
             journal_->Append("turn.live_reset", nlohmann::json::object());
+        // Retry telemetry is in turn.retry; the live notice is never replayed.
         const char* name = value == AgentPhase::RunningTool ? "running_tool" :
             value == AgentPhase::Compacting ? "compacting" :
-            value == AgentPhase::Reconnecting ? "reconnecting" :
             value == AgentPhase::Streaming ? "streaming" : "waiting_model";
-        journal_->Append("turn.phase", {{"phase", name}, {"detail", detail}});
+        journal_->Append("turn.phase", {{"phase", name},
+            {"detail", value == AgentPhase::Reconnecting ? std::string{} : detail}});
         if (phase) phase(value, detail);
     };
     const auto start = callbacks.on_tool_start;

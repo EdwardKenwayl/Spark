@@ -1121,10 +1121,6 @@ void AppWindow::AttachTurnUi(const std::shared_ptr<TurnRuntime>& runtime) {
     active_assistant_entry_ = static_cast<size_t>(-1);
     assistant_stream_started_ = false;
     if (chat_view_ != nullptr) {
-        if (active_turn_entry_ != static_cast<size_t>(-1))
-            chat_view_->SetTurnStatusLabel(active_turn_entry_,
-                current_phase_ == AgentPhase::Reconnecting
-                    ? WideToUtf8(phase_text_) : std::string{});
         if (current_phase_ == AgentPhase::Compacting) chat_view_->AddCompactionNotice(true, 0, true);
         // Replay restores committed messages. The current summary is transient and may
         // only exist in the running turn, particularly after switching conversations.
@@ -4124,7 +4120,8 @@ bool AppWindow::ActivityRowVisible() const {
     // not duplicate it. Tool rows and answer text carry their own live progress too.
     if (active_turn_entry_ != static_cast<size_t>(-1)) return false;
     if (active_reasoning_entry_ != static_cast<size_t>(-1)) return false;
-    if (current_phase_ == AgentPhase::RunningTool || current_phase_ == AgentPhase::Streaming) return false;
+    if (current_phase_ == AgentPhase::RunningTool || current_phase_ == AgentPhase::Streaming ||
+        current_phase_ == AgentPhase::Reconnecting) return false;
     return true;
 }
 
@@ -4378,6 +4375,7 @@ void AppWindow::FinishTurn(const std::shared_ptr<TurnRuntime>& runtime, bool suc
     }
 
     if (attached && chat_view_ != nullptr) {
+        chat_view_->SetReconnectNotice({});
         chat_view_->CancelCompactionNotice();
         FinishActiveReasoning(false);
         if (assistant_stream_started_) {
@@ -4647,6 +4645,8 @@ void AppWindow::SetPhase(const std::shared_ptr<TurnRuntime>& runtime, AgentPhase
                           NormalizePathForComparison(journal_.Path()) == runtime->session_key;
     runtime->phase = phase;
     runtime->phase_detail = detail;
+    if (attached && chat_view_ != nullptr && phase != AgentPhase::Reconnecting)
+        chat_view_->SetReconnectNotice({});
     std::wstring text;
     switch (phase) {
         case AgentPhase::Reconnecting:
@@ -4712,9 +4712,8 @@ void AppWindow::SetPhase(const std::shared_ptr<TurnRuntime>& runtime, AgentPhase
         active_assistant_entry_ = static_cast<size_t>(-1);
         chat_view_->AddCompactionNotice(true, 0, true);
     }
-    if (chat_view_ != nullptr && active_turn_entry_ != static_cast<size_t>(-1))
-        chat_view_->SetTurnStatusLabel(active_turn_entry_,
-            phase == AgentPhase::Reconnecting ? WideToUtf8(text) : std::string{});
+    if (chat_view_ != nullptr && phase == AgentPhase::Reconnecting)
+        chat_view_->SetReconnectNotice(WideToUtf8(text));
     if (chat_view_ != nullptr) chat_view_->SetActivityState(ActivityRowVisible(), text, runtime->started_tick);
 }
 

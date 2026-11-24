@@ -184,7 +184,7 @@ void ResponsesEmptyFollowUp(bool streaming, const std::string& kind, int end_tur
     Check(reply.ok == (end_turn == 0 || kind == "commentary"),
           "Responses accepts non-empty commentary and explicit continuation");
     if (reply.ok) {
-        Check(reply.value.needs_follow_up == (end_turn == 0) &&
+        Check(reply.value.needs_follow_up == (end_turn == 0 || (end_turn < 0 && kind == "commentary")) &&
               reply.value.text == (kind == "commentary" ? "Working" : "") && reply.value.tool_calls.empty() &&
               reply.value.reasoning_items == (kind == "reasoning" ? std::vector<std::string>{reasoning.dump()} : std::vector<std::string>{}),
               "continuation preserves explicit end_turn semantics and opaque reasoning");

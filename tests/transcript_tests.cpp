@@ -138,6 +138,39 @@ void TestCompactionActivity() {
           "cancellation leaves no progress or success row, even when history is expanded");
 }
 
+void TestReconnectActivity() {
+    Transcript transcript;
+    Add(transcript, ChatItemKind::User, "continue");
+    const auto status = Add(transcript, ChatItemKind::TurnStatus);
+    const auto started = transcript.Item(status)->start_tick_ms;
+    transcript.SetReconnectNotice("Reconnecting 1/5", {124, 1500});
+    transcript.SetReconnectNotice("Reconnecting 2/5", {124, 2000});
+    Check(transcript.Count() == 3 && transcript.Item(2)->kind == ChatItemKind::Reconnect &&
+              transcript.Item(2)->visible && transcript.Item(2)->text == "Reconnecting 2/5" &&
+              transcript.Item(status)->text.empty() && transcript.Item(status)->start_tick_ms == started,
+          "reconnect updates one separate live row and does not replace the processing timer");
+    transcript.SetReconnectNotice({}, {125, 2100});
+    const auto partial = Add(transcript, ChatItemKind::Assistant, "abandoned partial answer");
+    transcript.Apply({TranscriptEventKind::Hide, partial, {}}, {125, 2150});
+    transcript.Apply({TranscriptEventKind::FinishTurn, status, {}}, {126, 2200});
+    transcript.ToggleTurnStatus(status);
+    Check(!transcript.Item(2)->visible && !transcript.Item(partial)->visible,
+          "a finished turn cannot expand a previous reconnect notice or abandoned reply");
+
+    SessionState state;
+    ChatMessage user;
+    user.role = MessageRole::User;
+    user.content = "continue";
+    state.messages.push_back(std::move(user));
+    state.metadata["live_turn"] = {{"phase", "reconnecting"}, {"detail", "2/5"}, {"turn_index", 0}};
+    const auto generation = transcript.BeginReplay(state, {126, 2200}, {true, 1000});
+    while (!transcript.ReplayStep(generation)) {}
+    for (size_t index = 0; index < transcript.Count(); ++index)
+        Check(transcript.Item(index)->kind != ChatItemKind::Reconnect &&
+                  transcript.Item(index)->text.find("2/5") == std::string::npos,
+              "reload never restores the reconnect notice, even from an older live journal");
+}
+
 void TestResumeReplay(const fs::path& root) {
     SessionJournal journal;
     Check(journal.Open(PathToUtf8(root / "resume"), PathToUtf8(root)).ok, "resume fixture opens");
@@ -954,6 +987,7 @@ int main() {
         TestEventsAndTimers();
         TestEditedImageReplay(root);
         TestCompactionActivity();
+        TestReconnectActivity();
         TestResumeReplay(root);
         TestJournalReplay(root);
         TestTurnBoundaries();

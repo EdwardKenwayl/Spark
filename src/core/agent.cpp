@@ -125,9 +125,12 @@ std::string Agent::BuildSystemPrompt(const ProviderConfig& provider, const Model
            << "Saving a checkpoint, updating task records, finishing a subtask, or compacting context "
               "is not completion of the user's task. Resume the remaining work after these steps. "
               "Do not end with a progress report or a promise to continue later while actionable work remains.\n"
-           << "When useful, give a brief visible progress message alongside tool calls, then continue working. "
-              "Respect the user's and project's preferences for fewer or no progress messages. "
-              "A progress message does not replace the tools needed to do the work.\n"
+           << "For substantial work, normally send a brief user-visible update before the first batch of tools "
+              "and when a finding changes your next step. Put it in commentary (or ordinary assistant text "
+              "alongside tool calls), not private reasoning or command output. Keep working in the same turn. "
+              "Do not narrate routine commands. If the user asks for no reports, omit routine updates and "
+              "continue the work; that is not a request to stop, skip verification, or say that the user "
+              "does not need to test. Ask the user to test only when a specific check actually requires them.\n"
            << "Use a final response only for the completed result or a genuine blocker. "
               "State what actually finished and any unresolved work; never describe an unfinished task as complete.\n";
     if (model.capabilities.tool_calls) {
@@ -480,6 +483,8 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
         return Result<void>::Success();
     };
 
+    size_t silent_tool_rounds = 0;
+    size_t commentary_only_rounds = 0;
     auto complete_request = [&](const std::vector<ToolDefinition>& request_tools,
                                 std::vector<ChatMessage> request_messages,
                                 const std::string& request_status,
@@ -499,11 +504,21 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
         request.tools = request_tools;
         request.request_timeout_seconds = config_.agent.request_timeout_seconds;
         request.response_header_timeout_seconds = config_.agent.response_header_timeout_seconds;
+        request.transport_attempts = 1;
 
         ChatMessage system;
         system.role = MessageRole::System;
         system.content = system_prompt;
         request.messages.insert(request.messages.begin(), std::move(system));
+        if (silent_tool_rounds == 8) {
+            ChatMessage reminder;
+            reminder.role = MessageRole::System;
+            reminder.content = "Check the latest user request before ending. Keep executing authorized next steps. "
+                "If updates are welcome, give one brief concrete finding and next action as visible commentary "
+                "with the next tools. If the user asked for no updates, work quietly. A statement about whether "
+                "the user needs to test is not a substitute for doing or verifying the work.";
+            request.messages.push_back(std::move(reminder));
+        }
         const uint64_t estimated_request_tokens = EstimateContextTokens(request.messages, request.tools, {});
 
         ProviderCallbacks provider_callbacks;
@@ -528,7 +543,26 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
         };
         provider_callbacks.on_status = callbacks.on_status;
         constexpr int kMaxReconnects = 5;
-        auto reply = adapter->Complete(request, provider_callbacks, cancellation);
+        DsmlParseResult dsml;
+        const auto send_attempt = [&]() {
+            auto result = adapter->Complete(request, provider_callbacks, cancellation);
+            if (!result.ok) return result;
+            const auto& output = result.value;
+            if (output.finish_reason == "length" || output.finish_reason == "max_tokens") {
+                return Result<ModelReply>::Failure("Provider output reached its token limit before completion.");
+            }
+            dsml = ExtractDsmlToolCalls(output.text);
+            if (dsml.incomplete || dsml.malformed || dsml_stream.incomplete()) {
+                return Result<ModelReply>::Failure(
+                    "模型返回了不完整或无法解析的工具调用协议（DSML）。");
+            }
+            if (Trim(dsml.found ? dsml.text : output.text).empty() && dsml.tool_calls.empty() &&
+                output.tool_calls.empty() && !output.needs_follow_up) {
+                return Result<ModelReply>::Failure("模型返回了空响应（既没有文本也没有工具调用）。");
+            }
+            return result;
+        };
+        auto reply = send_attempt();
         const auto cancelled = [&] { return cancellation != nullptr && cancellation->IsCancelled(); };
         for (int attempt = 1; !reply.ok && !cancelled() && attempt <= kMaxReconnects; ++attempt) {
             if (journal_ != nullptr) {
@@ -545,7 +579,7 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
             dsml_stream = DsmlStreamFilter{};
             response_streamed = false;
             reasoning_phase_sent = false;
-            reply = adapter->Complete(request, provider_callbacks, cancellation);
+            reply = send_attempt();
         }
         if (!reply.ok) {
             const bool interrupted = cancelled();
@@ -567,21 +601,6 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
         // Some OpenAI-compatible gateways expose DeepSeek's textual DSML tool
         // protocol as ordinary content instead of structured tool_calls. Recover
         // those calls here; never dump the protocol markup into the transcript.
-        const DsmlParseResult dsml = ExtractDsmlToolCalls(reply.value.text);
-        if (dsml.incomplete || dsml.malformed || dsml_stream.incomplete()) {
-            const std::string error =
-                "模型返回了不完整或无法解析的工具调用协议（DSML），本轮已终止，避免把协议文本误当成最终回复。";
-            if (journal_ != nullptr) {
-                journal_->Append("turn.dsml.error",
-                                 {{"error", error},
-                                  {"incomplete", dsml.incomplete || dsml_stream.incomplete()},
-                                  {"malformed", dsml.malformed},
-                                  {"provider", provider->id},
-                                  {"model", model->id}});
-            }
-            if (report_errors && callbacks.on_error) callbacks.on_error(error);
-            return Result<ModelReply>::Failure(error);
-        }
         if (!dsml.tool_calls.empty()) {
             if (journal_ != nullptr) {
                 journal_->Append("turn.dsml",
@@ -624,12 +643,6 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
             const double observed = static_cast<double>(reply.value.input_tokens) /
                                     static_cast<double>(estimated_request_tokens);
             token_calibration = std::max(0.5, std::min(4.0, token_calibration * 0.7 + observed * 0.3));
-        }
-        if (reply.value.text.empty() && reply.value.tool_calls.empty() && !reply.value.needs_follow_up) {
-            const std::string message = "模型返回了空响应（既没有文本也没有工具调用），本轮已终止，请重试或检查供应商状态。";
-            persist_turn_error(message);
-            if (report_errors && callbacks.on_error) callbacks.on_error(message);
-            return Result<ModelReply>::Failure(message);
         }
         return reply;
     };
@@ -726,6 +739,19 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
         auto reply = complete_request(model->capabilities.tool_calls ? definitions : std::vector<ToolDefinition>{},
                                       context_messages(), request_status, request_status, true);
         if (!reply.ok) return Result<void>::Failure(reply.error);
+        silent_tool_rounds = !reply.value.tool_calls.empty() && Trim(reply.value.text).empty()
+            ? silent_tool_rounds + 1 : 0;
+        if (reply.value.tool_calls.empty() && reply.value.needs_follow_up) {
+            if (++commentary_only_rounds > 8) {
+                const std::string error = "The provider repeatedly continued without a final answer or tool action.";
+                persist_turn_error(error);
+                if (callbacks.on_provider_interrupted) callbacks.on_provider_interrupted();
+                if (callbacks.on_error) callbacks.on_error(error);
+                return Result<void>::Failure(error);
+            }
+        } else {
+            commentary_only_rounds = 0;
+        }
 
         auto assistant_messages = std::move(reply.value.assistant_messages);
         if (assistant_messages.empty()) {

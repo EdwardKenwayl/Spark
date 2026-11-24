@@ -432,6 +432,7 @@ public:
         ApplyProviderHeaders(http, *request.provider);
         http.body = payload.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
         http.timeout_seconds = request.request_timeout_seconds;
+        http.max_attempts = request.transport_attempts;
         http.header_timeout_seconds = request.response_header_timeout_seconds;
         http.stream = request.model->capabilities.streaming;
         http.on_status = callbacks.on_http_status;
@@ -643,6 +644,7 @@ public:
         ApplyProviderHeaders(http, *request.provider);
         http.body = payload.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
         http.timeout_seconds = request.request_timeout_seconds;
+        http.max_attempts = request.transport_attempts;
         http.header_timeout_seconds = request.response_header_timeout_seconds;
         http.stream = request.model->capabilities.streaming;
         http.on_status = callbacks.on_http_status;
@@ -899,6 +901,7 @@ public:
         }
         http.body = payload.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
         http.timeout_seconds = request.request_timeout_seconds;
+        http.max_attempts = request.transport_attempts;
         http.header_timeout_seconds = request.response_header_timeout_seconds;
         http.stream = request.model->capabilities.streaming;
         http.on_status = callbacks.on_http_status;
@@ -1453,6 +1456,11 @@ public:
                          "）：没有任何文本或工具调用。";
             }
             return Result<ModelReply>::Failure(detail + " | " + describe_http());
+        }
+        if (response_end_turn == "absent" && !reply.assistant_messages.empty() &&
+            std::all_of(reply.assistant_messages.begin(), reply.assistant_messages.end(),
+                        [](const ChatMessage& message) { return message.phase == "commentary"; })) {
+            reply.needs_follow_up = true;
         }
         reply.diagnostics = describe_http();
         return Result<ModelReply>::Success(std::move(reply));

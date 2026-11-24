@@ -36,6 +36,7 @@ public:
     size_t Apply(const TranscriptEvent& event, TranscriptTime now);
     void Clear();
     void BeginCompaction(TranscriptTime now);
+    void SetReconnectNotice(const std::string& text, TranscriptTime now);
     void FinishCompaction(bool automatic, TranscriptTime now);
     void CancelCompaction(TranscriptTime now);
     void EraseFrom(size_t index);

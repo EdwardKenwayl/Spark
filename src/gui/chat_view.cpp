@@ -1365,7 +1365,7 @@ ItemLayout LayoutItem(HDC device, const std::vector<ChatItem>& items, const std:
         return layout;
     }
 
-    if (item.kind == ChatItemKind::Compaction) {
+    if (item.kind == ChatItemKind::Compaction || item.kind == ChatItemKind::Reconnect) {
         const int width = max_text_width;
         const int text_height = std::max(22, MeasureTextHeight(device, fonts.text, L"Ag", width));
         layout.text = RECT{content_left + DpiScale(22), top, content_left + width, top + text_height};
@@ -1957,6 +1957,27 @@ void ChatView::CancelCompactionNotice() {
     items_[index].expanded = true;
     InvalidateItemHeight(index);
     Rebuild();
+}
+
+void ChatView::SetReconnectNotice(const std::string& text) {
+    if (!items_.empty() && items_.back().kind == ChatItemKind::Reconnect && items_.back().visible) {
+        auto& item = items_.back();
+        if (!text.empty()) {
+            item.text = text;
+            InvalidateRect(window_, nullptr, FALSE);
+        } else {
+            item.visible = false;
+            InvalidateItemHeight(items_.size() - 1);
+            Rebuild();
+        }
+        return;
+    }
+    if (text.empty()) return;
+    ChatItem item;
+    item.kind = ChatItemKind::Reconnect;
+    item.text = text;
+    PushItem(std::move(item));
+    ScrollToBottom();
 }
 
 size_t ChatView::AddError(const std::string& text, uint64_t timestamp) {
@@ -3200,10 +3221,12 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                         DrawShimmerText(buffer, label, layout.text, kMuted, kText);
                     }
                     SelectObject(buffer, reasoning_font);
-                } else if (item.kind == ChatItemKind::Compaction) {
+                } else if (item.kind == ChatItemKind::Compaction || item.kind == ChatItemKind::Reconnect) {
                     const COLORREF color = hovered ? kText : kMuted;
-                    DrawCompactionIcon(buffer, layout.message.left + DpiScale(11),
-                                       (layout.message.top + layout.message.bottom) / 2, color);
+                    if (item.kind == ChatItemKind::Compaction) {
+                        DrawCompactionIcon(buffer, layout.message.left + DpiScale(11),
+                                           (layout.message.top + layout.message.bottom) / 2, color);
+                    }
                     HFONT previous = static_cast<HFONT>(SelectObject(buffer, text_font_));
                     SetTextColor(buffer, color);
                     RECT text_rect = layout.text;

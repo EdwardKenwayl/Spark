@@ -20,6 +20,7 @@ struct ProviderRequest {
     std::string prompt_cache_key;
     int request_timeout_seconds = 180;
     int response_header_timeout_seconds = 600;
+    int transport_attempts = 3;
 };
 
 struct ProviderCallbacks {

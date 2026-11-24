@@ -662,10 +662,11 @@ void NativeChatSurface::Reflow(wxDC& dc) {
                 row.bubble = wxRect(left, before, width, top - before);
                 row.message = row.bubble;
                 top += FromDIP(10);
-            } else if (item.kind == ChatItemKind::Compaction) {
+            } else if (item.kind == ChatItemKind::Compaction || item.kind == ChatItemKind::Reconnect) {
                 dc.SetFont(body_);
                 const int height = std::max(FromDIP(22), dc.GetTextExtent("Ag").y);
-                const auto label = wxControl::Ellipsize(T(CompactionLabel(item.finished, item.success)),
+                const auto label = wxControl::Ellipsize(item.kind == ChatItemKind::Reconnect
+                    ? U(item.text) : T(CompactionLabel(item.finished, item.success)),
                     dc, wxELLIPSIZE_END, std::max(1, width - FromDIP(22)));
                 row.fragments.push_back({label, {left + FromDIP(22),
                     top + std::max(0, (height - dc.GetTextExtent(label).y) / 2)}, body_, Muted(), false, true});

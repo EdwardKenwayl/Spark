@@ -230,7 +230,12 @@ size_t Transcript::Apply(const TranscriptEvent& event, TranscriptTime now) {
             }
             break;
         case TranscriptEventKind::Hide:
-            if (item.kind == ChatItemKind::Reasoning || item.kind == ChatItemKind::Compaction) item.visible = false;
+            if (item.kind == ChatItemKind::Reasoning || item.kind == ChatItemKind::Compaction ||
+                item.kind == ChatItemKind::Reconnect) item.visible = false;
+            if (item.kind == ChatItemKind::Assistant && !item.finished) {
+                item.visible = false;
+                item.text.clear();
+            }
             if (item.kind == ChatItemKind::Compaction) item.expanded = true;
             break;
         case TranscriptEventKind::FinishTurn:
@@ -253,6 +258,23 @@ void Transcript::BeginCompaction(TranscriptTime now) {
     ChatItem item;
     item.kind = ChatItemKind::Compaction;
     item.finished = false;
+    Apply({TranscriptEventKind::Add, kNoChatItem, item}, now);
+}
+
+void Transcript::SetReconnectNotice(const std::string& text, TranscriptTime now) {
+    if (!items_.empty() && items_.back().kind == ChatItemKind::Reconnect && items_.back().visible) {
+        if (text.empty()) {
+            Apply({TranscriptEventKind::Hide, items_.size() - 1, {}}, now);
+        } else {
+            items_.back().text = text;
+            ++items_.back().revision;
+        }
+        return;
+    }
+    if (text.empty()) return;
+    ChatItem item;
+    item.kind = ChatItemKind::Reconnect;
+    item.text = text;
     Apply({TranscriptEventKind::Add, kNoChatItem, item}, now);
 }
 
@@ -295,7 +317,8 @@ void Transcript::ToggleTurnStatus(size_t index) {
         ++items_[next].revision;
         if (items_[next].kind == ChatItemKind::Tool ||
             (items_[next].kind == ChatItemKind::Compaction && !items_[next].expanded)) items_[next].visible = expanded;
-        if (items_[next].kind == ChatItemKind::Assistant) items_[next].visible = expanded || next == last;
+        if (items_[next].kind == ChatItemKind::Assistant)
+            items_[next].visible = HasAssistantText(items_[next].text) && (expanded || next == last);
     }
 }
 void Transcript::ToggleTool(size_t index) {

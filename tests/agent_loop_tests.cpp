@@ -247,7 +247,7 @@ void TestCompactionReplayAndContinue() {
 }
 
 void TestResponsesContinuation(bool streaming, int end_turn) {
-    const bool follow_up = end_turn == 0;
+    const bool follow_up = end_turn <= 0;
     const auto root = fs::temp_directory_path() / Utf8ToWide("spark-follow-up-" + NewSessionId());
     fs::create_directories(root);
     Check(WriteFileUtf8Atomic(JoinPath(PathToUtf8(root), "fixture.txt"), "fixture"),
@@ -272,7 +272,7 @@ void TestResponsesContinuation(bool streaming, int end_turn) {
             output.push_back(message("final_answer", "Done. The file says fixture."));
         }
         nlohmann::json response = {{"status", "completed"}, {"output", output}};
-        if (attempt != 0 || end_turn >= 0) response["end_turn"] = attempt == 0 ? !follow_up : attempt > 1;
+        if (attempt != 0 || end_turn >= 0) response["end_turn"] = attempt == 0 ? end_turn > 0 : attempt > 1;
         std::string body;
         if (streaming) {
             for (size_t index = 0; index < output.size(); ++index) {
@@ -318,7 +318,7 @@ void TestResponsesContinuation(bool streaming, int end_turn) {
     if (!result.ok) std::cerr << "continuation: " << result.error << '\n';
     const auto requests = server.Requests();
     Check(result.ok && finished == 1 && tools == (follow_up ? 1 : 0),
-          "explicit end_turn=false continues; true or absent completes even with commentary");
+          "commentary without end_turn continues; explicit end_turn=true still completes");
     Check(requests.size() == (follow_up ? 3 : 1), "continuation makes only the required requests");
     Check(visible.find("Checking the requested file.") != std::string::npos &&
               visible.find("The task is still in progress.") != std::string::npos,
@@ -355,12 +355,15 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
     Check(WriteFileUtf8Atomic(JoinPath(PathToUtf8(root), "fixture.txt"), "fixture", &write_error),
           "tool input is created");
     Server server([&](Server::Connection& connection, size_t attempt) {
+        const int transient_codes[] = {429, 502, 400, 401, 503};
         if ((ending == Ending::ProviderError && attempt >= tool_rounds && attempt < tool_rounds + 6) ||
-            ((ending == Ending::Recovered || ending == Ending::CancelReconnect) && attempt == tool_rounds)) {
+            (ending == Ending::Recovered && attempt >= tool_rounds && attempt < tool_rounds + 5) ||
+            (ending == Ending::CancelReconnect && attempt == tool_rounds)) {
             const std::string body = ending == Ending::ProviderError
                 ? R"({"error":{"message":"insufficient quota"}})"
                 : R"({"error":{"message":"system cpu overloaded"}})";
-            connection.Send(Server::Headers(ending == Ending::ProviderError ? 403 : 503,
+            const int code = ending == Ending::ProviderError ? 403 : transient_codes[attempt - tool_rounds];
+            connection.Send(Server::Headers(code,
                 body.size(), "Content-Type: application/json\r\n") + body);
             return;
         }
@@ -451,19 +454,22 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
     const bool exhausted = ending == Ending::ProviderError;
     Check(interrupted == (exhausted ? 1 : 0), "provider exhaustion requests pause, not completion");
     const size_t expected_requests = tool_rounds + (ending == Ending::Cancel ? 0 : exhausted ? 6 :
-                                                    ending == Ending::Recovered ? 2 : 1);
+                                                    ending == Ending::Recovered ? 6 : 1);
     Check(requests.size() == expected_requests, "reconnect stops at success, cancellation or five retries");
-    const std::vector<std::string> expected_reconnects = exhausted
+    const std::vector<std::string> expected_reconnects = exhausted || ending == Ending::Recovered
         ? std::vector<std::string>{"1/5", "2/5", "3/5", "4/5", "5/5"}
-        : ending == Ending::Recovered || ending == Ending::CancelReconnect
+        : ending == Ending::CancelReconnect
             ? std::vector<std::string>{"1/5"} : std::vector<std::string>{};
     Check(reconnects == expected_reconnects, "reconnect reports every displayed attempt and the total");
     for (size_t index = tool_rounds + 1; index < requests.size(); ++index) {
         Check(requests[index].body == requests[tool_rounds].body, "reconnect resends the same context and tool results");
     }
+    size_t request_index = 0;
     for (const auto& request : requests) {
         const auto body = nlohmann::json::parse(request.body);
         Check(body.contains("tools") && !body["tools"].empty(), "no forced no-tools finalization is inserted");
+        const bool has_reminder = request.body.find("Check the latest user request before ending.") != std::string::npos;
+        Check(has_reminder == (request_index++ == 8), "silent tool streak gets one scoped progress reminder");
     }
     std::cout << label << ": tools=" << tools << " results=" << results
               << " requests=" << requests.size() << " completed=" << finished

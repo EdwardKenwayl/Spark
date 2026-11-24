@@ -237,13 +237,13 @@ void NativeFrame::Consume(const NativeEvent& event) {
     } else if (event.kind == NativeEvent::Kind::Context) {
         view.context = event.first_number; view.limit = event.second_number;
     } else if (event.kind == NativeEvent::Kind::Phase) {
+        if (event.phase != AgentPhase::Reconnecting) view.transcript.SetReconnectNotice({}, Now());
         if (event.phase == AgentPhase::Reconnecting) {
             HideReasoning(view.transcript, view.assistant);
         } else if (event.phase == AgentPhase::WaitingModel && event.first != "thinking") {
             finish_assistant();
         }
-        if ((event.phase == AgentPhase::WaitingModel || event.phase == AgentPhase::Reconnecting) &&
-            !view.transcript.NeedsAnimation())
+        if (event.phase == AgentPhase::WaitingModel && !view.transcript.NeedsAnimation())
             view.status = Add(view.transcript, ChatItemKind::TurnStatus);
         if (event.phase == AgentPhase::Compacting || event.phase == AgentPhase::Reconnecting)
             HideReasoning(view.transcript, view.reasoning);
@@ -251,13 +251,10 @@ void NativeFrame::Consume(const NativeEvent& event) {
             finish_assistant();
             view.transcript.BeginCompaction(Now());
         } else view.transcript.CancelCompaction(Now());
-        if (view.status != kNoChatItem) {
-            ChatItem status;
-            if (event.phase == AgentPhase::Reconnecting)
-                status.text = WideToUtf8(i18n::Text(L"Reconnecting")) + " " + event.first;
-            view.transcript.Apply({TranscriptEventKind::SetTurnStatus, view.status, status}, Now());
-        }
+        if (event.phase == AgentPhase::Reconnecting)
+            view.transcript.SetReconnectNotice(WideToUtf8(i18n::Text(L"Reconnecting")) + " " + event.first, Now());
     } else if (event.kind == NativeEvent::Kind::Done) {
+        view.transcript.SetReconnectNotice({}, Now());
         view.transcript.CancelCompaction(Now());
         const bool cancelled = cancelled_completion_paths_.erase(event.path) != 0;
         if (event.path == active_) RefreshSummary();

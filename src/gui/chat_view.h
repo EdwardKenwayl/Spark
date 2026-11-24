@@ -54,6 +54,7 @@ public:
     size_t AddAssistant(const std::string& text = {}, uint64_t timestamp = 0);
     size_t AddReasoning(const std::string& text = {}, uint64_t timestamp = 0);
     size_t AddCompactionNotice(bool automatic = true, uint64_t timestamp = 0, bool pending = false);
+    void SetReconnectNotice(const std::string& text);
     void CancelCompactionNotice();
     size_t AddError(const std::string& text, uint64_t timestamp = 0);
     size_t AddQuotaNotice(uint64_t timestamp = 0);

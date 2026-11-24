@@ -17,6 +17,7 @@ enum class ChatItemKind {
     Error,
     Quota,
     UsageStats,
+    Reconnect,
 };
 
 inline bool HasAssistantText(std::string_view text) {
