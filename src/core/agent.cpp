@@ -49,9 +49,6 @@ std::string ToolPhaseDetail(const ToolCall& call) {
         } else if (call.name == "search_text") {
             const std::string query = arguments.value("query", std::string{});
             if (!query.empty()) return query;
-        } else if (call.name == "web_search") {
-            const std::string query = arguments.value("query", std::string{});
-            if (!query.empty()) return query;
         } else if (call.name == "read_skill") {
             const std::string name = arguments.value("name", std::string{});
             const std::string path = arguments.value("path", std::string{});
