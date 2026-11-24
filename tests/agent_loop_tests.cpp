@@ -19,7 +19,10 @@ void Check(bool condition, const char* message) {
     }
 }
 
-enum class Ending { Complete, Cancel, ProviderError, Recovered, CancelReconnect };
+enum class Ending { Complete, Cancel, ProviderError, Recovered, CancelReconnect,
+                    PrematureFinal, ConfirmedBlocker, CancelCompletionCheck };
+
+constexpr size_t kLongFixtureRounds = 8;
 
 void TestPromptCachePrefix(std::string protocol) {
     const bool responses = protocol == "responses";
@@ -348,12 +351,20 @@ void TestResponsesContinuation(bool streaming, int end_turn) {
     fs::remove_all(root, error);
 }
 
-void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool legacy_config) {
+void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool legacy_config,
+              bool responses = false) {
     const auto root = fs::temp_directory_path() / Utf8ToWide("spark-loop-" + NewSessionId());
     fs::create_directories(root);
     std::string write_error;
     Check(WriteFileUtf8Atomic(JoinPath(PathToUtf8(root), "fixture.txt"), "fixture", &write_error),
           "tool input is created");
+    const bool premature = ending == Ending::PrematureFinal;
+    const bool blocker = ending == Ending::ConfirmedBlocker;
+    const bool cancel_check = ending == Ending::CancelCompletionCheck;
+    const bool checks_completion = responses && tool_rounds >= kLongFixtureRounds && ending != Ending::Cancel &&
+        ending != Ending::ProviderError && ending != Ending::CancelReconnect;
+    const std::string unfinished = "One requested check remains.";
+    const std::string blocked = "The remaining check requires the missing input from the user.";
     Server server([&](Server::Connection& connection, size_t attempt) {
         const int transient_codes[] = {429, 502, 400, 401, 503};
         if ((ending == Ending::ProviderError && attempt >= tool_rounds && attempt < tool_rounds + 6) ||
@@ -367,7 +378,20 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
                 body.size(), "Content-Type: application/json\r\n") + body);
             return;
         }
-        const bool tool = attempt < tool_rounds;
+        const bool tool = attempt < tool_rounds || (premature && attempt == tool_rounds + 1);
+        const std::string content = blocker ? (attempt > tool_rounds ? "SPARK_ACCEPT_FINAL" : blocked) :
+            premature && attempt == tool_rounds ? unfinished : "finished all requested tools";
+        if (responses) {
+            nlohmann::json item = tool
+                ? nlohmann::json{{"type", "function_call"}, {"call_id", "call-" + std::to_string(attempt)},
+                    {"name", "read_file"}, {"arguments", R"({"path":"fixture.txt"})"}}
+                : nlohmann::json{{"type", "message"}, {"role", "assistant"}, {"phase", "final_answer"},
+                    {"content", nlohmann::json::array({{{"type", "output_text"}, {"text", content}}})}};
+            const std::string body = nlohmann::json{{"status", "completed"},
+                {"output", nlohmann::json::array({item})}}.dump();
+            connection.Send(Server::Headers(200, body.size(), "Content-Type: application/json\r\n") + body);
+            return;
+        }
         nlohmann::json delta;
         if (tool) {
             delta["tool_calls"] = nlohmann::json::array({
@@ -375,7 +399,7 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
                  {"function", {{"name", "read_file"}, {"arguments", R"({"path":"fixture.txt"})"}}}}
             });
         } else {
-            delta["content"] = "finished all requested tools";
+            delta["content"] = content;
         }
         const nlohmann::json event = {{"choices", nlohmann::json::array({
             {{"delta", delta}, {"finish_reason", tool ? "tool_calls" : "stop"}}
@@ -391,11 +415,12 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
     config.agent.request_timeout_seconds = 3;
     ProviderConfig provider;
     provider.id = "fixture";
-    provider.protocol = "chat_completions";
+    provider.protocol = responses ? (blocker ? "openai_responses" : "responses") : "chat_completions";
     provider.base_url = server.Url("/v1");
     provider.api_key = "synthetic-fixture";
     ModelConfig model;
     model.id = "loop-model";
+    model.capabilities.streaming = !responses;
     model.capabilities.context_window = 1000000;
     provider.models.push_back(model);
     config.providers.push_back(provider);
@@ -414,8 +439,11 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
     int finished = 0;
     int errors = 0;
     int interrupted = 0;
+    std::string visible;
     std::vector<std::string> reconnects;
     AgentCallbacks callbacks;
+    size_t model_requests = 0;
+    callbacks.on_text_delta = [&](const std::string& delta) { visible += delta; };
     callbacks.on_tool_finish = [&](const auto&, const auto&, bool ok, const auto&, const auto&) {
         Check(ok, "tool succeeds");
         if (++tools == tool_rounds && ending == Ending::Cancel) cancellation.Cancel();
@@ -424,6 +452,8 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
     callbacks.on_error = [&](const std::string&) { ++errors; };
     callbacks.on_provider_interrupted = [&] { ++interrupted; };
     callbacks.on_phase = [&](AgentPhase phase, const std::string& detail) {
+        if (phase == AgentPhase::WaitingModel && detail != "thinking" &&
+            ++model_requests == tool_rounds + 2 && cancel_check) cancellation.Cancel();
         if (phase != AgentPhase::Reconnecting) return;
         reconnects.push_back(detail);
         if (ending == Ending::CancelReconnect) cancellation.Cancel();
@@ -438,13 +468,19 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
         if (message.role == MessageRole::Tool) ++results;
     }
     Check(server.Error().empty(), "fixture server reports no error");
-    Check(tools == tool_rounds && results == tool_rounds, "every requested tool has a persisted result");
-    if (ending == Ending::Complete || ending == Ending::Recovered) {
+    const size_t expected_tools = tool_rounds + (premature ? 1 : 0);
+    Check(tools == expected_tools && results == expected_tools, "every requested tool has one persisted result");
+    if (ending == Ending::Complete || ending == Ending::Recovered || premature || blocker) {
         Check(result.ok && finished == 1 && errors == 0, "only the final answer completes the turn");
-        Check(!journal.State().messages.empty() &&
-                  journal.State().messages.back().content == "finished all requested tools",
+        const auto& messages = journal.State().messages;
+        const auto final = std::find_if(messages.rbegin(), messages.rend(), [](const ChatMessage& item) {
+            return item.role == MessageRole::Assistant;
+        });
+        Check(final != messages.rend() &&
+                  final->content == (blocker ? blocked : "finished all requested tools"),
               "final response is preserved");
-    } else if (ending == Ending::Cancel || ending == Ending::CancelReconnect) {
+        if (blocker) Check(visible == blocked, "accepting a real blocker does not display it twice");
+    } else if (ending == Ending::Cancel || ending == Ending::CancelReconnect || cancel_check) {
         Check(!result.ok && cancellation.IsCancelled() && finished == 0 && errors == 0,
               "cancel still interrupts a long tool loop");
     } else {
@@ -454,14 +490,24 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
     const bool exhausted = ending == Ending::ProviderError;
     Check(interrupted == (exhausted ? 1 : 0), "provider exhaustion requests pause, not completion");
     const size_t expected_requests = tool_rounds + (ending == Ending::Cancel ? 0 : exhausted ? 6 :
-                                                    ending == Ending::Recovered ? 6 : 1);
+        ending == Ending::Recovered ? 6 : 1) + (checks_completion && !cancel_check ? 1 : 0) + (premature ? 1 : 0);
     Check(requests.size() == expected_requests, "reconnect stops at success, cancellation or five retries");
+    if (premature && requests.size() == expected_requests) {
+        const auto before = nlohmann::json::parse(requests[tool_rounds].body)["input"];
+        const auto after = nlohmann::json::parse(requests[tool_rounds + 1].body)["input"];
+        Check(after.size() == before.size() + 2 && std::equal(before.begin(), before.end(), after.begin()),
+              "completion check extends the existing model context without rewriting prior tools");
+        Check(after[before.size()]["content"][0]["text"] == unfinished &&
+                  after.back().value("role", "") == "developer",
+              "the completion check sees the candidate reply followed by internal steering");
+    }
     const std::vector<std::string> expected_reconnects = exhausted || ending == Ending::Recovered
         ? std::vector<std::string>{"1/5", "2/5", "3/5", "4/5", "5/5"}
         : ending == Ending::CancelReconnect
             ? std::vector<std::string>{"1/5"} : std::vector<std::string>{};
     Check(reconnects == expected_reconnects, "reconnect reports every displayed attempt and the total");
-    for (size_t index = tool_rounds + 1; index < requests.size(); ++index) {
+    for (size_t index = tool_rounds + 1;
+         (exhausted || ending == Ending::Recovered) && index < requests.size(); ++index) {
         Check(requests[index].body == requests[tool_rounds].body, "reconnect resends the same context and tool results");
     }
     size_t request_index = 0;
@@ -469,7 +515,11 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
         const auto body = nlohmann::json::parse(request.body);
         Check(body.contains("tools") && !body["tools"].empty(), "no forced no-tools finalization is inserted");
         const bool has_reminder = request.body.find("Check the latest user request before ending.") != std::string::npos;
-        Check(has_reminder == (request_index++ == 8), "silent tool streak gets one scoped progress reminder");
+        Check(has_reminder == (request_index == 8), "silent tool streak gets one scoped progress reminder");
+        const bool has_check = request.body.find("Spark completion check,") != std::string::npos;
+        Check(has_check == (checks_completion && request_index == tool_rounds + 1),
+              "only the completion check request contains its steering");
+        ++request_index;
     }
     std::cout << label << ": tools=" << tools << " results=" << results
               << " requests=" << requests.size() << " completed=" << finished
@@ -492,5 +542,9 @@ int main() {
     TestLoop("provider error beyond 100", 105, Ending::ProviderError, false);
     TestLoop("recovered provider", 2, Ending::Recovered, false);
     TestLoop("cancel during reconnect", 2, Ending::CancelReconnect, false);
+    TestLoop("short Responses turn", 4, Ending::Complete, false, true);
+    TestLoop("premature final after tools", 78, Ending::PrematureFinal, false, true);
+    TestLoop("confirmed blocker", kLongFixtureRounds, Ending::ConfirmedBlocker, false, true);
+    TestLoop("cancel completion check", kLongFixtureRounds, Ending::CancelCompletionCheck, false, true);
     return failures == 0 ? 0 : 1;
 }
