@@ -16,6 +16,7 @@ struct WebSearchResult {
 };
 
 std::vector<WebSearchResult> ParseDuckDuckGoSearchResults(std::string_view html, size_t max_results);
+std::vector<WebSearchResult> ParseYahooSearchResults(std::string_view html, size_t max_results);
 Result<std::string> SearchWeb(const std::string& query, size_t max_results, CancellationToken* cancellation);
 
 }  // namespace spark

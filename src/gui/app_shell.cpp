@@ -382,41 +382,9 @@ SessionSummary ReadSessionSummary(const std::string& path) {
     const auto cached = cache.find(path);
     if (cached != cache.end() && SameFileStamp(attributes, cached->second)) return cached->second.summary;
 
-    spark::fs_ifstream stream(spark::fs::path(Utf8ToWide(path)), std::ios::binary);
-    if (!stream) return summary;
-    std::string line;
-    while (std::getline(stream, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line.empty()) continue;
-        try {
-            const nlohmann::json event = nlohmann::json::parse(line);
-            const std::string type = event.value("type", std::string{});
-            const nlohmann::json payload = event.value("payload", nlohmann::json::object());
-            summary.updated_at = event.value("timestamp", summary.updated_at);
-            if (type == "session.created") {
-                summary.title = payload.value("title", std::string("新对话"));
-                summary.workspace = payload.value("workspace", std::string{});
-            } else if (type == "session.title") {
-                summary.title = payload.value("title", summary.title);
-            } else if (type == "session.pinned") {
-                summary.pinned = payload.value("pinned", summary.pinned);
-            } else if (type == "session.scope") {
-                summary.scope = payload.value("scope", summary.scope);
-            } else if (type == "message") {
-                summary.has_messages = true;
-            } else if (type == "snapshot") {
-                summary.title = payload.value("title", summary.title);
-                summary.workspace = payload.value("workspace", summary.workspace);
-                if (payload.contains("messages") && payload["messages"].is_array()) {
-                    // A conversation that has ever produced messages must stay visible even if
-                    // a later edit or maintenance snapshot temporarily reduces it to empty.
-                    summary.has_messages = summary.has_messages || !payload["messages"].empty();
-                }
-            }
-        } catch (const nlohmann::json::exception&) {
-        }
-    }
-    if (summary.title.empty()) summary.title = "新对话";
+    auto loaded = ReadTranscriptHistory(path);
+    if (!loaded.ok) return summary;
+    summary = std::move(loaded.value);
     CachedSessionSummary entry;
     ULARGE_INTEGER size{};
     size.LowPart = attributes.nFileSizeLow;

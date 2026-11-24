@@ -1043,7 +1043,10 @@ void NativeChatSurface::Paint(wxPaintEvent&) {
             const bool group = rect == &row.group_header;
             const bool open = group ? row.group_expanded : row.expanded;
             const int x = rect->GetRight() + 1 - FromDIP(17), y = rect->y + rect->height / 2;
-            dc.SetPen(wxPen(row.item == hovered_ ? Foreground() : Muted()));
+            const auto action = group ? Action::Group
+                : item->kind == ChatItemKind::TurnStatus ? Action::Turn : Action::Tool;
+            const bool hovered = row.item == hovered_ && hovered_action_ == action;
+            dc.SetPen(wxPen(hovered ? Foreground() : Muted()));
             if (open) {
                 dc.DrawLine(x - FromDIP(4), y - FromDIP(1), x, y + FromDIP(3));
                 dc.DrawLine(x, y + FromDIP(3), x + FromDIP(4), y - FromDIP(1));
@@ -1058,7 +1061,7 @@ void NativeChatSurface::Paint(wxPaintEvent&) {
             dc.SetPen(wxPen(failed ? wxColour(242, 128, 128) : active ? Foreground() : wxColour(111, 190, 140)));
             if (item->tool_name == "run_command") {
                 dc.SetFont(body_);
-                dc.SetTextForeground(row.item == hovered_ ? Foreground() : Muted());
+                dc.SetTextForeground(hovered ? Foreground() : Muted());
                 dc.DrawText(">_", rect->x + FromDIP(9), rect->y + FromDIP(3));
             } else if (active) {
                 dc.SetBrush(wxBrush(Foreground()));

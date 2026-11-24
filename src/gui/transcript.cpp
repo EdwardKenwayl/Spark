@@ -1,4 +1,5 @@
 #include "gui/transcript.h"
+#include "core/journal_line_reader.h"
 #include "gui/chat_timeline.h"
 #include "gui/compaction_boundary.h"
 
@@ -569,14 +570,30 @@ Result<TranscriptHistory> ReadTranscriptHistory(const std::string& path, const C
     summary.path = path;
     std::string line;
     bool first_line = true;
-    while (std::getline(stream, line)) {
+    JournalLineReader reader(stream);
+    while (reader.Next(line)) {
         if (cancellation && cancellation->IsCancelled()) return Result<TranscriptHistory>::Failure("cancelled");
         if (first_line && line.compare(0, 3, "\xef\xbb\xbf") == 0) line.erase(0, 3);
         first_line = false;
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
         try {
-            const auto event = nlohmann::json::parse(line);
+            const auto event = [&] {
+                // With a known nonempty history, the sidebar only needs the snapshot's footer.
+                // Spark serializes title, updated_at and workspace at the end of its payload.
+                if (summary.has_messages && IsCanonicalSessionSnapshot(line)) {
+                    constexpr std::string_view title = ",\"title\":";
+                    const auto start = line.rfind(title);
+                    if (start != std::string::npos && line.size() - start <= 64 * 1024) {
+                        auto footer = nlohmann::json::parse(
+                            R"({"payload":{)" + line.substr(start + 1), nullptr, false);
+                        if (footer.is_object() && footer.contains("payload") &&
+                            footer["payload"].contains("workspace") && footer["payload"].contains("updated_at"))
+                            return footer;
+                    }
+                }
+                return nlohmann::json::parse(line);
+            }();
             const auto type = event.value("type", std::string{});
             const auto found_payload = event.find("payload");
             const auto empty_payload = nlohmann::json::object();

@@ -28,6 +28,7 @@ struct SessionState {
 };
 
 const std::vector<ChatMessage>& ModelContextMessages(const SessionState& state);
+bool IsCanonicalSessionSnapshot(std::string_view line);
 
 class SessionJournal {
 public:
@@ -55,7 +56,8 @@ public:
     const std::string& Path() const { return path_; }
 
 private:
-    Result<void> LoadEvents(std::istream& stream, const CancellationToken* cancellation);
+    Result<void> LoadEvents(std::istream& stream, const CancellationToken* cancellation,
+                            std::string scope = {}, bool from_checkpoint = false);
 
     // A worker starts from the view's loaded state and detaches on its first write.
     std::shared_ptr<SessionState> shared_state_ = std::make_shared<SessionState>();

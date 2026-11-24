@@ -1183,6 +1183,18 @@ int main() {
               parsed_web_results[0].url == "https://example.com/guide?a=1" &&
               parsed_web_results[0].snippet == "A useful summary.",
           "web search parser decodes redirect URLs, entities, and snippets");
+    const auto yahoo_results = spark::ParseYahooSearchResults(
+        R"(<ol><li><a href="https://example.com/nav">Navigation</a></li></ol>
+           <div id="web"><h2>Web</h2><ol><li><a href="https://example.com/mod?a=1&amp;b=2" rel="noreferrer">Metro &amp; Mods</a><div>Frame <strong>generation</strong>.</div><em>example.com</em></li>
+           <li><a href="https://example.com/mod?a=1&amp;b=2">Duplicate</a></li>
+           <li><a href="javascript:bad">Invalid</a></li>
+           <li><a href="https://example.com/guide">Direct link</a></li></ol></div>)",
+        5);
+    Check(yahoo_results.size() == 2 && yahoo_results[0].title == "Metro & Mods" &&
+              yahoo_results[0].url == "https://example.com/mod?a=1&b=2" &&
+              yahoo_results[0].snippet == "Frame generation ." &&
+              yahoo_results[1].url == "https://example.com/guide",
+          "Yahoo fallback extracts direct result URLs and excludes navigation, duplicates and unsafe targets");
     tool_context.allow_network = true;
     const auto empty_web_search = registry.Execute("web_search", R"({"query":"  "})", tool_context);
     Check(!empty_web_search.ok && empty_web_search.output.find("query cannot be empty") != std::string::npos,
@@ -1272,6 +1284,35 @@ int main() {
     spark::SessionJournal journal;
     const auto opened = journal.Open(temp_directory, spark::CurrentDirectoryUtf8());
     Check(opened.ok, "session opens");
+    {
+        using nlohmann::json;
+        spark::SessionJournal checkpoint;
+        Check(checkpoint.Open(spark::JoinPath(temp_directory, "checkpoint"), spark::CurrentDirectoryUtf8()).ok,
+              "checkpoint journal opens");
+        Check(checkpoint.Append("session.scope", {{"scope", "project"}}).ok, "checkpoint journal records scope");
+        auto& state = checkpoint.MutableState();
+        state.messages = {{spark::MessageRole::User, "before checkpoint"}};
+        state.messages.back().timestamp = 123;
+        state.metadata = {
+            {"turn_durations_ms", {250}},
+            {"turn_usages", json::array()},
+            {"tool_durations_ms", json::object()},
+            {"turn_errors", json::array()},
+            {"last_response_context", {{"input_tokens", 50}}},
+        };
+        Check(checkpoint.Append("message", json{{"role", "user"}, {"content", std::string(8 * 1024 * 1024, 'a')}}).ok &&
+                  checkpoint.SaveSnapshot().ok &&
+                  checkpoint.Append("message", json{{"role", "assistant"}, {"content", "after checkpoint"}}).ok,
+              "large checkpoint fixture retains messages on both sides");
+        spark::SessionJournal reloaded;
+        Check(reloaded.Resume(checkpoint.Path()).ok && reloaded.State().messages.size() == 2 &&
+                  reloaded.State().messages.front().content == "before checkpoint" &&
+                  reloaded.State().messages.front().timestamp == 123 &&
+                  reloaded.State().messages.back().content == "after checkpoint" &&
+                  reloaded.State().metadata.value("scope", std::string{}) == "project" &&
+                  reloaded.State().metadata["turn_durations_ms"] == json::array({250}),
+              "large session restores the full checkpoint and tail with prior scope and timing");
+    }
     if (opened.ok) {
         Check(journal.Append("message", message).ok, "session appends message");
         const std::string journal_path = journal.Path();

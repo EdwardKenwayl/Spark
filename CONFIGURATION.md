@@ -140,8 +140,16 @@ Advanced overrides include `workspace.allow_outside_reads`,
 `workspace.command_approval` and `workspace.mcp_tool_approval`
 (`deny` / `ask` / `allow`).
 
-`permissions.allow_network` only controls HTTP MCP; it does not isolate the
-system network access of ordinary commands or stdio MCP processes.
+`permissions.allow_network` controls HTTP MCP and the built-in `web_search` tool.
+It does not isolate the system network access of ordinary commands or stdio MCP processes.
+
+### Web search
+
+Spark can search through the public DuckDuckGo and Yahoo! JAPAN pages without an
+API key. The public pages can rate-limit requests or change their markup.
+Set `BRAVE_SEARCH_API_KEY` in Spark's environment to prefer the Brave Search JSON
+API, which returns direct source URLs. Spark sends the query to the selected
+search provider and tries the public sources if the API request fails.
 `permissions.workspace_only` is retained mode metadata; actual path checks
 use `allow_outside_*`. Permission changes take effect immediately for
 subsequent actions according to their current policy.

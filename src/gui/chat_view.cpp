@@ -3022,7 +3022,7 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             for (size_t index = 0; index < items_.size(); ++index) {
                 const ChatItem& item = items_[index];
                 const int item_height = item_heights_[index];
-                const bool hovered = hover_item_ == index;
+                const bool hovered = hover_item_ == index && hover_type_ != HitArea::Type::ToolGroup;
                 if (!item.visible || y + item_height < -40 || y > client.bottom + 40 ||
                     (groups[index].hidden && !groups[index].leader)) {
                     y += item_height;
@@ -3094,7 +3094,8 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                         const bool has_reasoning = groups[index].reasoning != static_cast<size_t>(-1);
                         const bool command_group = !has_reasoning && GroupKey(item.tool_name) == "command";
                         const bool show_group_icon = command_group || (groups[index].active && !has_reasoning);
-                        const COLORREF group_color = hovered ? kText : kMuted;
+                        const bool group_hovered = hover_item_ == index && hover_type_ == HitArea::Type::ToolGroup;
+                        const COLORREF group_color = group_hovered ? kText : kMuted;
                         if (command_group) {
                             const RECT icon_rect{header.left + Scale(9), header.top, header.left + Scale(30), header.bottom};
                             DrawTerminalIcon(buffer, text_font_, icon_rect, group_color);
@@ -3131,7 +3132,7 @@ LRESULT ChatView::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                         }
                         SelectObject(buffer, group_font);
                         RECT group_chevron{header.right - Scale(28), header.top, header.right - Scale(6), header.bottom};
-                        DrawChevron(buffer, group_chevron, group_open, hovered ? kText : kMuted);
+                        DrawChevron(buffer, group_chevron, group_open, group_color);
                     }
                     if (!group_leader || group_open) {
                         const int glyph_x = layout.tool_header.left + Scale(18);

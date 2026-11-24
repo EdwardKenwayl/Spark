@@ -1,5 +1,6 @@
 #include "platform/clock.h"
 #include "core/session.h"
+#include "core/journal_line_reader.h"
 #include "platform/journal_io.h"
 
 #include <algorithm>
@@ -345,6 +346,56 @@ SessionState StateFromJson(const nlohmann::json& input) {
     return state;
 }
 
+struct JournalCheckpoint {
+    std::streamoff offset = -1;
+    std::string scope;
+};
+
+JournalCheckpoint FindJournalCheckpoint(std::istream& stream, const CancellationToken* cancellation) {
+    constexpr std::streamoff kMinimumFileSize = 8 * 1024 * 1024;
+    stream.seekg(0, std::ios::end);
+    const auto length = stream.tellg();
+    stream.seekg(0);
+    if (length < kMinimumFileSize) return {};
+
+    JournalCheckpoint checkpoint;
+    std::string scope;
+    std::string line;
+    std::streamoff offset = 0;
+    JournalLineReader reader(stream);
+    while (reader.Next(line)) {
+        if (cancellation && cancellation->IsCancelled()) return {};
+        const auto next_offset = offset + static_cast<std::streamoff>(line.size()) + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (IsCanonicalSessionSnapshot(line)) {
+            checkpoint = {offset, scope};
+        } else if (line.find("\"session.scope\"") != std::string::npos) {
+            auto event = nlohmann::json::parse(line, nullptr, false);
+            if (event.is_object() && event.contains("type") && event["type"] == "session.scope" &&
+                event.contains("payload") && event["payload"].is_object()) {
+                const auto& payload = event["payload"];
+                if (!payload.contains("scope")) scope.clear();
+                else if (payload["scope"].is_string()) scope = payload["scope"].get<std::string>();
+            }
+        }
+        offset = next_offset;
+    }
+    return stream.bad() ? JournalCheckpoint{} : checkpoint;
+}
+
+bool CanRestoreFromCheckpoint(const nlohmann::json& payload, const SessionState& snapshot) {
+    if (snapshot.id.empty() || !payload.contains("messages") || !payload["messages"].is_array() ||
+        !payload.contains("context_messages") || !payload["context_messages"].is_array() ||
+        !snapshot.metadata.is_object()) return false;
+    // Older snapshots inherited fields and message times from the preceding event stream.
+    for (const char* field : {"turn_durations_ms", "turn_usages", "tool_durations_ms", "turn_errors",
+                              "last_response_context"}) {
+        if (!snapshot.metadata.contains(field)) return false;
+    }
+    return std::none_of(snapshot.messages.begin(), snapshot.messages.end(),
+                        [](const ChatMessage& message) { return message.timestamp == 0; });
+}
+
 std::string LocalDateStamp() {
 #ifdef _WIN32
     SYSTEMTIME local{};
@@ -425,6 +476,15 @@ Result<void> SessionJournal::Resume(const std::string& journal_path, const Cance
         // Stream the journal instead of holding the file and a second copy of every line.
         spark::fs_ifstream stream(NativePath(path_), std::ios::binary);
         if (!stream) return Result<void>::Failure("could not open session journal");
+        const auto checkpoint = FindJournalCheckpoint(stream, cancellation);
+        stream.clear();
+        if (checkpoint.offset > 0) {
+            stream.seekg(checkpoint.offset);
+            const auto restored = LoadEvents(stream, cancellation, checkpoint.scope, true);
+            if (restored.ok || (cancellation && cancellation->IsCancelled())) return restored;
+            stream.clear();
+        }
+        stream.seekg(0);
         return LoadEvents(stream, cancellation);
     } catch (const std::exception& exception) {
         return Result<void>::Failure("could not parse session: " + std::string(exception.what()));
@@ -438,16 +498,24 @@ void SessionJournal::SetStorageRoot(const std::string& data_directory) {
     data_directory_ = AbsolutePath(data_directory);
 }
 
-Result<void> SessionJournal::LoadEvents(std::istream& stream, const CancellationToken* cancellation) {
+bool IsCanonicalSessionSnapshot(std::string_view line) {
+    constexpr std::string_view prefix = R"({"payload":{"context_messages":[)";
+    constexpr std::string_view suffix = R"(,"type":"snapshot"})";
+    return line.size() >= prefix.size() + suffix.size() && line.substr(0, prefix.size()) == prefix &&
+           line.substr(line.size() - suffix.size()) == suffix;
+}
+
+Result<void> SessionJournal::LoadEvents(std::istream& stream, const CancellationToken* cancellation,
+                                       std::string scope, bool from_checkpoint) {
     shared_state_ = std::make_shared<SessionState>();
     auto& state_ = *shared_state_;
     bool context_override = false;
-    std::string scope;
     std::string line;
     bool first_line = true;
+    JournalLineReader reader(stream);
     for (;;) {
         if (cancellation != nullptr && cancellation->IsCancelled()) return Result<void>::Failure("cancelled");
-        if (!std::getline(stream, line)) break;
+        if (!reader.Next(line)) break;
         if (first_line && line.compare(0, 3, "\xef\xbb\xbf") == 0) line.erase(0, 3);
         first_line = false;
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -459,6 +527,8 @@ Result<void> SessionJournal::LoadEvents(std::istream& stream, const Cancellation
             const auto found_payload = event.find("payload");
             const auto& payload = found_payload == event.end() ? empty_payload : *found_payload;
             const uint64_t event_timestamp = event.value("timestamp", uint64_t{0});
+            if (from_checkpoint && type != "snapshot")
+                return Result<void>::Failure("invalid session checkpoint");
             if (ApplyLiveEvent(state_, type, payload) || ApplyPauseEvent(state_, type, payload)) {
             } else if (type == "session.created") {
                 state_.id = payload.value("session_id", std::string{});
@@ -493,6 +563,8 @@ Result<void> SessionJournal::LoadEvents(std::istream& stream, const Cancellation
                 RecordTurnError(state_, payload, event_timestamp);
             } else if (type == "snapshot") {
                 SessionState snapshot = StateFromJson(payload);
+                if (from_checkpoint && !CanRestoreFromCheckpoint(payload, snapshot))
+                    return Result<void>::Failure("incomplete session checkpoint");
                 const bool snapshot_has_context =
                     payload.contains("context_messages") && payload["context_messages"].is_array();
                 if (context_override && !snapshot_has_context) {
@@ -536,9 +608,11 @@ Result<void> SessionJournal::LoadEvents(std::istream& stream, const Cancellation
                     }
                 }
                 state_ = std::move(snapshot);
+                from_checkpoint = false;
             }
             state_.updated_at = event_timestamp == 0 ? state_.updated_at : event_timestamp;
         } catch (const std::exception&) {
+            if (from_checkpoint) return Result<void>::Failure("invalid session checkpoint");
             // A damaged tail must not prevent opening earlier, valid events.
         }
     }
