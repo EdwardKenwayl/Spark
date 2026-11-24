@@ -330,7 +330,6 @@ private:
     void FinishTurn(const std::shared_ptr<TurnRuntime>& runtime, bool success, const std::string& reason);
     void PersistInterruptedTurn(const std::shared_ptr<TurnRuntime>& runtime, uint64_t elapsed_ms);
     bool HasPausedTurn() const;
-    uint64_t PausedTurnElapsedMs() const;
     void ClearPausedTurn(SessionJournal& journal);
     void DiscardPausedTurnForNewMessage(SessionJournal& journal);
     bool AskApproval(const std::shared_ptr<TurnRuntime>& runtime, const ApprovalRequest& request);

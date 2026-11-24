@@ -17,7 +17,7 @@ void Check(bool condition, const char* message) {
     }
 }
 
-void TestImageTurn(bool compact_history) {
+void TestImageTurn(bool compact_history, bool high_reported_usage = false) {
     const auto root = fs::temp_directory_path() / NativePath("spark-image-" + NewSessionId());
     fs::create_directories(root);
     const auto image = root / NativePath("clipboard.bmp");
@@ -48,7 +48,8 @@ void TestImageTurn(bool compact_history) {
                        "\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
         } else {
             response = "data: {\"choices\":[{\"delta\":{\"content\":\"image answer\"},\"finish_reason\":\"stop\"}],"
-                       "\"usage\":{\"prompt_tokens\":4096,\"completion_tokens\":4}}\n\ndata: [DONE]\n\n";
+                       "\"usage\":{\"prompt_tokens\":" + std::to_string(high_reported_usage ? 320000 : 4096) +
+                       ",\"completion_tokens\":4}}\n\ndata: [DONE]\n\n";
         }
         connection.Send(Server::Headers(200, response.size(), "Content-Type: text/event-stream\r\n") + response);
     }, 8, 12 * 1024 * 1024);
@@ -103,13 +104,15 @@ void TestImageTurn(bool compact_history) {
         callbacks, &cancellation, false, {PathToUtf8(image)});
     Check(result.ok && completed == 1, "image turn completes after any necessary compaction");
     Check(server.Error().empty(), "provider fixture has no transport error");
-    Check(summaries == (compact_history ? 1u : 0u), "only genuine history pressure causes compaction");
-    const std::vector<std::string> expected = compact_history
+    Check(summaries == (compact_history || high_reported_usage ? 1u : 0u), "history pressure causes exactly one compaction");
+    const std::vector<std::string> expected = high_reported_usage
+        ? std::vector<std::string>{"request", "compacting", "compacted", "finished"} : compact_history
         ? std::vector<std::string>{"compacting", "compacted", "request", "finished"}
         : std::vector<std::string>{"request", "finished"};
     Check(events == expected, "compaction precedes the normal request and final response");
     Check(visible == "image answer", "summary stays out of streamed assistant output");
-    Check(context == 4100, "provider-reported context usage wins over image estimates");
+    Check(high_reported_usage ? context < 10000 : context == 4100,
+          "reported context wins until a compaction replaces that context");
     Check(!journal.State().messages.back().image_paths.size() &&
         journal.State().messages.back().content == "image answer", "final answer is persisted");
     Check(journal.State().messages[journal.State().messages.size() - 2].image_paths.size() == 1,
@@ -126,5 +129,6 @@ void TestImageTurn(bool compact_history) {
 int main() {
     TestImageTurn(false);
     TestImageTurn(true);
+    TestImageTurn(false, true);
     return failures == 0 ? 0 : 1;
 }

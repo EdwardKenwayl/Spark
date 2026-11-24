@@ -9,10 +9,7 @@ LiveTurn::LiveTurn(SessionJournal* journal, AgentCallbacks& callbacks, bool resu
     if (!journal_) return;
     const size_t turns = static_cast<size_t>(std::count_if(journal_->State().messages.begin(),
         journal_->State().messages.end(), [](const ChatMessage& message) { return message.role == MessageRole::User; }));
-    const auto& metadata = journal_->State().metadata;
-    const uint64_t previous = resume ? metadata.value("paused_turn", nlohmann::json::object())
-        .value("elapsed_ms", uint64_t{0}) : 0;
-    journal_->Append("turn.started", {{"started_tick", MonotonicMillis()}, {"elapsed_ms", previous},
+    journal_->Append("turn.started", {{"started_tick", MonotonicMillis()},
         {"turn_index", resume && turns ? turns - 1 : turns}});
     const auto text = callbacks.on_text_delta;
     callbacks.on_text_delta = [this, text](const std::string& delta) {

@@ -23,6 +23,11 @@ inline bool HasAssistantText(std::string_view text) {
     return text.find_first_not_of(" \t\r\n\f\v") != std::string_view::npos;
 }
 
+inline const wchar_t* CompactionLabel(bool finished, bool automatic) {
+    if (!finished) return L"Compacting context...";
+    return automatic ? L"Context automatically compacted" : L"Context manually compacted";
+}
+
 struct ChatItem {
     ChatItemKind kind = ChatItemKind::Assistant;
     std::string text;
@@ -54,5 +59,14 @@ struct ChatItem {
     uint64_t context_limit_tokens = 0;
     uint64_t revision = 0;
 };
+
+inline size_t PendingCompaction(const std::vector<ChatItem>& items) {
+    for (size_t index = items.size(); index > 0; --index) {
+        const auto& item = items[index - 1];
+        if (item.kind == ChatItemKind::TurnStatus || item.kind == ChatItemKind::User) break;
+        if (item.kind == ChatItemKind::Compaction && item.visible && !item.finished) return index - 1;
+    }
+    return items.size();
+}
 
 }  // namespace spark

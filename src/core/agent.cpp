@@ -49,6 +49,9 @@ std::string ToolPhaseDetail(const ToolCall& call) {
         } else if (call.name == "search_text") {
             const std::string query = arguments.value("query", std::string{});
             if (!query.empty()) return query;
+        } else if (call.name == "web_search") {
+            const std::string query = arguments.value("query", std::string{});
+            if (!query.empty()) return query;
         } else if (call.name == "read_skill") {
             const std::string name = arguments.value("name", std::string{});
             const std::string path = arguments.value("path", std::string{});
@@ -378,6 +381,15 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
 
     const std::string system_prompt = BuildSystemPrompt(*provider, *model);
     double token_calibration = 1.0;
+    uint64_t reported_context_tokens = 0;
+    if (journal_ != nullptr) {
+        const auto usage = journal_->State().metadata.find("last_response_context");
+        if (usage != journal_->State().metadata.end() && usage->is_object() &&
+            usage->value("provider", std::string{}) == provider->id &&
+            usage->value("model", std::string{}) == model->id) {
+            reported_context_tokens = usage->value("tokens", uint64_t{0});
+        }
+    }
     auto context_messages = [&]() -> std::vector<ChatMessage>& {
         if (journal_ == nullptr) return local_context.empty() ? local_transcript : local_context;
         SessionState& state = journal_->MutableState();
@@ -398,7 +410,7 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
     auto estimated_tokens = [&]() {
         const double estimate =
             static_cast<double>(EstimateContextTokens(context_messages(), definitions, system_prompt));
-        return static_cast<uint64_t>(estimate * token_calibration);
+        return std::max(reported_context_tokens, static_cast<uint64_t>(estimate * token_calibration));
     };
     const uint64_t context_limit_tokens = EffectiveContextLimit(config_.context, *model);
     // One shared reporter keeps the sidebar label and the per-turn usage card in lockstep:
@@ -465,6 +477,7 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
         if (callbacks.on_status) {
             callbacks.on_status("上下文已压缩：" + std::to_string(before) + " → " + std::to_string(after) + " tokens");
         }
+        reported_context_tokens = 0;
         publish_context(after);
         if (callbacks.on_context_compacted) callbacks.on_context_compacted(before, after, trigger);
         return Result<void>::Success();
@@ -596,7 +609,8 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
             for (const auto& message : reply.value.assistant_messages) phases.push_back(message.phase);
             journal_->Append("turn.response", {{"provider", provider->id}, {"model", model->id},
                 {"finish_reason", reply.value.finish_reason}, {"needs_follow_up", reply.value.needs_follow_up},
-                {"input_tokens", reply.value.input_tokens}, {"cached_input_tokens", reply.value.cached_input_tokens},
+                {"input_tokens", reply.value.input_tokens}, {"output_tokens", reply.value.output_tokens},
+                {"cached_input_tokens", reply.value.cached_input_tokens},
                 {"message_phases", phases}, {"tool_calls", reply.value.tool_calls.size()}});
         }
         if (callbacks.on_model_usage) {
@@ -604,8 +618,10 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
                                      reply.value.cached_input_tokens);
         }
         if (reply.value.input_tokens > 0 || reply.value.output_tokens > 0) {
-            publish_context(static_cast<uint64_t>(std::max(0, reply.value.input_tokens)) +
-                            static_cast<uint64_t>(std::max(0, reply.value.output_tokens)));
+            const auto total = static_cast<uint64_t>(std::max(0, reply.value.input_tokens)) +
+                               static_cast<uint64_t>(std::max(0, reply.value.output_tokens));
+            if (reply.value.input_tokens > 0) reported_context_tokens = total;
+            publish_context(std::max(total, reported_context_tokens));
         }
         if (reply.value.input_tokens > 0 && estimated_request_tokens > 0) {
             const double observed = static_cast<double>(reply.value.input_tokens) /
@@ -701,8 +717,10 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
             if (callbacks.on_status) callbacks.on_status("上下文接近上限，正在生成摘要...");
             const auto compacted = compact_context(first_request ? "pre_turn" : "tool_loop");
             if (!compacted.ok) {
-                persist_turn_error(compacted.error);
-                if (callbacks.on_error) callbacks.on_error(compacted.error);
+                if (compacted.error != "cancelled") {
+                    persist_turn_error(compacted.error);
+                    if (callbacks.on_error) callbacks.on_error(compacted.error);
+                }
                 return Result<void>::Failure(compacted.error);
             }
         }
@@ -739,8 +757,10 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
                 if (callbacks.on_status) callbacks.on_status("回合结束，正在压缩上下文...");
                 const auto compacted = compact_context("post_turn");
                 if (!compacted.ok) {
-                    persist_turn_error(compacted.error);
-                    if (callbacks.on_error) callbacks.on_error(compacted.error);
+                    if (compacted.error != "cancelled") {
+                        persist_turn_error(compacted.error);
+                        if (callbacks.on_error) callbacks.on_error(compacted.error);
+                    }
                     return Result<void>::Failure(compacted.error);
                 }
             }

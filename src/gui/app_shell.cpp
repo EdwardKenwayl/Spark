@@ -1155,8 +1155,9 @@ void AppWindow::AttachTurnUi(const std::shared_ptr<TurnRuntime>& runtime) {
     if (chat_view_ != nullptr) {
         if (active_turn_entry_ != static_cast<size_t>(-1))
             chat_view_->SetTurnStatusLabel(active_turn_entry_,
-                current_phase_ == AgentPhase::Compacting || current_phase_ == AgentPhase::Reconnecting
+                current_phase_ == AgentPhase::Reconnecting
                     ? WideToUtf8(phase_text_) : std::string{});
+        if (current_phase_ == AgentPhase::Compacting) chat_view_->AddCompactionNotice(true, 0, true);
         // Replay restores committed messages. The current summary is transient and may
         // only exist in the running turn, particularly after switching conversations.
         if (current_phase_ == AgentPhase::WaitingModel && runtime->phase_detail == "thinking" &&
@@ -3617,7 +3618,6 @@ void AppWindow::StartTurn() {
         UpdateTurnUi();
         return;
     }
-    const uint64_t resume_elapsed_ms = resuming ? PausedTurnElapsedMs() : 0;
     const std::string text = resuming ? std::string{} : Trim(ComposerText());
     if (!resuming && text.empty()) {
         SetStatus(i18n::Text(L"Enter a message before sending."));
@@ -3694,6 +3694,13 @@ void AppWindow::StartTurn() {
                          }),
                          errors.end());
         }
+        session.metadata["last_response_context"] = nullptr;
+        if (auto boundaries = session.metadata.find("resume_boundaries");
+            boundaries != session.metadata.end() && boundaries->is_array()) {
+            boundaries->erase(std::remove_if(boundaries->begin(), boundaries->end(), [&](const nlohmann::json& event) {
+                return event.is_object() && event.value("message_count", size_t{0}) > messages.size();
+            }), boundaries->end());
+        }
         ClearPausedTurn(journal_);
         journal_.SaveSnapshot();
         chat_view_->EraseFrom(pending_edit_index_);
@@ -3748,8 +3755,7 @@ void AppWindow::StartTurn() {
         ApplyPermissionMode(&runtime->config, runtime->permission_mode);
     }
     runtime->journal = journal_;
-    const uint64_t now_tick = spark::MonotonicMillis();
-    runtime->started_tick = resuming && resume_elapsed_ms <= now_tick ? now_tick - resume_elapsed_ms : now_tick;
+    runtime->started_tick = spark::MonotonicMillis();
     runtime->resume_turn = resuming;
     runtime->timed_turn = resuming || !is_local_command;
     runtime->last_progress_tick.store(runtime->started_tick);
@@ -3770,7 +3776,9 @@ void AppWindow::StartTurn() {
             ShowWindow(chat_view_->hwnd(), SW_SHOW);
         }
         chat_view_->AddUser(text, 0, turn_image_paths);
-        active_turn_entry_ = chat_view_->AddTurnStatus();
+    }
+    if (runtime->timed_turn && chat_view_ != nullptr) {
+        active_turn_entry_ = chat_view_->AddTurnStatus(0, runtime->started_tick);
     } else {
         active_turn_entry_ = static_cast<size_t>(-1);
     }
@@ -3782,14 +3790,6 @@ void AppWindow::StartTurn() {
     runtime->ui_attached = true;
     attached_turn_key_ = runtime->session_key;
     active_turns_[runtime->session_key] = runtime;
-    if (resuming) {
-        ReloadSessionIntoView();
-        // ReloadSessionIntoView starts by detaching the old chat view, so reattach the
-        // resumed runtime after the transcript has been rebuilt.
-        runtime->ui_attached = true;
-        attached_turn_key_ = runtime->session_key;
-        turn_started_tick_ = runtime->started_tick;
-    }
     SetStatus({});
     UpdateEmptyState();
     UpdateTurnUi();
@@ -4233,7 +4233,10 @@ void AppWindow::HandleUiEvent(UiEvent* event) {
             case EventKind::Status:
             case EventKind::ToolStart:
             case EventKind::ToolFinish:
-        case EventKind::Compaction:
+                break;
+            case EventKind::Compaction:
+                if (runtime->phase == AgentPhase::Compacting) runtime->phase = AgentPhase::WaitingModel;
+                break;
             case EventKind::Error:
                 break;
         }
@@ -4321,6 +4324,7 @@ void AppWindow::HandleUiEvent(UiEvent* event) {
             break;
         }
         case EventKind::Compaction:
+            if (runtime->phase == AgentPhase::Compacting) runtime->phase = AgentPhase::WaitingModel;
             FinishActiveReasoning(true);
             if (assistant_stream_started_ && chat_view_ != nullptr) {
                 chat_view_->FinishAssistant(active_assistant_entry_);
@@ -4406,6 +4410,7 @@ void AppWindow::FinishTurn(const std::shared_ptr<TurnRuntime>& runtime, bool suc
     }
 
     if (attached && chat_view_ != nullptr) {
+        chat_view_->CancelCompactionNotice();
         FinishActiveReasoning(false);
         if (assistant_stream_started_) {
             chat_view_->FinishAssistant(active_assistant_entry_);
@@ -4541,11 +4546,6 @@ bool AppWindow::HasPausedTurn() const {
     if (pending_new_conversation_ || pending_edit_index_ != static_cast<size_t>(-1)) return false;
     const nlohmann::json& metadata = journal_.State().metadata;
     return metadata.is_object() && metadata.contains("paused_turn") && metadata["paused_turn"].is_object();
-}
-
-uint64_t AppWindow::PausedTurnElapsedMs() const {
-    if (!HasPausedTurn()) return 0;
-    return journal_.State().metadata["paused_turn"].value("elapsed_ms", uint64_t{0});
 }
 
 void AppWindow::ClearPausedTurn(SessionJournal& journal) {
@@ -4738,9 +4738,15 @@ void AppWindow::SetPhase(const std::shared_ptr<TurnRuntime>& runtime, AgentPhase
     current_phase_ = phase;
     phase_text_ = text;
     reasoning_preview_ = runtime->reasoning_preview;
+    if (chat_view_ != nullptr && phase == AgentPhase::Compacting) {
+        if (assistant_stream_started_) chat_view_->FinishAssistant(active_assistant_entry_);
+        assistant_stream_started_ = false;
+        active_assistant_entry_ = static_cast<size_t>(-1);
+        chat_view_->AddCompactionNotice(true, 0, true);
+    }
     if (chat_view_ != nullptr && active_turn_entry_ != static_cast<size_t>(-1))
         chat_view_->SetTurnStatusLabel(active_turn_entry_,
-            phase == AgentPhase::Compacting || phase == AgentPhase::Reconnecting ? WideToUtf8(text) : std::string{});
+            phase == AgentPhase::Reconnecting ? WideToUtf8(text) : std::string{});
     if (chat_view_ != nullptr) chat_view_->SetActivityState(ActivityRowVisible(), text, runtime->started_tick);
 }
 
@@ -4941,12 +4947,14 @@ void AppWindow::ReloadSessionIntoView() {
         uint64_t pending_turn_duration = 0;
         nlohmann::json pending_turn_usage;
         size_t compaction_index = 0;
+        size_t resume_index = 0;
         std::map<std::string, size_t> pending_tools;
     };
     auto progress = std::make_shared<ReplayProgress>();
     progress->message_index = history.first_message;
     progress->turn_index = history.first_turn;
-    session_replay_step_ = [this, progress, running, durations, usages, compactions, tool_durations, turn_errors,
+    const auto resumes = metadata.value("resume_boundaries", nlohmann::json::array());
+    session_replay_step_ = [this, progress, running, durations, usages, compactions, resumes, tool_durations, turn_errors,
                             total_turns, paused_tail, paused_elapsed_ms, external_running, external_start_tick,
                             external_phase, external_output, external_reasoning, external_tool_name,
                             external_tool_arguments]() {
@@ -4992,7 +5000,20 @@ void AppWindow::ReloadSessionIntoView() {
             pending_turn_index = static_cast<size_t>(-1);
             pending_turn_usage = nlohmann::json{};
         };
-        const auto emit_compactions_through = [&](size_t message_count) {
+        const auto emit_boundaries_through = [&](size_t message_count) {
+            while (resumes.is_array() && progress->resume_index < resumes.size()) {
+                const auto& event = resumes[progress->resume_index];
+                if (!event.is_object()) { ++progress->resume_index; continue; }
+                const auto boundary = event.value("message_count", size_t{0});
+                if (boundary > message_count) break;
+                ++progress->resume_index;
+                if (boundary != message_count || pending_turn_status == static_cast<size_t>(-1)) continue;
+                chat_view_->MarkTurnPaused(pending_turn_status, event.value("elapsed_ms", uint64_t{0}),
+                                          event.value("timestamp", uint64_t{0}));
+                const bool active = pending_turn_index + 1 == total_turns;
+                const uint64_t started = running != nullptr ? running->started_tick : external_start_tick;
+                pending_turn_status = chat_view_->AddTurnStatus(0, active ? started : 0);
+            }
             while (compaction_index < compactions.size()) {
                 const nlohmann::json& compaction = compactions[compaction_index];
                 if (!compaction.is_object()) {
@@ -5027,7 +5048,7 @@ void AppWindow::ReloadSessionIntoView() {
             if (restored >= 64 || (restored > 0 && spark::MonotonicMillis() >= deadline)) return false;
             ++restored;
             const size_t message_index = progress->message_index;
-            emit_compactions_through(message_index);
+            emit_boundaries_through(message_index);
             const ChatMessage& message = transcript[message_index];
             if (message.role == MessageRole::User) {
                 finish_pending_turn();
@@ -5062,7 +5083,7 @@ void AppWindow::ReloadSessionIntoView() {
                 }
             }
         }
-        emit_compactions_through(transcript.size());
+        emit_boundaries_through(transcript.size());
         if (running == nullptr && !external_running) {
             for (const auto& pending : pending_tools) {
                 if (pending.second < chat_view_->Count()) {

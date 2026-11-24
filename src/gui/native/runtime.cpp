@@ -13,7 +13,7 @@ struct NativeRuntime::Run {
     CancellationToken cancellation;
     std::thread worker;
     std::atomic<bool> done{false};
-    uint64_t started = 0, previous_elapsed = 0;
+    uint64_t started = 0;
     std::unique_ptr<McpManager> mcp;
     std::unique_ptr<SubAgentManager> children;
     std::mutex approval_mutex;
@@ -61,9 +61,6 @@ Result<void> NativeRuntime::Start(const AppConfig& config, const SessionJournal&
     run->config = config;
     run->config.workspace.path = journal.State().workspace;
     run->started = MonotonicMillis();
-    const auto& metadata = journal.State().metadata;
-    if (resume && metadata.contains("paused_turn") && metadata["paused_turn"].is_object())
-        run->previous_elapsed = metadata["paused_turn"].value("elapsed_ms", uint64_t{0});
     const std::string path = journal.Path();
     auto previous = runs_.find(path);
     if (previous != runs_.end() && previous->second->children->HasRunning())
@@ -173,7 +170,7 @@ Result<void> NativeRuntime::Start(const AppConfig& config, const SessionJournal&
         } catch (const std::exception& exception) {
             outcome = Result<void>::Failure(exception.what());
         }
-        const uint64_t elapsed = MonotonicMillis() - run->started + run->previous_elapsed;
+        const uint64_t elapsed = MonotonicMillis() - run->started;
         if (run->cancellation.IsCancelled() || provider_interrupted) {
             ChatMessage marker;
             marker.role = MessageRole::System;

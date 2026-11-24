@@ -455,6 +455,18 @@
     "pt-BR": "{minutes}min {seconds}s",
     "ru-RU": "{minutes}м {seconds}с"
   },
+  "{hours}h {minutes}m {seconds}s": {
+    "zh-CN": "{hours}小时 {minutes}分 {seconds}秒",
+    "en-US": "{hours}h {minutes}m {seconds}s",
+    "zh-TW": "{hours}小時 {minutes}分 {seconds}秒",
+    "ja-JP": "{hours}時間 {minutes}分 {seconds}秒",
+    "ko-KR": "{hours}시간 {minutes}분 {seconds}초",
+    "de-DE": "{hours}h {minutes}m {seconds}s",
+    "fr-FR": "{hours}h {minutes}min {seconds}s",
+    "es-ES": "{hours}h {minutes}min {seconds}s",
+    "pt-BR": "{hours}h {minutes}min {seconds}s",
+    "ru-RU": "{hours}ч {minutes}м {seconds}с"
+  },
   "{hours}h {minutes}m": {
     "zh-CN": "{hours}小时 {minutes}分",
     "en-US": "{hours}h {minutes}m",

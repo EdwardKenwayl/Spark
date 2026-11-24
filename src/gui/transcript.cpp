@@ -55,7 +55,7 @@ struct Transcript::Replay {
     TranscriptTime now;
     TranscriptRun run;
     size_t message = 0, first_message = 0, total_messages = 0;
-    size_t turn = 0, total_turns = 0, compaction = 0;
+    size_t turn = 0, total_turns = 0, compaction = 0, resume = 0;
     size_t pending_status = kNoChatItem, pending_turn = kNoChatItem;
     size_t live_turn = kNoChatItem, live_tool = 0;
     std::string live_text, live_reasoning;
@@ -96,10 +96,35 @@ struct Transcript::Replay {
         pending_status = pending_turn = kNoChatItem;
     }
 
-    void CompactionsThrough(Transcript& model, size_t count) {
+    void BoundariesThrough(Transcript& model, size_t count) {
+        const auto absolute_count = first_message + count;
+        const auto& resumes = Metadata(state, "resume_boundaries");
+        while (resumes.is_array() && resume < resumes.size()) {
+            const auto& event = resumes[resume];
+            if (!event.is_object()) { ++resume; continue; }
+            const auto boundary = event.value("message_count", size_t{0});
+            if (boundary > absolute_count) break;
+            ++resume;
+            if (boundary != absolute_count || pending_status == kNoChatItem) continue;
+            ChatItem item;
+            item.elapsed_ms = event.value("elapsed_ms", uint64_t{0});
+            item.timestamp = event.value("timestamp", uint64_t{0});
+            model.Apply({TranscriptEventKind::PauseTurn, pending_status, item}, now);
+            item = {};
+            item.kind = ChatItemKind::TurnStatus;
+            if (run.active && pending_turn + 1 == total_turns) item.start_tick_ms = run.started_tick_ms;
+            if (pending_turn == live_turn && item.start_tick_ms == 0)
+                item.start_tick_ms = Metadata(state, "live_turn").value("started_tick", uint64_t{0});
+            pending_status = model.Apply({TranscriptEventKind::Add, kNoChatItem, item}, now);
+            if (pending_turn == live_turn) {
+                const auto& live = Metadata(state, "live_turn");
+                live_text = live.value("text", std::string{});
+                live_reasoning = live.value("reasoning", std::string{});
+            }
+            turn_tools.clear();
+        }
         const auto& events = Metadata(state, "context_compactions");
         if (!events.is_array()) return;
-        const auto absolute_count = first_message + count;
         while (compaction < events.size()) {
             const auto& event = events[compaction];
             if (!event.is_object()) { ++compaction; continue; }
@@ -146,7 +171,6 @@ size_t Transcript::Apply(const TranscriptEvent& event, TranscriptTime now) {
             value.arguments = SanitizeDisplayText(value.arguments);
         }
         if (value.kind == ChatItemKind::Compaction) {
-            value.text = value.success ? "Context automatically compacted" : "Context manually compacted";
             // Standalone notices stay expanded independently of a finished turn's status.
             value.expanded = true;
             for (size_t index = items_.size(); index > 0; --index) {
@@ -188,6 +212,11 @@ size_t Transcript::Apply(const TranscriptEvent& event, TranscriptTime now) {
             if (item.kind == ChatItemKind::Reasoning) item.text = ReasoningText(item.text + value.text);
             break;
         case TranscriptEventKind::Finish:
+            if (item.kind == ChatItemKind::Compaction) {
+                item.finished = true;
+                item.success = value.success;
+                break;
+            }
             if (item.kind != ChatItemKind::Tool && item.kind != ChatItemKind::Reasoning &&
                 item.kind != ChatItemKind::Assistant) break;
             item.finished = true;
@@ -200,14 +229,8 @@ size_t Transcript::Apply(const TranscriptEvent& event, TranscriptTime now) {
             }
             break;
         case TranscriptEventKind::Hide:
-            if (item.kind == ChatItemKind::Reasoning) item.visible = false;
-            break;
-        case TranscriptEventKind::ResumeTurn:
-            if (item.kind != ChatItemKind::TurnStatus) break;
-            item.start_tick_ms = value.start_tick_ms;
-            item.elapsed_ms = value.elapsed_ms;
-            item.finished = item.paused = false;
-            item.expanded = true;
+            if (item.kind == ChatItemKind::Reasoning || item.kind == ChatItemKind::Compaction) item.visible = false;
+            if (item.kind == ChatItemKind::Compaction) item.expanded = true;
             break;
         case TranscriptEventKind::FinishTurn:
         case TranscriptEventKind::PauseTurn:
@@ -222,6 +245,26 @@ size_t Transcript::Apply(const TranscriptEvent& event, TranscriptTime now) {
             break;
     }
     return event.index;
+}
+
+void Transcript::BeginCompaction(TranscriptTime now) {
+    if (PendingCompaction(items_) < items_.size()) return;
+    ChatItem item;
+    item.kind = ChatItemKind::Compaction;
+    item.finished = false;
+    Apply({TranscriptEventKind::Add, kNoChatItem, item}, now);
+}
+
+void Transcript::FinishCompaction(bool automatic, TranscriptTime now) {
+    const size_t pending = PendingCompaction(items_);
+    ChatItem item;
+    item.kind = ChatItemKind::Compaction;
+    item.success = automatic;
+    Apply({pending < items_.size() ? TranscriptEventKind::Finish : TranscriptEventKind::Add, pending, item}, now);
+}
+
+void Transcript::CancelCompaction(TranscriptTime now) {
+    Apply({TranscriptEventKind::Hide, PendingCompaction(items_), {}}, now);
 }
 
 void Transcript::FoldTurn(size_t index) {
@@ -390,7 +433,8 @@ uint64_t Transcript::BeginHistoryReplay(const SessionState& state, TranscriptTim
     replay_->turn = first_turn;
     replay_->now = now;
     replay_->state.messages.assign(state.messages.begin() + first_message, state.messages.begin() + end_message);
-    for (const auto* key : {"turn_durations_ms", "turn_usages", "turn_errors", "tool_durations_ms", "context_compactions"}) {
+    for (const auto* key : {"turn_durations_ms", "turn_usages", "turn_errors", "tool_durations_ms",
+                            "context_compactions", "resume_boundaries"}) {
         const auto found = state.metadata.find(key);
         if (found != state.metadata.end()) replay_->state.metadata[key] = *found;
     }
@@ -406,7 +450,7 @@ bool Transcript::ReplayStep(uint64_t generation, size_t max_messages) {
     const auto& live = Metadata(replay.state, "live_turn");
     while (replay.message < replay.state.messages.size()) {
         if (restored++ >= budget) return false;
-        replay.CompactionsThrough(*this, replay.message);
+        replay.BoundariesThrough(*this, replay.message);
         const auto& message = replay.state.messages[replay.message++];
         ChatItem item;
         item.timestamp = message.timestamp;
@@ -458,7 +502,7 @@ bool Transcript::ReplayStep(uint64_t generation, size_t max_messages) {
             Apply({TranscriptEventKind::Finish, index, item}, replay.now);
         }
     }
-    replay.CompactionsThrough(*this, replay.message);
+    replay.BoundariesThrough(*this, replay.message);
     if (replay.live_turn != kNoChatItem) {
         const auto tools = live.find("tools");
         while (tools != live.end() && tools->is_array() && replay.live_tool < tools->size()) {
@@ -502,6 +546,7 @@ bool Transcript::ReplayStep(uint64_t generation, size_t max_messages) {
             item.kind = ChatItemKind::Assistant; item.text = replay.live_text;
             Apply({TranscriptEventKind::Add, kNoChatItem, item}, replay.now);
         }
+        if (live.value("phase", std::string{}) == "compacting") BeginCompaction(replay.now);
     }
     if (!replay.run.active && replay.live_turn == kNoChatItem) {
         for (const auto& pending : replay.tools) {

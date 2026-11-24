@@ -75,8 +75,9 @@ wxString Duration(uint64_t ms, DurationKind kind = DurationKind::Tool) {
         if (ms < 60000) return wxString(i18n::Format(L"{seconds} sec", {{L"seconds", seconds}}));
         if (ms < 3600000) return wxString(i18n::Format(L"{minutes} min {seconds} sec",
             {{L"minutes", minutes}, {L"seconds", std::to_wstring(ms / 1000 % 60)}}));
-        return wxString(i18n::Format(L"{hours} hr {minutes} min",
-            {{L"hours", std::to_wstring(ms / 3600000)}, {L"minutes", std::to_wstring(ms / 60000 % 60)}}));
+        return wxString(i18n::Format(L"{hours}h {minutes}m {seconds}s",
+            {{L"hours", std::to_wstring(ms / 3600000)}, {L"minutes", std::to_wstring(ms / 60000 % 60)},
+             {L"seconds", std::to_wstring(ms / 1000 % 60)}}));
     }
     if (ms < 1000) return wxString(i18n::Format(L"{milliseconds}ms", {{L"milliseconds", std::to_wstring(ms)}}));
     if (ms < 60000) return wxString(i18n::Format(L"{seconds}s",
@@ -664,8 +665,8 @@ void NativeChatSurface::Reflow(wxDC& dc) {
             } else if (item.kind == ChatItemKind::Compaction) {
                 dc.SetFont(body_);
                 const int height = std::max(FromDIP(22), dc.GetTextExtent("Ag").y);
-                const auto label = wxControl::Ellipsize(T(item.success ? L"Context automatically compacted"
-                    : L"Context manually compacted"), dc, wxELLIPSIZE_END, std::max(1, width - FromDIP(22)));
+                const auto label = wxControl::Ellipsize(T(CompactionLabel(item.finished, item.success)),
+                    dc, wxELLIPSIZE_END, std::max(1, width - FromDIP(22)));
                 row.fragments.push_back({label, {left + FromDIP(22),
                     top + std::max(0, (height - dc.GetTextExtent(label).y) / 2)}, body_, Muted(), false, true});
                 row.message = wxRect(left, top, width, height);

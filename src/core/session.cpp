@@ -87,6 +87,12 @@ void RecordCompaction(SessionState& state, const nlohmann::json& payload) {
 }
 
 void ApplyContextCompaction(SessionState& state, const nlohmann::json& payload) {
+    state.metadata["last_response_context"] = nullptr;
+    if (auto live = state.metadata.find("live_turn"); live != state.metadata.end() && live->is_object() &&
+        live->value("phase", std::string{}) == "compacting") {
+        (*live)["phase"] = "waiting_model";
+        (*live)["status"] = "";
+    }
     RecordCompaction(state, payload);
     state.context_messages.clear();
     if (payload.contains("context_messages") && payload["context_messages"].is_array()) {
@@ -112,6 +118,11 @@ bool ApplyPauseEvent(SessionState& state, const std::string& type, const nlohman
     if (type == "turn.paused") {
         state.metadata["paused_turn"] = payload;
     } else if (type == "turn.pause_cleared") {
+        if (payload.contains("resume_boundary") && payload["resume_boundary"].is_object()) {
+            auto& boundaries = state.metadata["resume_boundaries"];
+            if (!boundaries.is_array()) boundaries = nlohmann::json::array();
+            boundaries.push_back(payload["resume_boundary"]);
+        }
         if (payload.value("discard_marker", false)) {
             for (auto* messages : {&state.messages, &state.context_messages}) {
                 if (!messages->empty() && messages->back().role == MessageRole::System &&
@@ -125,6 +136,17 @@ bool ApplyPauseEvent(SessionState& state, const std::string& type, const nlohman
         return false;
     }
     return true;
+}
+
+void RecordResponseContext(SessionState& state, const nlohmann::json& payload) {
+    const auto input = payload.value("input_tokens", int64_t{0});
+    if (input <= 0) return;
+    state.metadata["last_response_context"] = {
+        {"provider", payload.value("provider", std::string{})},
+        {"model", payload.value("model", std::string{})},
+        {"tokens", static_cast<uint64_t>(input) +
+                   static_cast<uint64_t>(std::max(int64_t{0}, payload.value("output_tokens", int64_t{0})))},
+    };
 }
 
 void RecordToolExecution(SessionState& state, const nlohmann::json& payload) {
@@ -463,6 +485,8 @@ Result<void> SessionJournal::LoadEvents(std::istream& stream, const Cancellation
                 RecordTurnDuration(state_, payload);
             } else if (type == "turn.usage") {
                 RecordTurnUsage(state_, payload);
+            } else if (type == "turn.response") {
+                RecordResponseContext(state_, payload);
             } else if (type == "tool.execution") {
                 RecordToolExecution(state_, payload);
             } else if (type == "turn.error" || type == "turn.dsml.error") {
@@ -502,6 +526,8 @@ Result<void> SessionJournal::LoadEvents(std::istream& stream, const Cancellation
                 restore_metadata("turn_usages", nlohmann::json::array());
                 restore_metadata("tool_durations_ms", nlohmann::json::object());
                 restore_metadata("turn_errors", nlohmann::json::array());
+                if (snapshot.messages.size() == state_.messages.size())
+                    restore_metadata("last_response_context", nullptr);
                 if (snapshot.metadata["turn_errors"].is_array()) {
                     auto errors = std::move(snapshot.metadata["turn_errors"]);
                     snapshot.metadata["turn_errors"] = nlohmann::json::array();
@@ -567,6 +593,8 @@ Result<void> SessionJournal::Append(const std::string& event_type, const nlohman
         RecordTurnDuration(state_, payload);
     } else if (event_type == "turn.usage") {
         RecordTurnUsage(state_, payload);
+    } else if (event_type == "turn.response") {
+        RecordResponseContext(state_, payload);
     } else if (event_type == "context.compacted") {
         ApplyContextCompaction(state_, payload);
     } else if (event_type == "session.permission") {
@@ -591,8 +619,14 @@ Result<void> SessionJournal::SavePause(uint64_t elapsed_ms) {
 }
 
 Result<void> SessionJournal::ClearPause() {
-    if (!State().metadata.contains("paused_turn")) return Result<void>::Success();
-    return Append("turn.pause_cleared", nlohmann::json::object());
+    const auto& state = State();
+    const auto pause = state.metadata.find("paused_turn");
+    if (pause == state.metadata.end() || !pause->is_object()) return Result<void>::Success();
+    return Append("turn.pause_cleared", {{"resume_boundary", {
+        {"message_count", state.messages.size()},
+        {"elapsed_ms", pause->value("elapsed_ms", uint64_t{0})},
+        {"timestamp", pause->value("interrupted_at", uint64_t{0})},
+    }}});
 }
 
 Result<void> SessionJournal::DiscardPause() {

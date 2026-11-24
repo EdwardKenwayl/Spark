@@ -53,7 +53,8 @@ public:
     size_t AddTurnStatus(uint64_t timestamp = 0, uint64_t start_tick_ms = 0);
     size_t AddAssistant(const std::string& text = {}, uint64_t timestamp = 0);
     size_t AddReasoning(const std::string& text = {}, uint64_t timestamp = 0);
-    size_t AddCompactionNotice(bool automatic = true, uint64_t timestamp = 0);
+    size_t AddCompactionNotice(bool automatic = true, uint64_t timestamp = 0, bool pending = false);
+    void CancelCompactionNotice();
     size_t AddError(const std::string& text, uint64_t timestamp = 0);
     size_t AddQuotaNotice(uint64_t timestamp = 0);
     size_t AddUsageStats(uint64_t input_tokens, uint64_t output_tokens, uint64_t cached_input_tokens,

@@ -100,12 +100,12 @@ void TestEventsAndTimers() {
     transcript.Apply({TranscriptEventKind::PauseTurn, paused, completion}, {127, 1800});
     Check(transcript.Item(paused)->paused && transcript.Item(paused)->expanded &&
               transcript.Items().back().visible, "paused turns keep their activity expanded");
-    ChatItem resumed;
-    resumed.start_tick_ms = 100;
-    resumed.elapsed_ms = 7200000;
-    transcript.Apply({TranscriptEventKind::ResumeTurn, paused, resumed}, {128, 100});
-    Check(Transcript::Elapsed(*transcript.Item(paused), 600) == 7200500,
-          "resuming after reboot retains accumulated time beyond the current system uptime");
+    ChatItem resumed_status;
+    resumed_status.kind = ChatItemKind::TurnStatus;
+    const auto resumed = transcript.Apply({TranscriptEventKind::Add, kNoChatItem, resumed_status}, {128, 100});
+    Check(Transcript::Elapsed(*transcript.Item(paused), 600) == 700 &&
+              Transcript::Elapsed(*transcript.Item(resumed), 600) == 500,
+          "resume freezes the interrupted segment and starts a fresh timer");
     transcript.EraseFrom(user);
     Check(transcript.LastUserIndex() == 0 && transcript.Item(user) == nullptr,
           "editing the last user turn removes its tail and repairs the last-user index");
@@ -122,20 +122,60 @@ void TestCompactionActivity() {
     Add(transcript, ChatItemKind::User, "image question");
     const auto status = Add(transcript, ChatItemKind::TurnStatus);
     const auto started = transcript.Item(status)->start_tick_ms;
-    ChatItem phase;
-    phase.text = "Compacting context...";
-    transcript.Apply({TranscriptEventKind::SetTurnStatus, status, phase}, {124, 1500});
-    Check(transcript.Item(status)->text == phase.text && !transcript.Item(status)->finished &&
-              transcript.Item(status)->start_tick_ms == started,
-          "compaction updates the existing activity line without resetting its timer");
-    transcript.Apply({TranscriptEventKind::SetTurnStatus, status, {}}, {125, 2000});
-    Check(transcript.Item(status)->text.empty() && transcript.NeedsAnimation(),
-          "the next request clears the transient compaction label and keeps running");
-    transcript.Apply({TranscriptEventKind::SetTurnStatus, status, phase}, {126, 2500});
+    transcript.BeginCompaction({124, 1500});
+    transcript.BeginCompaction({124, 1501});
+    Check(transcript.Count() == 3 && transcript.Item(2)->kind == ChatItemKind::Compaction &&
+              !transcript.Item(2)->finished && transcript.Item(status)->start_tick_ms == started,
+          "one compaction progress row is visible without resetting the processing timer");
+    transcript.FinishCompaction(true, {125, 2000});
+    Check(transcript.Count() == 3 && transcript.Item(2)->finished && transcript.Item(2)->success,
+          "success replaces the existing progress row");
+    transcript.BeginCompaction({126, 2500});
+    transcript.CancelCompaction({127, 3000});
     transcript.Apply({TranscriptEventKind::FinishTurn, status, {}}, {127, 3000});
-    transcript.Apply({TranscriptEventKind::SetTurnStatus, status, phase}, {128, 3500});
-    Check(transcript.Item(status)->text.empty() && transcript.Item(status)->finished,
-          "completed turns never keep or reacquire a stale compaction label");
+    transcript.ToggleTurnStatus(status);
+    Check(!transcript.Item(3)->visible && !transcript.Item(3)->finished,
+          "cancellation leaves no progress or success row, even when history is expanded");
+}
+
+void TestResumeReplay(const fs::path& root) {
+    SessionJournal journal;
+    Check(journal.Open(PathToUtf8(root / "resume"), PathToUtf8(root)).ok, "resume fixture opens");
+    const auto message = [&](MessageRole role, const char* text) {
+        ChatMessage item;
+        item.role = role;
+        item.content = text;
+        journal.MutableState().messages.push_back(item);
+        Check(journal.Append("message", item).ok, "fixture message persists");
+    };
+    message(MessageRole::User, "one request");
+    message(MessageRole::Assistant, "step one");
+    journal.SavePause(3601000);
+    message(MessageRole::System, "resume");
+    journal.ClearPause();
+    message(MessageRole::Assistant, "step two");
+    journal.SavePause(900);
+    message(MessageRole::System, "resume");
+    journal.ClearPause();
+    message(MessageRole::Assistant, "answer");
+    journal.Append("turn.duration", {{"elapsed_ms", uint64_t{1200}}});
+    journal.SaveSnapshot();
+    SessionJournal restored;
+    Check(restored.Resume(journal.Path()).ok, "resume fixture reopens");
+    Transcript transcript;
+    const auto replay = transcript.BeginReplay(restored.State(), {123, 1000});
+    while (!transcript.ReplayStep(replay)) {}
+    std::vector<uint64_t> durations;
+    std::vector<std::string> answers;
+    size_t users = 0;
+    for (const auto& item : transcript.Items()) {
+        if (item.kind == ChatItemKind::TurnStatus) durations.push_back(item.elapsed_ms);
+        if (item.kind == ChatItemKind::Assistant) answers.push_back(item.text);
+        if (item.kind == ChatItemKind::User) ++users;
+    }
+    Check(durations == std::vector<uint64_t>{3601000, 900, 1200} &&
+          answers == std::vector<std::string>{"step one", "step two", "answer"} && users == 1,
+          "replay restores all interrupted segments and their independent elapsed times in the original turn");
 }
 
 void TestJournalReplay(const spark::fs::path& root) {
@@ -914,6 +954,7 @@ int main() {
         TestEventsAndTimers();
         TestEditedImageReplay(root);
         TestCompactionActivity();
+        TestResumeReplay(root);
         TestJournalReplay(root);
         TestTurnBoundaries();
         TestCompactionFolding();

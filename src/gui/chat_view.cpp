@@ -420,8 +420,9 @@ std::wstring FormatTurnDuration(uint64_t milliseconds) {
                             {{L"minutes", std::to_wstring(minutes)}, {L"seconds", std::to_wstring(seconds % 60)}});
     }
     const uint64_t hours = minutes / 60;
-    return i18n::Format(L"{hours} hr {minutes} min",
-                        {{L"hours", std::to_wstring(hours)}, {L"minutes", std::to_wstring(minutes % 60)}});
+    return i18n::Format(L"{hours}h {minutes}m {seconds}s",
+                        {{L"hours", std::to_wstring(hours)}, {L"minutes", std::to_wstring(minutes % 60)},
+                         {L"seconds", std::to_wstring(seconds % 60)}});
 }
 
 std::wstring FormatTokenCount(uint64_t tokens) {
@@ -1547,8 +1548,7 @@ void ChatView::RefreshLocalization() {
             }
         }
         if (item.kind == ChatItemKind::Compaction) {
-            const std::string text = WideToUtf8(item.success ? i18n::Text(L"Context automatically compacted")
-                                                            : i18n::Text(L"Context manually compacted"));
+            const std::string text = WideToUtf8(i18n::Text(CompactionLabel(item.finished, item.success)));
             if (item.text != text) {
                 item.text = text;
                 InvalidateItemHeight(index);
@@ -1917,11 +1917,23 @@ size_t ChatView::AddReasoning(const std::string& text, uint64_t timestamp) {
     return items_.size() - 1;
 }
 
-size_t ChatView::AddCompactionNotice(bool automatic, uint64_t timestamp) {
+size_t ChatView::AddCompactionNotice(bool automatic, uint64_t timestamp, bool pending) {
+    const size_t previous_index = PendingCompaction(items_);
+    if (previous_index < items_.size()) {
+        if (!pending) {
+            auto& previous = items_[previous_index];
+            previous.finished = true;
+            previous.success = automatic;
+            previous.text = WideToUtf8(i18n::Text(CompactionLabel(true, automatic)));
+            InvalidateRect(window_, nullptr, FALSE);
+        }
+        return previous_index;
+    }
     ChatItem item;
     item.kind = ChatItemKind::Compaction;
     item.success = automatic;
-    item.text = WideToUtf8(i18n::Text(automatic ? L"Context automatically compacted" : L"Context manually compacted"));
+    item.finished = !pending;
+    item.text = WideToUtf8(i18n::Text(CompactionLabel(item.finished, automatic)));
     item.timestamp = timestamp == 0 ? UnixTimeSeconds() : timestamp;
     item.expanded = true;
     for (size_t index = items_.size(); index > 0; --index) {
@@ -1936,6 +1948,15 @@ size_t ChatView::AddCompactionNotice(bool automatic, uint64_t timestamp) {
     rail_dirty_ = true;
     ScrollToBottom();
     return items_.size() - 1;
+}
+
+void ChatView::CancelCompactionNotice() {
+    const size_t index = PendingCompaction(items_);
+    if (index == items_.size()) return;
+    items_[index].visible = false;
+    items_[index].expanded = true;
+    InvalidateItemHeight(index);
+    Rebuild();
 }
 
 size_t ChatView::AddError(const std::string& text, uint64_t timestamp) {

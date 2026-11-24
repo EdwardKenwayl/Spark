@@ -118,6 +118,13 @@ void NativeFrame::Send() {
             if (state.messages[index].role == MessageRole::User && count++ == turn) { boundary = index; break; }
         state.messages.resize(boundary);
         state.context_messages.clear();
+        state.metadata["last_response_context"] = nullptr;
+        if (auto boundaries = state.metadata.find("resume_boundaries");
+            boundaries != state.metadata.end() && boundaries->is_array()) {
+            boundaries->erase(std::remove_if(boundaries->begin(), boundaries->end(), [&](const nlohmann::json& event) {
+                return event.is_object() && event.value("message_count", size_t{0}) > boundary;
+            }), boundaries->end());
+        }
         for (const char* key : {"turn_durations_ms", "turn_usages"}) {
             auto& array = state.metadata[key];
             if (array.is_array() && array.size() > turn) array.erase(array.begin() + static_cast<ptrdiff_t>(turn), array.end());
@@ -164,13 +171,7 @@ void NativeFrame::Send() {
         ChatItem status;
         status.kind = ChatItemKind::TurnStatus;
         status.start_tick_ms = runtime_.Started(active_);
-        status.elapsed_ms = view->journal.State().metadata.value("paused_turn", nlohmann::json::object())
-            .value("elapsed_ms", uint64_t{0});
-        for (size_t index = 0; index < view->transcript.Count(); ++index)
-            if (view->transcript.Items()[index].kind == ChatItemKind::TurnStatus) view->status = index;
-        if (view->status == kNoChatItem)
-            view->status = view->transcript.Apply({TranscriptEventKind::Add, kNoChatItem, status}, Now());
-        else view->transcript.Apply({TranscriptEventKind::ResumeTurn, view->status, status}, Now());
+        view->status = view->transcript.Apply({TranscriptEventKind::Add, kNoChatItem, status}, Now());
     }
     view->assistant = view->reasoning = kNoChatItem;
     view->tools.clear();
@@ -232,10 +233,7 @@ void NativeFrame::Consume(const NativeEvent& event) {
             view.tools.erase(item);
         }
     } else if (event.kind == NativeEvent::Kind::Compact) {
-        ChatItem notice;
-        notice.kind = ChatItemKind::Compaction;
-        notice.success = event.success;
-        view.transcript.Apply({TranscriptEventKind::Add, kNoChatItem, notice}, Now());
+        view.transcript.FinishCompaction(event.success, Now());
     } else if (event.kind == NativeEvent::Kind::Context) {
         view.context = event.first_number; view.limit = event.second_number;
     } else if (event.kind == NativeEvent::Kind::Phase) {
@@ -249,15 +247,18 @@ void NativeFrame::Consume(const NativeEvent& event) {
             view.status = Add(view.transcript, ChatItemKind::TurnStatus);
         if (event.phase == AgentPhase::Compacting || event.phase == AgentPhase::Reconnecting)
             HideReasoning(view.transcript, view.reasoning);
+        if (event.phase == AgentPhase::Compacting) {
+            finish_assistant();
+            view.transcript.BeginCompaction(Now());
+        } else view.transcript.CancelCompaction(Now());
         if (view.status != kNoChatItem) {
             ChatItem status;
-            if (event.phase == AgentPhase::Compacting)
-                status.text = WideToUtf8(i18n::Text(L"Compacting context..."));
             if (event.phase == AgentPhase::Reconnecting)
                 status.text = WideToUtf8(i18n::Text(L"Reconnecting")) + " " + event.first;
             view.transcript.Apply({TranscriptEventKind::SetTurnStatus, view.status, status}, Now());
         }
     } else if (event.kind == NativeEvent::Kind::Done) {
+        view.transcript.CancelCompaction(Now());
         const bool cancelled = cancelled_completion_paths_.erase(event.path) != 0;
         if (event.path == active_) RefreshSummary();
         auto completed = runtime_.FinishedJournal(event.path);
