@@ -727,6 +727,53 @@ void TestWindowReplayMetadata() {
           "a window tail manual compaction finishes only the absolute final paused turn");
 }
 
+void TestWhitespaceBetweenTools() {
+    SessionState state;
+    ChatMessage user;
+    user.role = MessageRole::User;
+    user.content = "Continue work";
+    state.messages.push_back(user);
+    for (int i = 0; i < 4; ++i) {
+        ChatMessage assistant;
+        assistant.role = MessageRole::Assistant;
+        assistant.content = i == 2 ? "Actual progress update" : " \n\t";
+        ToolCall call;
+        call.id = std::to_string(i);
+        call.name = "run_command";
+        call.arguments_json = "{}";
+        assistant.tool_calls.push_back(call);
+        state.messages.push_back(assistant);
+        ChatMessage result;
+        result.role = MessageRole::Tool;
+        result.tool_call_id = call.id;
+        result.content = "done";
+        state.messages.push_back(result);
+    }
+    Transcript transcript;
+    const auto generation = transcript.BeginReplay(state, {500, 2000}, {true, 900});
+    while (!transcript.ReplayStep(generation, 1)) {}
+    const auto restored_groups = transcript.Groups(2000);
+    Check(transcript.Count() == 7 && restored_groups[2].size == 2 && restored_groups[3].hidden &&
+              transcript.Item(4)->text == "Actual progress update" &&
+              restored_groups[5].size == 2 && restored_groups[6].hidden,
+          "restoring a running turn ignores blank assistant text but keeps real progress boundaries");
+
+    Transcript live;
+    ChatItem tool;
+    tool.kind = ChatItemKind::Tool;
+    tool.tool_name = "run_command";
+    const auto first = live.Apply({TranscriptEventKind::Add, kNoChatItem, tool}, {500, 2000});
+    const auto blank = Add(live, ChatItemKind::Assistant, "");
+    ChatItem delta;
+    delta.text = "\n ";
+    live.Apply({TranscriptEventKind::AppendText, blank, delta}, {500, 2000});
+    live.Apply({TranscriptEventKind::Finish, blank, {}}, {500, 2000});
+    const auto second = live.Apply({TranscriptEventKind::Add, kNoChatItem, tool}, {500, 2000});
+    const auto live_groups = live.Groups(2000);
+    Check(live_groups[first].size == 2 && live_groups[second].hidden,
+          "streamed whitespace does not split a live command group");
+}
+
 void TestMixedToolGroups() {
     Transcript transcript;
     std::vector<size_t> indices;
@@ -877,6 +924,7 @@ int main() {
         TestHistoryWindows();
         TestIndexedHistoryNavigation();
         TestWindowReplayMetadata();
+        TestWhitespaceBetweenTools();
         TestMixedToolGroups();
         TestReasoningActivityGroups();
         TestHistory(root);

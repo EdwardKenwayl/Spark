@@ -227,7 +227,9 @@ size_t Transcript::Apply(const TranscriptEvent& event, TranscriptTime now) {
 void Transcript::FoldTurn(size_t index) {
     const auto end = TurnEnd(items_, index);
     size_t last = kNoChatItem;
-    for (size_t next = index + 1; next < end; ++next) if (items_[next].kind == ChatItemKind::Assistant) last = next;
+    for (size_t next = index + 1; next < end; ++next) {
+        if (items_[next].kind == ChatItemKind::Assistant && HasAssistantText(items_[next].text)) last = next;
+    }
     for (size_t next = index + 1; next < end; ++next) {
         auto& item = items_[next];
         ++item.revision;
@@ -242,7 +244,9 @@ void Transcript::ToggleTurnStatus(size_t index) {
     ++items_[index].revision;
     const auto end = TurnEnd(items_, index);
     size_t last = kNoChatItem;
-    for (size_t next = index + 1; next < end; ++next) if (items_[next].kind == ChatItemKind::Assistant) last = next;
+    for (size_t next = index + 1; next < end; ++next) {
+        if (items_[next].kind == ChatItemKind::Assistant && HasAssistantText(items_[next].text)) last = next;
+    }
     for (size_t next = index + 1; next < end; ++next) {
         ++items_[next].revision;
         if (items_[next].kind == ChatItemKind::Tool ||
@@ -295,7 +299,9 @@ std::vector<TranscriptGroup> Transcript::Groups(uint64_t now_tick_ms) const {
         size_t end = index, count = 1;
         for (;;) {
             size_t next = end + 1;
-            while (next < items_.size() && items_[next].kind == ChatItemKind::Reasoning) ++next;
+            while (next < items_.size() &&
+                   (items_[next].kind == ChatItemKind::Reasoning ||
+                    (items_[next].kind == ChatItemKind::Assistant && !HasAssistantText(items_[next].text)))) ++next;
             if (next >= items_.size() || items_[next].kind != ChatItemKind::Tool) break;
             end = next;
             ++count;
@@ -328,7 +334,7 @@ std::vector<TranscriptGroup> Transcript::Groups(uint64_t now_tick_ms) const {
     size_t leader = kNoChatItem;
     for (size_t index = 0; index < items_.size(); ++index) {
         const auto& item = items_[index];
-        if (item.kind == ChatItemKind::Assistant || item.kind == ChatItemKind::User) {
+        if ((item.kind == ChatItemKind::Assistant && HasAssistantText(item.text)) || item.kind == ChatItemKind::User) {
             leader = kNoChatItem;
         } else if (item.kind == ChatItemKind::Tool) {
             if (!groups[index].indented) leader = index;
@@ -424,7 +430,7 @@ bool Transcript::ReplayStep(uint64_t generation, size_t max_messages) {
                 ConsumeSavedText(replay.live_text, message.content);
                 ConsumeSavedText(replay.live_reasoning, message.reasoning_text);
             }
-            if (!message.content.empty()) {
+            if (HasAssistantText(message.content)) {
                 item.kind = ChatItemKind::Assistant; item.text = message.content;
                 const auto index = Apply({TranscriptEventKind::Add, kNoChatItem, item}, replay.now);
                 Apply({TranscriptEventKind::Finish, index, item}, replay.now);
@@ -488,10 +494,10 @@ bool Transcript::ReplayStep(uint64_t generation, size_t max_messages) {
         if (!replay.live_reasoning.empty()) {
             ChatItem item;
             item.kind = ChatItemKind::Reasoning; item.text = replay.live_reasoning;
-            item.visible = replay.live_text.empty() && live.value("phase", std::string{}) != "running_tool";
+            item.visible = !HasAssistantText(replay.live_text) && live.value("phase", std::string{}) != "running_tool";
             Apply({TranscriptEventKind::Add, kNoChatItem, item}, replay.now);
         }
-        if (!replay.live_text.empty()) {
+        if (HasAssistantText(replay.live_text)) {
             ChatItem item;
             item.kind = ChatItemKind::Assistant; item.text = replay.live_text;
             Apply({TranscriptEventKind::Add, kNoChatItem, item}, replay.now);

@@ -5041,7 +5041,7 @@ void AppWindow::ReloadSessionIntoView() {
                     !running_turn && turn_index < usages.size() ? usages[turn_index] : nlohmann::json{};
                 ++turn_index;
             } else if (message.role == MessageRole::Assistant) {
-                if (!message.content.empty()) {
+                if (HasAssistantText(message.content)) {
                     const size_t index = chat_view_->AddAssistant(message.content, message.timestamp);
                     chat_view_->FinishAssistant(index, message.timestamp);
                 }

@@ -68,7 +68,7 @@ public:
         if (prompt.empty() && !user.image_paths.empty()) prompt = "[Image]";
         for (size_t i = end; i > first + 1;) {
             const auto& message = state->messages[--i];
-            if (message.role == MessageRole::Assistant && !message.content.empty() && message.tool_calls.empty()) {
+            if (message.role == MessageRole::Assistant && HasAssistantText(message.content) && message.tool_calls.empty()) {
                 reply = TruncateUtf8(message.content.substr(0, 304), 300);
                 break;
             }

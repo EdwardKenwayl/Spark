@@ -542,7 +542,8 @@ void NativeChatSurface::Reflow(wxDC& dc) {
             ? kNoChatItem : transcript_->LastUserIndex();
         for (size_t index = 0; index < items.size(); ++index) {
             const auto& item = items[index];
-            if (!item.visible || groups[index].hidden) continue;
+            if (!item.visible || groups[index].hidden ||
+                (item.kind == ChatItemKind::Assistant && !HasAssistantText(item.text))) continue;
             if (item.kind == ChatItemKind::TurnStatus && !item.finished && item.text.empty()
                 && activity_item_ != kNoChatItem) continue;
             const auto cached = row_cache_.find(index);

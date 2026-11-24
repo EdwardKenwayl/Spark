@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace spark {
@@ -17,6 +18,10 @@ enum class ChatItemKind {
     Quota,
     UsageStats,
 };
+
+inline bool HasAssistantText(std::string_view text) {
+    return text.find_first_not_of(" \t\r\n\f\v") != std::string_view::npos;
+}
 
 struct ChatItem {
     ChatItemKind kind = ChatItemKind::Assistant;

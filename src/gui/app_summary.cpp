@@ -313,7 +313,7 @@ void AppWindow::RefreshSubAgentChat() {
                 side_chat_view_->AddUser(message.content, message.timestamp, message.image_paths);
                 side_turn_entry_ = side_chat_view_->AddTurnStatus(0, running ? info.started_tick_ms : 0);
             } else if (message.role == MessageRole::Assistant) {
-                if (!message.content.empty()) {
+                if (HasAssistantText(message.content)) {
                     const size_t index = side_chat_view_->AddAssistant(message.content, message.timestamp);
                     side_chat_view_->FinishAssistant(index, message.timestamp);
                 }

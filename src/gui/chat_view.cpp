@@ -503,7 +503,9 @@ std::vector<GroupInfo> ComputeGroups(const std::vector<ChatItem>& items) {
                     case ToolCategory::Write:
                     case ToolCategory::Other: break;
                 }
-            } else break;
+            } else if (item.kind != ChatItemKind::Assistant || HasAssistantText(item.text)) {
+                break;
+            }
             end = member;
         }
         group.leader = group.size > 1 || group.reasoning != static_cast<size_t>(-1);
@@ -1270,7 +1272,7 @@ ItemLayout LayoutItem(HDC device, const std::vector<ChatItem>& items, const std:
     ItemLayout layout;
     layout.top = top;
     layout.bottom = top;
-    if (!item.visible) return layout;
+    if (!item.visible || (item.kind == ChatItemKind::Assistant && !HasAssistantText(item.text))) return layout;
     const ContentBounds content = CalculateContentBounds(client_width);
     const int content_left = content.left;
     const int content_right = content.right;
@@ -2007,7 +2009,11 @@ size_t ChatView::AddTool(const std::string& name, const std::string& arguments, 
 void ChatView::AppendAssistant(size_t index, const std::string& text) {
     if (index >= items_.size() || items_[index].kind != ChatItemKind::Assistant) return;
     const std::string sanitized = SanitizeDisplayText(text);
-    items_[index].text += sanitized;
+    auto& item = items_[index];
+    if (layout_cache_ != nullptr && !HasAssistantText(item.text) && HasAssistantText(sanitized)) {
+        layout_cache_->groups_dirty = true;
+    }
+    item.text += sanitized;
     if (loading_) {
         markdown_ready_[index] = false;
     } else if (markdown_ready_[index]) {
@@ -2073,7 +2079,7 @@ void ChatView::FinishTurnStatus(size_t index, uint64_t elapsed_ms, uint64_t time
     }
     size_t last_assistant = static_cast<size_t>(-1);
     for (size_t item = index + 1; item < end; ++item) {
-        if (items_[item].kind == ChatItemKind::Assistant) last_assistant = item;
+        if (items_[item].kind == ChatItemKind::Assistant && HasAssistantText(items_[item].text)) last_assistant = item;
     }
     for (size_t item = index + 1; item < end; ++item) {
         if (items_[item].kind == ChatItemKind::Reasoning || items_[item].kind == ChatItemKind::Tool ||
@@ -2188,7 +2194,7 @@ void ChatView::ToggleTurnStatus(size_t index) {
     }
     size_t last_assistant = static_cast<size_t>(-1);
     for (size_t item = index + 1; item < end; ++item) {
-        if (items_[item].kind == ChatItemKind::Assistant) last_assistant = item;
+        if (items_[item].kind == ChatItemKind::Assistant && HasAssistantText(items_[item].text)) last_assistant = item;
     }
     for (size_t item = index + 1; item < end; ++item) {
         if (items_[item].kind == ChatItemKind::Tool ||
@@ -2512,7 +2518,7 @@ void ChatView::PrepareRestoreRows() {
                     group.last_member = index;
                     cache.groups[index].hidden = true;
                 }
-            } else {
+            } else if (item.kind != ChatItemKind::Assistant || HasAssistantText(item.text)) {
                 if (cache.group_first != static_cast<size_t>(-1) && !cache.groups[cache.group_first].leader) {
                     cache.groups[cache.group_first] = {};
                 }
