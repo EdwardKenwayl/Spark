@@ -19,10 +19,9 @@ std::string DefaultCodexSessionsRoot();
 // Builds the canonical rollout path used by Codex: sessions/YYYY/MM/DD/rollout-<timestamp>-<uuid>.jsonl.
 std::string SuggestedCodexRolloutPath(const std::string& codex_sessions_root, uint64_t created_at = 0);
 
-// Converts an Spark session JSONL into a Codex rollout without modifying the source.
+// Converts a Spark session to a canonical Codex rollout path without modifying the source.
 Result<void> ExportSparkSessionToCodex(const std::string& spark_session_path,
-                                       const std::string& codex_output_path,
-                                       const std::string& model_provider);
+                                       const std::string& codex_output_path);
 
 // Converts a Codex rollout into a new Spark session. The source is never modified.
 Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& codex_session_path,

@@ -739,21 +739,39 @@ int main() {
         exchange_tool.timestamp = 1700000002;
         Check(exchange_source.Append("message", exchange_tool).ok, "session exchange tool appends");
 
-        const std::string rollout_path = spark::JoinPath(exchange_directory, "rollout.jsonl");
-        const auto exported = spark::ExportSparkSessionToCodex(exchange_source.Path(), rollout_path, "provider-test");
+        spark::ChatMessage exchange_final;
+        exchange_final.role = spark::MessageRole::Assistant;
+        exchange_final.content = "final answer marker";
+        exchange_final.timestamp = 1700000003;
+        Check(exchange_source.Append("message", exchange_final).ok, "session exchange final answer appends");
+
+        const std::string rollout_path = spark::SuggestedCodexRolloutPath(exchange_directory, 1700000000);
+        const auto exported = spark::ExportSparkSessionToCodex(exchange_source.Path(), rollout_path);
         Check(exported.ok, "Spark session exports to Codex rollout");
+        const auto renamed_path = spark::JoinPath(exchange_directory, "renamed.jsonl");
+        Check(!spark::ExportSparkSessionToCodex(exchange_source.Path(), renamed_path).ok &&
+                  !spark::PathExists(renamed_path),
+              "export does not create a rollout that Codex cannot discover by ID");
         std::string rollout_error;
         const auto rollout = spark::ReadFileUtf8(rollout_path, &rollout_error);
         Check(rollout.has_value(), "exported Codex rollout is readable");
         if (rollout.has_value()) {
-            Check(rollout->find("\"type\":\"session_meta\"") != std::string::npos,
-                  "exported rollout starts with session metadata");
+            const auto meta = nlohmann::json::parse(rollout->substr(0, rollout->find('\n')));
+            const auto& data = meta.at("payload");
+            const auto filename = spark::PathToUtf8(spark::NativePath(rollout_path).filename());
+            Check(meta.at("type") == "session_meta" && data.at("id") == filename.substr(28, 36) &&
+                      data.at("id") == data.at("session_id"),
+                  "Codex rollout filename and metadata use the same thread ID");
+            Check(!data.contains("model_provider"), "Codex branch uses the destination's configured provider");
             Check(rollout->find("export marker") != std::string::npos &&
                       rollout->find("assistant result") != std::string::npos &&
                       rollout->find("tool output marker") != std::string::npos,
                   "exported rollout contains the full transcript");
             Check(rollout->find("\"type\":\"function_call\"") != std::string::npos,
                   "exported rollout preserves function calls");
+            Check(rollout->find("\"message\":\"assistant result\",\"phase\":\"commentary\"") != std::string::npos &&
+                      rollout->find("\"message\":\"final answer marker\",\"phase\":\"final_answer\"") != std::string::npos,
+                  "Codex rollout distinguishes progress from the final answer");
         }
 
         const auto imported = spark::ImportCodexSessionToSpark(

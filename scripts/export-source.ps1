@@ -53,7 +53,7 @@ $files = @(
     'scripts/build-win7.ps1', 'scripts/package-portable.ps1', 'scripts/export-source.ps1',
     'scripts/build-platform-tests.sh', 'scripts/build-runtime-tests.sh',
     'scripts/build-native.sh', 'scripts/package-native.sh', 'scripts/build-macos-deps.sh',
-    'scripts/build-xp.ps1', 'scripts/build-xp-tls.ps1',
+    'scripts/build-xp.ps1', 'scripts/build-xp-tls.ps1', 'scripts/register-codex-branch.py',
     'cmake/locale_resources.h.in', 'cmake/Info.plist.in',
     'cmake/xp-tls/CMakeLists.txt', 'cmake/xp-tls/spark_xp_tls_config.h', 'cmake/xp-tls/threading_alt.h',
     'tests/package_tests.ps1', 'tests/source_export_tests.ps1',

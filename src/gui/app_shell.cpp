@@ -3502,7 +3502,7 @@ void AppWindow::ExportSessionToCodex(const std::string& session_path) {
     dialog.Flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
     if (!GetSaveFileNameW(&dialog)) return;
 
-    const auto exported = ExportSparkSessionToCodex(source, WideToUtf8(buffer.data()), config_.active.provider);
+    const auto exported = ExportSparkSessionToCodex(source, WideToUtf8(buffer.data()));
     if (!exported.ok) {
         SetStatus(i18n::Text(L"Export failed: ") + Utf8ToWide(exported.error));
         return;

@@ -332,11 +332,15 @@ void NativeFrame::ChatAction(const SidebarRow& selected_row, int selected) {
     if ((selected == 1 || selected == 3 || selected == 4) &&
         (runtime_.Running(row.path) || external_.count(row.path))) return;
     if (selected == 2) {
-        wxFileDialog file(this, T(L"Export as Codex chat branch"), "",
-                           U(PathToUtf8(NativePath(SuggestedCodexRolloutPath(DefaultCodexSessionsRoot())).filename())),
+        const auto suggested = NativePath(SuggestedCodexRolloutPath(DefaultCodexSessionsRoot()));
+        std::error_code directory_error;
+        spark::fs::create_directories(suggested.parent_path(), directory_error);
+        wxFileDialog file(this, T(L"Export as Codex chat branch"),
+                           directory_error ? wxString{} : U(PathToUtf8(suggested.parent_path())),
+                           U(PathToUtf8(suggested.filename())),
                            "JSONL (*.jsonl)|*.jsonl", wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
         if (file.ShowModal() == wxID_OK) {
-            const auto result = ExportSparkSessionToCodex(row.path, S(file.GetPath()), config_.active.provider);
+            const auto result = ExportSparkSessionToCodex(row.path, S(file.GetPath()));
             if (!result.ok) Error(result.error);
         }
     } else if (selected == 1) {

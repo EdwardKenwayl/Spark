@@ -72,6 +72,11 @@ Context compaction defaults to 90% of the model window; unknown windows use
 Compaction preserves the visible chat while summarizing model context.
 When importing Codex branches, continuation uses the latest compaction checkpoint
 and later messages. Reimport an original rollout to apply newer import fixes.
+When exporting, keep the suggested rollout filename. Spark does not export its
+provider configuration; Codex uses the provider configured on the destination.
+If the branch does not appear in Codex, run
+`python scripts/register-codex-branch.py "path/to/rollout.jsonl"` on the destination
+with the Codex CLI installed. This registers the branch without sending a message.
 
 Permissions are enforced by the application, not an operating-system sandbox.
 Plan mode allows built-in reads and searches and blocks actions that can modify

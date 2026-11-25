@@ -114,6 +114,31 @@ uint64_t ParseIsoTime(const std::string& text) {
     return value < 0 ? 0 : static_cast<uint64_t>(value);
 }
 
+std::string CodexRolloutId(const std::string& filename) {
+    constexpr size_t timestamp_start = 8;
+    constexpr size_t timestamp_size = 19;
+    constexpr size_t id_start = timestamp_start + timestamp_size + 1;
+    constexpr size_t id_size = 36;
+    if (filename.size() != id_start + id_size + 6 || filename.compare(0, timestamp_start, "rollout-") != 0 ||
+        filename[id_start - 1] != '-' || filename.compare(id_start + id_size, 6, ".jsonl") != 0) return {};
+
+    std::string timestamp = filename.substr(timestamp_start, timestamp_size);
+    timestamp[13] = timestamp[16] = ':';
+    const uint64_t seconds = ParseIsoTime(timestamp);
+    if (seconds == 0 || filename.compare(timestamp_start, timestamp_size, FileTimestamp(seconds)) != 0) return {};
+
+    const auto id = filename.substr(id_start, id_size);
+    for (size_t index = 0; index < id.size(); ++index) {
+        const char c = id[index];
+        if (index == 8 || index == 13 || index == 18 || index == 23) {
+            if (c != '-') return {};
+        } else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+            return {};
+        }
+    }
+    return id;
+}
+
 nlohmann::json Line(const std::string& type, const nlohmann::json& payload, uint64_t timestamp) {
     return {
         {"timestamp", IsoTimeFromSeconds(timestamp)},
@@ -326,10 +351,14 @@ std::string SuggestedCodexRolloutPath(const std::string& codex_sessions_root, ui
 }
 
 Result<void> ExportSparkSessionToCodex(const std::string& spark_session_path,
-                                       const std::string& codex_output_path,
-                                       const std::string& model_provider) {
+                                       const std::string& codex_output_path) {
     if (Trim(spark_session_path).empty() || Trim(codex_output_path).empty()) {
         return Result<void>::Failure("export paths must not be empty");
+    }
+    const auto output_path = NativePath(codex_output_path);
+    const std::string session_id = CodexRolloutId(PathToUtf8(output_path.filename()));
+    if (session_id.empty()) {
+        return Result<void>::Failure("keep the suggested rollout filename so Codex can find the chat by ID");
     }
     SessionJournal source;
     const auto loaded = source.Resume(spark_session_path);
@@ -337,8 +366,8 @@ Result<void> ExportSparkSessionToCodex(const std::string& spark_session_path,
 
     const SessionState& state = source.State();
     const uint64_t created_at = state.created_at == 0 ? UnixTimeSeconds() : state.created_at;
-    const std::string session_id = GenerateUuid();
     const std::string timestamp = IsoTimeFromSeconds(created_at);
+    // Leave the provider unset so the target Codex installation can select its own.
     const nlohmann::json meta = {
         {"session_id", session_id},
         {"id", session_id},
@@ -349,15 +378,29 @@ Result<void> ExportSparkSessionToCodex(const std::string& spark_session_path,
         {"cli_version", "0.1.0"},
         {"source", "cli"},
         {"thread_source", "user"},
-        {"model_provider", model_provider.empty() ? nlohmann::json(nullptr) : nlohmann::json(model_provider)},
         {"base_instructions", nullptr},
         {"selected_capability_roots", nlohmann::json::array()},
         {"history_mode", "legacy"},
     };
 
+    std::vector<bool> final_answers(state.messages.size());
+    bool has_later_activity = false;
+    for (size_t index = state.messages.size(); index > 0; --index) {
+        const auto& message = state.messages[index - 1];
+        if (message.role == MessageRole::User) {
+            has_later_activity = false;
+        } else if (message.role == MessageRole::Tool || !message.tool_calls.empty()) {
+            has_later_activity = true;
+        } else if (message.role == MessageRole::Assistant && !Trim(message.content).empty()) {
+            final_answers[index - 1] = !has_later_activity;
+            has_later_activity = true;
+        }
+    }
+
     std::vector<std::string> lines;
     lines.push_back(Line("session_meta", meta, created_at).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
-    for (const ChatMessage& message : state.messages) {
+    for (size_t index = 0; index < state.messages.size(); ++index) {
+        const auto& message = state.messages[index];
         const uint64_t message_time = message.timestamp == 0 ? created_at : message.timestamp;
         if (message.role == MessageRole::System) continue;
         if (message.role == MessageRole::User) {
@@ -388,13 +431,15 @@ Result<void> ExportSparkSessionToCodex(const std::string& spark_session_path,
                                  {"summary", nlohmann::json::array({{{"type", "summary_text"}, {"text", message.reasoning_text}}})},
                                  {"encrypted_content", nullptr}});
         }
-        if (!message.content.empty()) {
+        if (!Trim(message.content).empty()) {
+            const char* phase = final_answers[index] ? "final_answer" : "commentary";
             AppendCodexResponse(lines, message_time,
                                 {{"type", "message"},
                                  {"role", "assistant"},
+                                 {"phase", phase},
                                  {"content", nlohmann::json::array({{{"type", "output_text"}, {"text", message.content}}})}});
             lines.push_back(Line("event_msg",
-                                 {{"type", "agent_message"}, {"message", message.content}, {"phase", "final_answer"}},
+                                 {{"type", "agent_message"}, {"message", message.content}, {"phase", phase}},
                                  message_time)
                                 .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
         }
@@ -408,7 +453,6 @@ Result<void> ExportSparkSessionToCodex(const std::string& spark_session_path,
     }
 
     std::error_code error;
-    const auto output_path = NativePath(codex_output_path);
     if (output_path.has_parent_path()) spark::fs::create_directories(output_path.parent_path(), error);
     if (error) return Result<void>::Failure("could not create Codex session directory: " + error.message());
     spark::fs_ofstream output(output_path, std::ios::binary | std::ios::trunc);

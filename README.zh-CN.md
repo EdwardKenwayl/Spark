@@ -56,6 +56,9 @@ API 密钥可填写明文或环境变量引用。
 `/compact` 立即压缩，`/context` 查看用量；压缩保留界面聊天记录，仅摘要模型上下文。
 导入 Codex 分支后，续聊使用最近的压缩检查点及后续消息。
 需要应用新版导入修复时，请从原始 rollout 重新导入。
+导出时请保留建议的 rollout 文件名。Spark 不导出供应商配置，Codex 使用目标设备上的配置。
+如果分支未出现在 Codex 中，请在已安装 Codex CLI 的目标设备上运行
+`python scripts/register-codex-branch.py "path/to/rollout.jsonl"`。这只登记分支，不发送消息。
 
 权限由应用实施，不是操作系统沙箱。计划模式允许内置读取与搜索，阻止文件修改和外部工具执行。
 请审查工具请求及第三方 MCP 服务。
