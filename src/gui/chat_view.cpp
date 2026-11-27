@@ -377,6 +377,7 @@ std::wstring FitText(HDC device, const std::wstring& text, int max_width, bool k
 }
 
 std::wstring ToolSummary(const ChatItem& item) {
+    if (LooksLikeImageTool(item.tool_name) && !item.image_paths.empty()) return {};
     try {
         const nlohmann::json arguments = nlohmann::json::parse(item.arguments.empty() ? "{}" : item.arguments);
         if (item.tool_name == "run_command") return InlinePreview(arguments.value("command", std::string{}));
@@ -1395,11 +1396,11 @@ ItemLayout LayoutItem(HDC device, const std::vector<ChatItem>& items, const std:
         const int indent = (group.leader || group.indented) ? 18 : 0;
         layout.tool_header = RECT{content_left + indent, cursor, content_left + width, cursor + kToolHeaderHeight};
         int bottom = layout.tool_header.bottom;
-        if (!item.image_paths.empty()) {
+        if (item.expanded && !item.image_paths.empty()) {
             bottom += 3;
             layout_images(content_left + indent + 12, width - indent - 24, bottom, false);
         }
-        if (item.expanded) {
+        if (item.expanded && !(LooksLikeImageTool(item.tool_name) && !item.image_paths.empty())) {
             const std::wstring details = ToolDetails(item);
             const int details_width = std::max(120, width - indent - 28);
             const int details_height = std::max(24, MeasureTextHeight(device, fonts.mono, details, details_width));

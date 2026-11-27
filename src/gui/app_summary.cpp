@@ -331,7 +331,8 @@ void AppWindow::RefreshSubAgentChat() {
         }
         if (!running) {
             const auto usages = state.metadata.value("turn_usages", nlohmann::json::array());
-            if (!usages.empty() && usages.back().is_object()) {
+            if (!usages.empty() && usages.back().is_object() && !usages.back().empty() &&
+                !usages.back().value("context_only", false)) {
                 const auto& usage = usages.back();
                 side_chat_view_->AddUsageStats(usage.value("input_tokens", uint64_t{0}),
                     usage.value("output_tokens", uint64_t{0}), usage.value("cached_input_tokens", uint64_t{0}),

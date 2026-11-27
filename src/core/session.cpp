@@ -69,6 +69,7 @@ void RecordTurnUsage(SessionState& state, const nlohmann::json& payload) {
         {"context_limit_tokens", payload.value("context_limit_tokens", uint64_t{0})},
         {"elapsed_ms", payload.value("elapsed_ms", uint64_t{0})},
     };
+    if (payload.value("context_only", false)) usage["context_only"] = true;
     nlohmann::json& usages = state.metadata["turn_usages"];
     while (usages.size() <= turn_index) usages.push_back(nlohmann::json::object());
     usages[turn_index] = std::move(usage);

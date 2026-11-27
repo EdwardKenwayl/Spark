@@ -147,24 +147,99 @@ nlohmann::json Line(const std::string& type, const nlohmann::json& payload, uint
     };
 }
 
-std::string ContentText(const nlohmann::json& content) {
-    if (!content.is_array()) return {};
-    std::string text;
+struct CodexImportImages {
+    std::string directory;
+    std::string workspace;
+
+    std::string Resolve(const std::string& reference) const {
+        if (reference.compare(0, 5, "data:") != 0) {
+            if (reference.empty() || reference.find("://") != std::string::npos ||
+                reference.find('\0') != std::string::npos) return {};
+            const auto path = NativePath(reference);
+            const std::string extension = LowerAscii(PathToUtf8(path.extension()));
+            if (extension != ".png" && extension != ".jpg" && extension != ".jpeg" &&
+                extension != ".webp" && extension != ".gif" && extension != ".bmp") return {};
+            return AbsolutePath(reference, workspace);
+        }
+
+        const auto comma = reference.find(',');
+        if (comma == std::string::npos || comma > 32) return {};
+        const std::string_view header(reference.data(), comma);
+        const char* extension = nullptr;
+        if (header == "data:image/png;base64") extension = ".png";
+        if (header == "data:image/jpeg;base64") extension = ".jpg";
+        if (header == "data:image/webp;base64") extension = ".webp";
+        if (header == "data:image/gif;base64") extension = ".gif";
+        if (header == "data:image/bmp;base64") extension = ".bmp";
+        if (!extension) return {};
+
+        const std::string_view encoded(reference.data() + comma + 1, reference.size() - comma - 1);
+        constexpr size_t max_image_bytes = 32 * 1024 * 1024;
+        if (encoded.empty() || encoded.size() > ((max_image_bytes + 2) / 3) * 4 ||
+            encoded.size() % 4 != 0) return {};
+        constexpr std::string_view alphabet =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        std::string bytes;
+        bytes.reserve(encoded.size() / 4 * 3);
+        for (size_t offset = 0; offset < encoded.size(); offset += 4) {
+            unsigned value = 0;
+            size_t padding = 0;
+            for (size_t digit = 0; digit < 4; ++digit) {
+                const auto character = encoded[offset + digit];
+                value <<= 6;
+                if (character == '=' && digit >= 2 && offset + 4 == encoded.size()) {
+                    ++padding;
+                } else {
+                    const auto index = alphabet.find(character);
+                    if (padding || index == std::string_view::npos) return {};
+                    value |= static_cast<unsigned>(index);
+                }
+            }
+            bytes.push_back(static_cast<char>((value >> 16) & 0xff));
+            if (padding < 2) bytes.push_back(static_cast<char>((value >> 8) & 0xff));
+            if (padding == 0) bytes.push_back(static_cast<char>(value & 0xff));
+        }
+        if (bytes.size() > max_image_bytes) return {};
+        std::error_code error;
+        fs::create_directories(NativePath(directory), error);
+        if (error) return {};
+        const std::string path = JoinPath(directory, GenerateUuid() + extension);
+        return WriteFileUtf8Atomic(path, bytes) ? path : std::string{};
+    }
+
+    void Append(const std::string& reference, ChatMessage& message) const {
+        auto path = Resolve(reference);
+        if (!path.empty() && std::find(message.image_paths.begin(), message.image_paths.end(), path) ==
+            message.image_paths.end()) {
+            message.image_paths.push_back(std::move(path));
+        }
+    }
+};
+
+void AppendCodexContent(const nlohmann::json& content, const CodexImportImages& images, ChatMessage& message) {
+    if (!content.is_array()) return;
     for (const auto& part : content) {
         if (!part.is_object()) continue;
         const std::string type = part.value("type", std::string{});
         if (type == "input_text" || type == "output_text" || type == "text") {
             const std::string value = part.value("text", std::string{});
             if (!value.empty()) {
-                if (!text.empty()) text += "\n";
-                text += value;
+                if (!message.content.empty()) message.content += "\n";
+                message.content += value;
             }
         } else if (type == "input_image" || type == "image_url") {
-            if (!text.empty()) text += "\n";
-            text += "[image]";
+            const auto url = part.find("image_url");
+            const auto count = message.image_paths.size();
+            if (url != part.end()) {
+                if (url->is_string()) images.Append(url->get_ref<const std::string&>(), message);
+                else if (url->is_object()) images.Append(url->value("url", std::string{}), message);
+            }
+            if (message.image_paths.size() == count) {
+                if (!message.content.empty()) message.content += "\n";
+                message.content += "[image unavailable]";
+            }
         }
     }
-    return text;
 }
 
 std::string OutputText(const nlohmann::json& output) {
@@ -195,7 +270,7 @@ void AppendCodexResponse(std::vector<std::string>& lines, uint64_t timestamp, co
 }
 
 struct CodexImportStep {
-    enum class Kind { Message, Compaction };
+    enum class Kind { Message, Compaction, Usage };
     Kind kind = Kind::Message;
     ChatMessage message;
     nlohmann::json payload;
@@ -253,7 +328,7 @@ bool IsCodexContextualUserMessage(const nlohmann::json& payload) {
 }
 
 bool ParseCodexResponseItem(const nlohmann::json& payload, uint64_t timestamp, ChatMessage* message,
-                            bool* is_plain_message) {
+                            bool* is_plain_message, const CodexImportImages& images) {
     if (message == nullptr) return false;
     if (is_plain_message != nullptr) *is_plain_message = false;
     const std::string item_type = payload.value("type", std::string{});
@@ -269,10 +344,11 @@ bool ParseCodexResponseItem(const nlohmann::json& payload, uint64_t timestamp, C
         } else {
             return false;
         }
-        message->content = ContentText(payload.value("content", nlohmann::json::array()));
+        const auto content = payload.find("content");
+        if (content != payload.end()) AppendCodexContent(*content, images, *message);
         message->timestamp = timestamp;
         if (is_plain_message != nullptr) *is_plain_message = true;
-        return !message->content.empty();
+        return !message->content.empty() || !message->image_paths.empty();
     }
     if (item_type == "reasoning") {
         const std::string reasoning = ReasoningText(payload);
@@ -301,7 +377,18 @@ bool ParseCodexResponseItem(const nlohmann::json& payload, uint64_t timestamp, C
         message->role = MessageRole::Tool;
         message->tool_call_id = payload.value("call_id", std::string{});
         message->name = payload.value("name", std::string{});
-        message->content = OutputText(payload.value("output", nlohmann::json{}));
+        const auto output = payload.find("output");
+        if (output != payload.end()) {
+            const bool content_items = output->is_array() && !output->empty() &&
+                std::all_of(output->begin(), output->end(), [](const auto& item) {
+                    if (!item.is_object()) return false;
+                    const auto type = item.value("type", std::string{});
+                    return type == "input_text" || type == "output_text" || type == "text" ||
+                           type == "input_image" || type == "image_url";
+                });
+            if (content_items) AppendCodexContent(*output, images, *message);
+            else message->content = OutputText(*output);
+        }
         message->timestamp = timestamp;
         return true;
     }
@@ -477,6 +564,7 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
     size_t response_messages = 0;
     size_t visible_message_count = 0;
     size_t fallback_message_count = 0;
+    CodexImportImages images{JoinPath(AbsolutePath(data_directory), "codex-import-images"), {}};
 
     bool first_line = true;
     std::string line;
@@ -497,16 +585,19 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
             continue;
         }
         const std::string type = event.value("type", std::string{});
-        const nlohmann::json payload = event.value("payload", nlohmann::json::object());
+        const auto payload_field = event.find("payload");
+        if (payload_field == event.end() || !payload_field->is_object()) continue;
+        const auto& payload = *payload_field;
         const uint64_t timestamp = ParseIsoTime(event.value("timestamp", std::string{}));
         if (type == "session_meta") {
             ParseCodexSessionMeta(payload, &codex_workspace, &created_at);
+            images.workspace = workspace.empty() ? codex_workspace : AbsolutePath(workspace);
             continue;
         }
         if (type == "response_item") {
             ChatMessage message;
             bool is_plain_message = false;
-            if (ParseCodexResponseItem(payload, timestamp, &message, &is_plain_message)) {
+            if (ParseCodexResponseItem(payload, timestamp, &message, &is_plain_message, images)) {
                 if (is_plain_message && message.role != MessageRole::Tool) ++response_messages;
                 ++visible_message_count;
                 CodexImportStep step;
@@ -528,17 +619,17 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
                 {"summary", summary},
                 {"message_count", visible_message_count},
             };
-            const nlohmann::json replacement_history =
-                payload.value("replacement_history", nlohmann::json::array());
-            if (replacement_history.is_array()) {
+            const auto replacement_history = payload.find("replacement_history");
+            if (replacement_history != payload.end() && replacement_history->is_array()) {
                 std::vector<ChatMessage> context_messages;
-                for (const nlohmann::json& history_item : replacement_history) {
-                    const nlohmann::json item_payload =
+                for (const nlohmann::json& history_item : *replacement_history) {
+                    const auto& item_payload =
                         history_item.contains("item") && history_item["item"].is_object()
                             ? history_item["item"]
                             : history_item;
                     ChatMessage message;
-                    if (ParseCodexResponseItem(item_payload, 0, &message, nullptr)) {
+                    if (item_payload.is_object() &&
+                        ParseCodexResponseItem(item_payload, 0, &message, nullptr, images)) {
                         context_messages.push_back(std::move(message));
                     }
                 }
@@ -554,12 +645,35 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
         }
         if (type == "event_msg") {
             const std::string event_type = payload.value("type", std::string{});
-            if (event_type == "user_message" || event_type == "agent_message") {
+            if (event_type == "token_count") {
+                const auto info = payload.find("info");
+                if (info == payload.end() || !info->is_object()) continue;
+                const auto last = info->find("last_token_usage");
+                if (last == info->end() || !last->is_object()) continue;
+                const auto tokens = last->value("total_tokens", uint64_t{0});
+                if (!tokens) continue;
+                CodexImportStep step;
+                step.kind = CodexImportStep::Kind::Usage;
+                step.payload = {{"context_tokens", tokens},
+                                {"context_limit_tokens", info->value("model_context_window", uint64_t{0})},
+                                {"context_only", true}};
+                import_steps.push_back(step);
+                fallback_steps.push_back(std::move(step));
+            } else if (event_type == "user_message" || event_type == "agent_message") {
                 ChatMessage message;
                 message.role = event_type == "user_message" ? MessageRole::User : MessageRole::Assistant;
                 message.content = payload.value("message", std::string{});
                 message.timestamp = timestamp;
-                if (!message.content.empty()) {
+                if (message.role == MessageRole::User) {
+                    for (const char* key : {"images", "local_images"}) {
+                        const auto attachments = payload.find(key);
+                        if (attachments == payload.end() || !attachments->is_array()) continue;
+                        for (const auto& attachment : *attachments) {
+                            if (attachment.is_string()) images.Append(attachment.get_ref<const std::string&>(), message);
+                        }
+                    }
+                }
+                if (!message.content.empty() || !message.image_paths.empty()) {
                     ++fallback_message_count;
                     CodexImportStep step;
                     step.kind = CodexImportStep::Kind::Message;
@@ -574,6 +688,20 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
     if (response_messages == 0 && fallback_message_count != 0) {
         import_steps = std::move(fallback_steps);
         visible_message_count = fallback_message_count;
+    } else {
+        auto next_response = import_steps.begin();
+        for (auto& step : fallback_steps) {
+            if (step.kind != CodexImportStep::Kind::Message ||
+                step.message.role != MessageRole::User) continue;
+            const auto match = std::find_if(next_response, import_steps.end(), [&](const CodexImportStep& candidate) {
+                return candidate.kind == CodexImportStep::Kind::Message &&
+                       candidate.message.role == MessageRole::User &&
+                       candidate.message.content == step.message.content;
+            });
+            if (match == import_steps.end()) continue;
+            if (match->message.image_paths.empty()) match->message.image_paths = std::move(step.message.image_paths);
+            next_response = match + 1;
+        }
     }
     if (visible_message_count == 0) {
         return Result<CodexSessionImportResult>::Failure("Codex session has no importable messages");
@@ -593,11 +721,27 @@ Result<CodexSessionImportResult> ImportCodexSessionToSpark(const std::string& co
     if (!scope_result.ok) return Result<CodexSessionImportResult>::Failure(scope_result.error);
     const auto title_result = journal.Append("session.title", {{"title", result.title}});
     if (!title_result.ok) return Result<CodexSessionImportResult>::Failure(title_result.error);
+    size_t user_turns = 0;
+    std::vector<nlohmann::json> usages;
     for (const CodexImportStep& step : import_steps) {
+        if (step.kind == CodexImportStep::Kind::Usage) {
+            if (user_turns != 0) usages.back() = step.payload;
+            continue;
+        }
+        if (step.kind == CodexImportStep::Kind::Message && step.message.role == MessageRole::User) {
+            ++user_turns;
+            usages.emplace_back();
+        }
         const auto append_result = step.kind == CodexImportStep::Kind::Message
                                        ? journal.Append("message", step.message)
                                        : journal.Append("context.compacted", step.payload);
         if (!append_result.ok) return Result<CodexSessionImportResult>::Failure(append_result.error);
+    }
+    for (size_t index = 0; index < usages.size(); ++index) {
+        if (usages[index].is_null()) continue;
+        usages[index]["turn_index"] = index;
+        const auto saved = journal.Append("turn.usage", usages[index]);
+        if (!saved.ok) return Result<CodexSessionImportResult>::Failure(saved.error);
     }
     result.path = journal.Path();
     return Result<CodexSessionImportResult>::Success(std::move(result));

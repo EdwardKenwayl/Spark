@@ -81,7 +81,8 @@ struct Transcript::Replay {
             model.Apply({TranscriptEventKind::Add, kNoChatItem, item}, now);
         }
         const auto& usages = Metadata(state, "turn_usages");
-        if (usages.is_array() && pending_turn < usages.size() && usages[pending_turn].is_object()) {
+        if (usages.is_array() && pending_turn < usages.size() && usages[pending_turn].is_object() &&
+            !usages[pending_turn].empty() && !usages[pending_turn].value("context_only", false)) {
             const auto& usage = usages[pending_turn];
             ChatItem item;
             item.kind = ChatItemKind::UsageStats;

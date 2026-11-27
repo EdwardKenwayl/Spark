@@ -117,6 +117,7 @@ wxString ToolLabel(const ChatItem& item) {
 }
 enum class ToolTextKind { Summary, Details };
 std::string ToolText(const ChatItem& item, ToolTextKind kind) {
+    if (ImageTool(item.tool_name) && !item.image_paths.empty()) return {};
     const auto args = nlohmann::json::parse(item.arguments.empty() ? "{}" : item.arguments, nullptr, false);
     const auto argument = [&](const char* key) {
         if (args.is_object()) {
@@ -655,11 +656,11 @@ void NativeChatSurface::Reflow(wxDC& dc) {
                             top + std::max(0, (FromDIP(28) - dc.GetTextExtent(duration).y) / 2)},
                             time_, dark_ ? wxColour(112, 115, 122) : wxColour(135, 138, 144)});
                         top += FromDIP(28);
-                        if (!item.image_paths.empty()) {
+                        if (item.expanded && !item.image_paths.empty()) {
                             top += FromDIP(3);
                             layout_images(row.header.x + FromDIP(12), row.header.width - FromDIP(24), false);
                         }
-                        if (item.expanded) {
+                        if (item.expanded && !(ImageTool(item.tool_name) && !item.image_paths.empty())) {
                             top += FromDIP(3);
                             const auto start = row.fragments.size();
                             LayoutText(dc, row, PlainLines(ToolText(item, ToolTextKind::Details),
@@ -1215,8 +1216,15 @@ void NativeChatSurface::Context(wxContextMenuEvent& event) {
         const bool editable = item->kind == ChatItemKind::User
             && (!history_browser_ || transcript_ == live_transcript_)
             && item_index == transcript_->LastUserIndex() && edit;
-        const auto destination = row.fragments.empty() ? std::wstring{} :
-            ui::NativeMarkdownLinkAt(this, row.item, point.x, point.y, row.fragments.front().origin.y);
+        std::wstring destination;
+        for (size_t image = 0; image < row.images.size() && image < item->image_paths.size(); ++image) {
+            if (row.images[image].Contains(point)) {
+                destination = U(item->image_paths[image]).ToStdWstring();
+                break;
+            }
+        }
+        if (destination.empty() && !row.fragments.empty())
+            destination = ui::NativeMarkdownLinkAt(this, row.item, point.x, point.y, row.fragments.front().origin.y);
         const auto link = ResolveNativeLink(destination);
         if (!link.target.empty()) {
             constexpr int open_link = wxID_HIGHEST + 601, copy_link = wxID_HIGHEST + 602,

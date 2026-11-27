@@ -793,6 +793,42 @@ int main() {
         }
     }
 
+    const auto image_rollout = spark::JoinPath(exchange_directory, "image-rollout.jsonl");
+    const auto legacy_image = spark::JoinPath(exchange_directory, "legacy.png");
+    const auto legacy_user_event = nlohmann::json{{"type", "event_msg"}, {"payload", {
+        {"type", "user_message"}, {"message", "Legacy attachment"}, {"local_images", {legacy_image}},
+    }}}.dump();
+    Check(spark::WriteFileUtf8Atomic(image_rollout,
+        R"({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aC1kAAAAASUVORK5CYII="}]}})"
+        "\n"
+        R"({"type":"response_item","payload":{"type":"function_call","call_id":"image","name":"view_image","arguments":"{}"}})"
+        "\n"
+        R"({"type":"response_item","payload":{"type":"function_call_output","call_id":"image","output":[{"type":"input_text","text":"Captured"},{"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aC1kAAAAASUVORK5CYII="}]}})"
+        "\n"
+        R"({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Legacy attachment"}]}})"
+        "\n" + legacy_user_event + "\n" +
+        R"({"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":164189},"total_token_usage":{"total_tokens":11667639},"model_context_window":272000}}})"
+        "\n"), "Codex image and token usage fixture is written");
+    const auto image_import = spark::ImportCodexSessionToSpark(
+        image_rollout, spark::JoinPath(exchange_directory, "image-imported-data"), "", "recent");
+    spark::SessionJournal image_journal;
+    Check(image_import.ok && image_journal.Resume(image_import.value.path).ok, "Codex image rollout imports");
+    const auto& image_state = image_journal.State();
+    const auto& image_messages = spark::ModelContextMessages(image_state);
+    Check(image_messages.size() == 4 && image_messages[0].content.empty() &&
+              image_messages[0].image_paths.size() == 1 && image_messages[2].content == "Captured" &&
+              image_messages[2].image_paths.size() == 1 &&
+              spark::fs::is_regular_file(spark::NativePath(image_messages[0].image_paths.front())) &&
+              spark::fs::is_regular_file(spark::NativePath(image_messages[2].image_paths.front())),
+          "Codex inline user and tool images restore as files and do not inflate message text");
+    Check(image_messages.size() == 4 && image_messages[3].image_paths == std::vector<std::string>{legacy_image},
+          "Codex legacy attachment metadata supplements the matching response message");
+    const auto saved_usage = image_state.metadata.value("turn_usages", nlohmann::json::array());
+    Check(saved_usage.size() == 2 && saved_usage[1].value("context_tokens", 0) == 164189 &&
+              saved_usage[1].value("context_limit_tokens", 0) == 272000 &&
+              saved_usage[1].value("context_only", false),
+          "Codex import preserves last request context rather than cumulative usage");
+
     const std::string compacted_rollout_path = spark::JoinPath(exchange_directory, "compacted-rollout.jsonl");
     {
         std::ofstream compacted_rollout(spark::Utf8ToWide(compacted_rollout_path),

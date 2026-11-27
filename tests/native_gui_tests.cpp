@@ -575,6 +575,7 @@ void CheckNativeChatTimeline(const spark::fs::path& temporary) {
     const auto tool_index = tool_transcript.Apply({TranscriptEventKind::Add, kNoChatItem, tool}, {timestamp, 1});
     const auto missing_picture = PathToUtf8(temporary / "missing-image.png");
     ChatItem result;
+    result.result = picture;
     result.image_paths = {picture, missing_picture};
     tool_transcript.Apply({TranscriptEventKind::Finish, tool_index, result}, {timestamp, 2});
     const auto next_tool = tool_transcript.Apply({TranscriptEventKind::Add, kNoChatItem, tool}, {timestamp, 3});
@@ -582,6 +583,10 @@ void CheckNativeChatTimeline(const spark::fs::path& temporary) {
     surface->SetTranscript(&tool_transcript, true); Events();
     Check(NativeGuiTestAccess::RequestedImages(*surface).empty(), "collapsed tool groups do not request image previews");
     tool_transcript.ToggleToolGroup(tool_index);
+    surface->SetTranscript(&tool_transcript, true); Events();
+    Check(NativeGuiTestAccess::RequestedImages(*surface).empty(),
+          "opening the tool group alone does not request collapsed tool images");
+    tool_transcript.ToggleTool(tool_index);
     surface->SetTranscript(&tool_transcript, true); Events();
     Check(NativeGuiTestAccess::ToolImagesFit(*surface, tool_index) &&
           NativeGuiTestAccess::RequestedImages(*surface) == std::set<std::string>{picture, missing_picture},
