@@ -67,6 +67,7 @@ private:
     void RenderSidebar();
     void RefreshModels();
     void UpdateControls();
+    void UpdateComposerControls(bool running);
     void OpenConversation(const std::string& path);
     void LoadEarlierSide();
     void RequestSideSnapshot(bool force = false);

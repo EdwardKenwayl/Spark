@@ -49,7 +49,9 @@ struct AppWindowComposerTest {
             return 0;
         }
         if (app != nullptr && (message == WM_LBUTTONUP || message == kAddActionMessage ||
-                               message == WM_MEASUREITEM || message == WM_DRAWITEM)) {
+                               message == WM_MEASUREITEM || message == WM_DRAWITEM ||
+                               (message == WM_COMMAND && HIWORD(wparam) == EN_CHANGE &&
+                                reinterpret_cast<HWND>(lparam) == app->composer_))) {
             return app->HandleMessage(message, wparam, lparam);
         }
         return DefWindowProcW(window, message, wparam, lparam);
@@ -281,6 +283,78 @@ struct AppWindowComposerTest {
             Check(!app.IsSessionRunning(app.journal_.Path()), "a missing process ID is never running");
         }
         spark::fs::remove_all(directory);
+    }
+
+    struct TypingProbe {
+        int full_reads = 0;
+        int label_writes = 0;
+    };
+
+    static LRESULT CALLBACK CountTypingWork(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+                                           UINT_PTR, DWORD_PTR data) {
+        auto& probe = *reinterpret_cast<TypingProbe*>(data);
+        if (message == WM_GETTEXT && wparam > 128) ++probe.full_reads;
+        if (message == WM_SETTEXT) ++probe.label_writes;
+        return DefSubclassProc(window, message, wparam, lparam);
+    }
+
+    static void TestTypingWork() {
+        AppWindow app;
+        const HINSTANCE instance = GetModuleHandleW(nullptr);
+        app.window_ = CreateWindowW(L"SparkComposerTest", L"", WS_OVERLAPPEDWINDOW,
+                                    0, 0, 500, 250, nullptr, nullptr, instance, &app);
+        // Use the same control ID as AppWindow::CreateControls.
+        app.composer_ = CreateWindowW(L"EDIT", L"", WS_CHILD | ES_MULTILINE | ES_AUTOVSCROLL, 0, 0, 320, 80, app.window_,
+                                      reinterpret_cast<HMENU>(510), instance, nullptr);
+        app.send_button_ = CreateWindowW(L"BUTTON", L"\u2191", WS_CHILD | BS_OWNERDRAW, 0, 90, 32, 32,
+                                         app.window_, nullptr, instance, nullptr);
+        Check(app.window_ && app.composer_ && app.send_button_, "typing fixture creates native controls");
+        if (app.composer_ && app.send_button_) {
+            TypingProbe composer_probe, send_probe;
+            SetWindowSubclass(app.composer_, CountTypingWork, 1, reinterpret_cast<DWORD_PTR>(&composer_probe));
+            SetWindowSubclass(app.send_button_, CountTypingWork, 1, reinterpret_cast<DWORD_PTR>(&send_probe));
+            const auto set_text = [&](const std::wstring& text) {
+                SetWindowTextW(app.composer_, text.c_str());
+                app.UpdateSendButton();
+            };
+            set_text(L" \t\r\n ");
+            Check(!IsWindowEnabled(app.send_button_), "whitespace alone cannot be sent");
+            set_text(std::wstring(130, L' ') + L"\r\n\u6d4b\u8bd5");
+            Check(IsWindowEnabled(app.send_button_), "text after a long whitespace prefix can be sent");
+            std::wstring draft = L"\u6d4b\u8bd5\r\n";
+            for (int i = 0; i < 250; ++i) draft += std::wstring(78, L'x') + L"\r\n";
+            set_text(draft);
+            composer_probe.full_reads = send_probe.label_writes = 0;
+            app.composer_dirty_ = false;
+            LARGE_INTEGER frequency{}, started{}, ended{};
+            QueryPerformanceFrequency(&frequency);
+            QueryPerformanceCounter(&started);
+            for (int i = 0; i < 120; ++i) {
+                // Measure Spark's response to an edit independently of native line wrapping.
+                SendMessageW(app.window_, WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(app.composer_), EN_CHANGE),
+                             reinterpret_cast<LPARAM>(app.composer_));
+            }
+            QueryPerformanceCounter(&ended);
+            std::cout << "Typing burst: " << composer_probe.full_reads << " full draft reads, "
+                      << send_probe.label_writes << " button label writes in "
+                      << (ended.QuadPart - started.QuadPart) * 1000.0 / frequency.QuadPart << " ms\n";
+            Check(app.composer_dirty_, "native edit events still mark the draft dirty");
+            Check(composer_probe.full_reads == 0, "editing a normal nonempty draft does not copy the full text");
+            Check(send_probe.label_writes == 0, "unchanged send state does not rewrite the button");
+            SendMessageW(app.composer_, EM_SETSEL, 0, -1);
+            SendMessageW(app.composer_, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(L""));
+            Check(!IsWindowEnabled(app.send_button_), "deleting the draft immediately disables send");
+            app.journal_.MutableState().metadata["paused_turn"] = nlohmann::json::object();
+            app.UpdateSendButton();
+            Check(IsWindowEnabled(app.send_button_) && ReadWindowText(app.send_button_) == L"\u25b6",
+                  "an empty paused turn can be resumed");
+            SendMessageW(app.composer_, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(L"new draft"));
+            Check(ReadWindowText(app.send_button_) == L"\u2191", "typing into a paused turn immediately shows send");
+            RemoveWindowSubclass(app.composer_, CountTypingWork, 1);
+            RemoveWindowSubclass(app.send_button_, CountTypingWork, 1);
+        }
+        if (app.window_) DestroyWindow(app.window_);
+        app.window_ = app.composer_ = app.send_button_ = nullptr;
     }
 
     static void TestComposerModes() {
@@ -860,7 +934,7 @@ struct AppWindowComposerTest {
         spark::fs::remove_all(directory, error);
     }
 
-    static int Run(bool external_only = false) {
+    static int Run(bool external_only, bool typing_only) {
         if (external_only) {
             TestExternalActivity();
             return failures == 0 ? 0 : 1;
@@ -875,12 +949,14 @@ struct AppWindowComposerTest {
         const std::pair<const char*, void (*)()> checks[] = {
             {"attachments", TestAttachments}, {"errors", TestErrors},
             {"external activity", TestExternalActivity}, {"composer modes", TestComposerModes},
+            {"typing work", TestTypingWork},
             {"add menu", TestAddMenu}, {"snapshot capture", TestSnapshotCapture},
             {"snapshot draft scope", TestSnapshotDraftScope}, {"header layout", TestHeaderLayout},
             {"model menus", TestModelMenus}, {"scrollable model picker", TestScrollableModelPicker},
             {"summary", TestSummary},
         };
         for (const auto& [name, check] : checks) {
+            if (typing_only && check != TestTypingWork) continue;
             std::cout << "START: " << name << std::endl;
             const auto started = GetTickCount64();
             check();
@@ -896,5 +972,6 @@ struct AppWindowComposerTest {
 
 int main(int argc, char** argv) {
     if (const auto helper = spark::RunSnapshotHelper()) return *helper;
-    return spark::AppWindowComposerTest::Run(argc > 1 && std::string(argv[1]) == "--external-state");
+    const std::string mode = argc > 1 ? argv[1] : "";
+    return spark::AppWindowComposerTest::Run(mode == "--external-state", mode == "--typing");
 }

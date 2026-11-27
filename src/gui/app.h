@@ -415,6 +415,8 @@ private:
     HWND plus_button_ = nullptr;
     HWND composer_ = nullptr;
     HWND send_button_ = nullptr;
+    enum class ComposerAction { Send, Pause, Resume };
+    ComposerAction composer_action_ = ComposerAction::Send;
     HWND jump_button_ = nullptr;
     bool jump_hovered_ = false;
     HWND workspace_label_ = nullptr;

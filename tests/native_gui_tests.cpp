@@ -26,6 +26,7 @@
 #include <wx/dcclient.h>
 #include <wx/dcmemory.h>
 #include <wx/filedlg.h>
+#include <wx/stattext.h>
 #include <wx/image.h>
 #include <wx/simplebook.h>
 #include <wx/srchctrl.h>
@@ -368,6 +369,21 @@ void CheckNativeHistoryActivity(spark::AppConfig config) {
     frame->Show();
     Check(NativeGuiTestAccess::EditImageMessage(*frame),
           "native editing restores image selections and removes generated references from the composer");
+    auto* input = dynamic_cast<wxTextCtrl*>(wxWindow::FindWindowByName("spark.composer", frame));
+    auto* send = wxWindow::FindWindowByName("spark.send", frame);
+    auto* context = dynamic_cast<wxStaticText*>(wxWindow::FindWindowByName("spark.context", frame));
+    Check(input && send && context, "typing fixture locates the composer and header");
+    if (input && send && context) {
+        const auto original_label = context->GetLabel();
+        context->SetLabel("typing header sentinel");
+        input->SetValue("draft");
+        input->AppendText(" edit");
+        Check(send->IsEnabled(), "typing enables send immediately");
+        Check(context->GetLabel() == "typing header sentinel", "typing leaves the context header alone");
+        input->Clear();
+        Check(!send->IsEnabled(), "clearing the draft disables send immediately");
+        context->SetLabel(original_label);
+    }
     SessionState state;
     for (int turn = 0; turn < 20; ++turn) {
         ChatMessage user; user.role = MessageRole::User; user.content = "window-user-" + std::to_string(turn);

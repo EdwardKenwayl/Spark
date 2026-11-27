@@ -4129,22 +4129,38 @@ bool AppWindow::ActivityRowVisible() const {
 }
 
 void AppWindow::UpdateSendButton() {
-    const bool running = IsActiveSessionRunning();
+    const bool loading = SessionLoading();
+    const bool running = !loading && IsActiveSessionRunning();
+    const bool paused = !running && !loading && HasPausedTurn();
+    bool has_text = false;
+    if (!loading && !running && composer_ != nullptr) {
+        // Most drafts have content near the start. Only a long whitespace prefix
+        // needs a full read to preserve the same blank-draft rules as submission.
+        wchar_t prefix[65]{};
+        const int copied = GetWindowTextW(composer_, prefix, static_cast<int>(std::size(prefix)));
+        has_text = std::wstring_view(prefix, copied).find_first_not_of(L" \t\r\n\v\f") != std::wstring_view::npos;
+        if (!has_text && copied == static_cast<int>(std::size(prefix)) - 1) {
+            has_text = !Trim(ComposerText()).empty();
+        }
+    }
+    const auto previous_action = composer_action_;
+    composer_action_ = running ? ComposerAction::Pause :
+        paused && !has_text ? ComposerAction::Resume : ComposerAction::Send;
     if (jump_button_ != nullptr) {
-        if (SessionLoading()) {
+        if (loading) {
             jump_hovered_ = false;
-            ShowWindow(jump_button_, SW_HIDE);
-        } else {
+            if ((GetWindowLongW(jump_button_, GWL_STYLE) & WS_VISIBLE) != 0) ShowWindow(jump_button_, SW_HIDE);
+        } else if ((previous_action == ComposerAction::Pause) != running) {
             InvalidateRect(jump_button_, nullptr, FALSE);
         }
     }
-    const bool has_text = !Trim(ComposerText()).empty();
-    const bool paused = !running && HasPausedTurn();
-    const bool show_play = paused && !has_text;
-    SetWindowTextW(send_button_, running ? L"■" : show_play ? L"▶" : L"↑");
-    const bool enabled = !SessionLoading() && (running || paused || has_text);
-    EnableWindow(send_button_, enabled ? TRUE : FALSE);
-    InvalidateRect(send_button_, nullptr, TRUE);
+    if (send_button_ == nullptr) return;
+    if (composer_action_ != previous_action) {
+        SetWindowTextW(send_button_, running ? L"\u25a0" : composer_action_ == ComposerAction::Resume ? L"\u25b6" : L"\u2191");
+        InvalidateRect(send_button_, nullptr, FALSE);
+    }
+    const bool enabled = !loading && (running || paused || has_text);
+    if ((IsWindowEnabled(send_button_) != FALSE) != enabled) EnableWindow(send_button_, enabled);
 }
 
 void AppWindow::HandleUiEvent(UiEvent* event) {
@@ -6547,8 +6563,8 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                 return TRUE;
             }
             if (item->CtlID == kSend) {
-                const bool busy = IsActiveSessionRunning();
-                const bool paused = !busy && HasPausedTurn() && Trim(ComposerText()).empty();
+                const bool busy = composer_action_ == ComposerAction::Pause;
+                const bool paused = composer_action_ == ComposerAction::Resume;
                 const COLORREF fill =
                     disabled ? RGB(65, 66, 70) : busy ? kError : pressed ? kAccentPressed : kAccent;
                 FillRect(item->hDC, &item->rcItem, CachedBrush(kPanel));

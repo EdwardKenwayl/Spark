@@ -194,7 +194,10 @@ void NativeFrame::CreateChat() {
         wxDefaultSize, wxST_ELLIPSIZE_END | wxST_NO_AUTORESIZE);
     composer_hint_->SetName("spark.composer.placeholder");
     composer_hint_->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent&) { composer_->SetFocus(); });
-    composer_->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { if (!refreshing_) draft_dirty_ = true; UpdateControls(); });
+    composer_->Bind(wxEVT_TEXT, [this](wxCommandEvent&) {
+        if (!refreshing_) draft_dirty_ = true;
+        UpdateComposerControls(runtime_.Running(active_) || external_.count(active_) != 0);
+    });
     composer_->Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
         if (event.GetKeyCode() == WXK_ESCAPE && Pause()) return;
         if (event.GetKeyCode() == 'V' && event.CmdDown() && PasteAttachments()) return;
@@ -332,13 +335,8 @@ void NativeFrame::UpdateControls() {
         permissions_->SetSelection(mode == "full_access" ? 2 : mode == "approve_for_me" ? 1 : 0);
     }
     permissions_->Enable(remote == external_.end());
-    const bool paused = Active() && Active()->journal.State().metadata.contains("paused_turn");
-    send_->SetArt(running ? wxART_CROSS_MARK : paused && composer_->IsEmpty() ?
-        wxArtID("spark.play") : wxART_GO_FORWARD);
-    send_->SetToolTip(running ? T(L"Pause") : paused && composer_->IsEmpty() ? T(L"Resume") : T(L"Send"));
-    send_->Enable(loading_path_.empty() && (running || paused || !composer_->IsEmpty() || !attachments_.empty()));
+    UpdateComposerControls(running);
     composer_->Enable(loading_path_.empty());
-    composer_hint_->Show(composer_->IsEmpty());
     const auto* model = SelectedModel();
     const uint64_t limit = model ? EffectiveContextLimit(config_.context, *model) :
         static_cast<uint64_t>(config_.context.fallback_context_window);
@@ -349,6 +347,18 @@ void NativeFrame::UpdateControls() {
     };
     context_->SetLabel(T(L"Context ") + tokens(used) + " / " + tokens(limit));
     LayoutHeader();
+}
+
+void NativeFrame::UpdateComposerControls(bool running) {
+    const bool empty = composer_->IsEmpty();
+    const auto* view = Active();
+    const bool paused = view && view->journal.State().metadata.contains("paused_turn");
+    const bool resume = !running && paused && empty;
+    send_->SetArt(running ? wxART_CROSS_MARK : resume ? wxArtID("spark.play") : wxART_GO_FORWARD);
+    const auto tip = T(running ? L"Pause" : resume ? L"Resume" : L"Send");
+    if (send_->GetToolTipText() != tip) send_->SetToolTip(tip);
+    send_->Enable(loading_path_.empty() && (running || paused || !empty || !attachments_.empty()));
+    composer_hint_->Show(empty);
 }
 void NativeFrame::OnClose(wxCloseEvent& event) {
     if (!quitting_ && event.CanVeto() && tray_ && wxTaskBarIcon::IsAvailable()) { Hide(); event.Veto(); return; }
