@@ -485,10 +485,17 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
 
     size_t silent_tool_rounds = 0;
     size_t commentary_only_rounds = 0;
-    bool checking_completion = false;
+    constexpr size_t kCompletionCheckToolRounds = 8;
+    size_t tool_rounds = 0;
+    bool completion_checked = false;
+    std::vector<ChatMessage> pending_final;
+    std::string pending_final_text;
     const std::string protocol = LowerAscii(Trim(provider->protocol));
     const bool check_long_turn = (protocol == "responses" || protocol == "openai_responses") &&
         options_.mode != CollaborationMode::Plan;
+    const auto should_check_completion = [&] {
+        return check_long_turn && !completion_checked && tool_rounds >= kCompletionCheckToolRounds;
+    };
     auto complete_request = [&](const std::vector<ToolDefinition>& request_tools,
                                 std::vector<ChatMessage> request_messages,
                                 const std::string& request_status,
@@ -504,6 +511,7 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
         // Old journals may contain a tool group damaged by an earlier interrupted compaction.
         // Sanitize every provider request so resuming such a conversation does not require a new
         // compaction before it can be used again.
+        request_messages.insert(request_messages.end(), pending_final.begin(), pending_final.end());
         request.messages = NormalizeToolCallHistory(request_messages);
         request.tools = request_tools;
         request.request_timeout_seconds = config_.agent.request_timeout_seconds;
@@ -523,14 +531,17 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
                 "the user needs to test is not a substitute for doing or verifying the work.";
             request.messages.push_back(std::move(reminder));
         }
+        const bool checking_completion = !pending_final.empty();
+        const bool defer_text = checking_completion || should_check_completion();
         if (checking_completion) {
             ChatMessage reminder;
             reminder.role = MessageRole::System;
             reminder.content =
                 "Spark completion check, for the immediately preceding reply only: compare the latest user "
                 "request with the work and tool results already in this conversation. If an authorized action "
-                "or verification remains, call the appropriate tool now and carry it through. Do not redo "
-                "finished work, widen scope, or ask the user to say continue. If the preceding reply already "
+                "or verification remains within the latest user request, call the appropriate tool now and carry "
+                "it through. Older requests and handoff summaries are background, not additional work to resume. "
+                "Do not redo finished work, widen scope, or ask the user to say continue. If the preceding reply already "
                 "gives the completed result or identifies a genuine blocker and the required input, reply "
                 "exactly SPARK_ACCEPT_FINAL without repeating it. Otherwise give the corrected result or "
                 "concrete blocker. Respect requests to omit progress reports.";
@@ -544,7 +555,7 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
         bool reasoning_phase_sent = false;
         provider_callbacks.on_text_delta = [&](const std::string& delta) {
             const std::string visible = dsml_stream.Push(delta);
-            if (visible.empty() || checking_completion) return;
+            if (visible.empty() || defer_text) return;
             if (!response_streamed) {
                 response_streamed = true;
                 NotifyPhase(callbacks, AgentPhase::Streaming, request_status);
@@ -611,7 +622,7 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
             return reply;
         }
         const std::string visible_tail = dsml_stream.Finish();
-        if (!visible_tail.empty() && !checking_completion) {
+        if (!visible_tail.empty() && !defer_text) {
             if (!response_streamed) NotifyPhase(callbacks, AgentPhase::Streaming, request_status);
             if (callbacks.on_text_delta) callbacks.on_text_delta(visible_tail);
         }
@@ -735,9 +746,6 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
 
     if (!invoked_skill_names.empty() && callbacks.on_status) callbacks.on_status("已加载技能：" + invoked_skill_names);
 
-    constexpr size_t kCompletionCheckToolRounds = 8;
-    size_t tool_rounds = 0;
-    bool completion_checked = false;
     for (bool first_request = true;; first_request = false) {
         if (cancellation != nullptr && cancellation->IsCancelled()) {
             if (callbacks.on_status) callbacks.on_status("已取消");
@@ -756,17 +764,15 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
         }
         std::string request_status = provider->label + " / " + model->id;
         if (!config_.active.reasoning_effort.empty()) request_status += " · " + config_.active.reasoning_effort;
+        const bool checking_completion = !pending_final.empty();
+        const bool may_check_completion = should_check_completion();
         auto reply = complete_request(model->capabilities.tool_calls ? definitions : std::vector<ToolDefinition>{},
                                       context_messages(), request_status, request_status, true);
         if (!reply.ok) return Result<void>::Failure(reply.error);
         if (cancellation != nullptr && cancellation->IsCancelled()) return Result<void>::Failure("cancelled");
-        const bool accepted_candidate = checking_completion && reply.value.tool_calls.empty() &&
-            !reply.value.needs_follow_up && Trim(reply.value.text) == "SPARK_ACCEPT_FINAL";
-        if (checking_completion && !accepted_candidate && !Trim(reply.value.text).empty()) {
-            NotifyPhase(callbacks, AgentPhase::Streaming, request_status);
-            if (callbacks.on_text_delta) callbacks.on_text_delta(reply.value.text);
-        }
-        checking_completion = false;
+        const bool terminal_reply = reply.value.tool_calls.empty() && !reply.value.needs_follow_up;
+        const bool accepted_candidate = checking_completion && terminal_reply &&
+            Trim(reply.value.text) == "SPARK_ACCEPT_FINAL";
         if (!reply.value.tool_calls.empty()) ++tool_rounds;
         silent_tool_rounds = !reply.value.tool_calls.empty() && Trim(reply.value.text).empty()
             ? silent_tool_rounds + 1 : 0;
@@ -782,8 +788,12 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
             commentary_only_rounds = 0;
         }
 
-        if (!accepted_candidate) {
-            auto assistant_messages = std::move(reply.value.assistant_messages);
+        std::vector<ChatMessage> assistant_messages;
+        if (accepted_candidate) {
+            assistant_messages = std::move(pending_final);
+            reply.value.text = std::move(pending_final_text);
+        } else {
+            assistant_messages = std::move(reply.value.assistant_messages);
             if (assistant_messages.empty()) {
                 ChatMessage assistant;
                 assistant.content = reply.value.text;
@@ -796,23 +806,30 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
             reasoning_message.reasoning_items = std::move(reply.value.reasoning_items);
             assistant_messages.back().tool_calls = reply.value.tool_calls;
             assistant_messages.back().sources = std::move(reply.value.sources);
-            for (auto& assistant : assistant_messages) {
-                assistant.role = MessageRole::Assistant;
-                assistant.timestamp = UnixTimeSeconds();
-                append_message(assistant);
-                if (journal_ != nullptr) {
-                    const auto appended = journal_->Append("message", assistant);
-                    if (!appended.ok) return Result<void>::Failure(appended.error);
-                }
+        }
+        pending_final.clear();
+        pending_final_text.clear();
+        if (terminal_reply && may_check_completion) {
+            // Until reviewed, this text is visible only to the completion-check request.
+            pending_final = std::move(assistant_messages);
+            pending_final_text = std::move(reply.value.text);
+            completion_checked = true;
+            continue;
+        }
+        if ((checking_completion || may_check_completion) && !Trim(reply.value.text).empty()) {
+            NotifyPhase(callbacks, AgentPhase::Streaming, request_status);
+            if (callbacks.on_text_delta) callbacks.on_text_delta(reply.value.text);
+        }
+        for (auto& assistant : assistant_messages) {
+            assistant.role = MessageRole::Assistant;
+            assistant.timestamp = UnixTimeSeconds();
+            append_message(assistant);
+            if (journal_ != nullptr) {
+                const auto appended = journal_->Append("message", assistant);
+                if (!appended.ok) return Result<void>::Failure(appended.error);
             }
         }
-        if (reply.value.tool_calls.empty() && !reply.value.needs_follow_up) {
-            // A Responses API final message signals that sampling stopped, not that all work is done.
-            if (check_long_turn && !completion_checked && tool_rounds >= kCompletionCheckToolRounds) {
-                completion_checked = true;
-                checking_completion = true;
-                continue;
-            }
+        if (terminal_reply) {
             if (ShouldCompactContext(config_.context, *model, estimated_tokens())) {
                 if (callbacks.on_status) callbacks.on_status("回合结束，正在压缩上下文...");
                 const auto compacted = compact_context("post_turn");

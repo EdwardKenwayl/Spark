@@ -480,6 +480,13 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
                   final->content == (blocker ? blocked : "finished all requested tools"),
               "final response is preserved");
         if (blocker) Check(visible == blocked, "accepting a real blocker does not display it twice");
+        if (premature) {
+            Check(visible == "finished all requested tools" &&
+                      std::count_if(messages.begin(), messages.end(), [](const ChatMessage& item) {
+                          return item.phase == "final_answer";
+                      }) == 1,
+                  "a rejected candidate is neither displayed nor recorded as a final answer");
+        }
     } else if (ending == Ending::Cancel || ending == Ending::CancelReconnect || cancel_check) {
         Check(!result.ok && cancellation.IsCancelled() && finished == 0 && errors == 0,
               "cancel still interrupts a long tool loop");
@@ -500,6 +507,8 @@ void TestLoop(const std::string& label, size_t tool_rounds, Ending ending, bool 
         Check(after[before.size()]["content"][0]["text"] == unfinished &&
                   after.back().value("role", "") == "developer",
               "the completion check sees the candidate reply followed by internal steering");
+        Check(requests.back().body.find(unfinished) == std::string::npos,
+              "continuing uses the tool results without carrying over the rejected candidate");
     }
     const std::vector<std::string> expected_reconnects = exhausted || ending == Ending::Recovered
         ? std::vector<std::string>{"1/5", "2/5", "3/5", "4/5", "5/5"}

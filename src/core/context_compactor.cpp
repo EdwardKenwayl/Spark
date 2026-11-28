@@ -226,7 +226,9 @@ std::vector<ChatMessage> BuildCompactedHistory(const std::vector<ChatMessage>& m
     handoff.role = MessageRole::System;
     handoff.content =
         "Conversation history handoff summary (internal context, not a new user request or a final answer). "
-        "Continue the latest user's unfinished task from this state; saving this summary is not task completion.\n" +
+        "Continue only the latest user request. Its retained message takes precedence over any goal or next "
+        "step below. Older requests are background unless the latest request resumes them. Saving this summary "
+        "does not complete the task.\n" +
         summary;
     compacted.push_back(std::move(handoff));
 
