@@ -6,6 +6,7 @@
 #include <atomic>
 #include <iostream>
 #include <sstream>
+#include <thread>
 
 namespace {
 using namespace spark;
@@ -271,6 +272,8 @@ void TestResponsesContinuation(bool streaming, int end_turn) {
             output.push_back(message("commentary", "Reading fixture.txt."));
             output.push_back({{"type", "function_call"}, {"call_id", "read-fixture"},
                 {"name", "read_file"}, {"arguments", R"({"path":"fixture.txt"})"}});
+            output.push_back({{"type", "function_call"}, {"call_id", "read-fixture-again"},
+                {"name", "read_file"}, {"arguments", R"({"path":"fixture.txt"})"}});
         } else {
             output.push_back(message("final_answer", "Done. The file says fixture."));
         }
@@ -294,6 +297,7 @@ void TestResponsesContinuation(bool streaming, int end_turn) {
     config.workspace.path = PathToUtf8(root);
     config.storage.data_dir = JoinPath(config.workspace.path, "data");
     config.skills.enabled = false;
+    config.agent.max_parallel_read_tools = 2;
     ProviderConfig provider;
     provider.id = "fixture";
     provider.protocol = "responses";
@@ -309,8 +313,13 @@ void TestResponsesContinuation(bool streaming, int end_turn) {
     Check(journal.Open(config.storage.data_dir, config.workspace.path).ok, "continuation session opens");
     Agent agent(config, &journal, nullptr);
     int finished = 0, tools = 0;
+    const auto turn_thread = std::this_thread::get_id();
+    std::atomic<bool> phase_on_worker{false};
     std::string visible;
     AgentCallbacks callbacks;
+    callbacks.on_phase = [&](AgentPhase, const std::string&) {
+        if (std::this_thread::get_id() != turn_thread) phase_on_worker.store(true);
+    };
     callbacks.on_text_delta = [&](const std::string& delta) { visible += delta; };
     callbacks.on_tool_finish = [&](const auto&, const auto&, bool ok, const auto&, const auto&) {
         Check(ok, "continuation tool succeeds"); ++tools;
@@ -320,7 +329,8 @@ void TestResponsesContinuation(bool streaming, int end_turn) {
         [](const ApprovalRequest&) { return true; }, callbacks, nullptr);
     if (!result.ok) std::cerr << "continuation: " << result.error << '\n';
     const auto requests = server.Requests();
-    Check(result.ok && finished == 1 && tools == (follow_up ? 1 : 0),
+    Check(!phase_on_worker.load(), "parallel reads publish phases on the turn thread");
+    Check(result.ok && finished == 1 && tools == (follow_up ? 2 : 0),
           "commentary without end_turn continues; explicit end_turn=true still completes");
     Check(requests.size() == (follow_up ? 3 : 1), "continuation makes only the required requests");
     Check(visible.find("Checking the requested file.") != std::string::npos &&

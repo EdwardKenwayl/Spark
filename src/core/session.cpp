@@ -70,6 +70,8 @@ void RecordTurnUsage(SessionState& state, const nlohmann::json& payload) {
         {"elapsed_ms", payload.value("elapsed_ms", uint64_t{0})},
     };
     if (payload.value("context_only", false)) usage["context_only"] = true;
+    const uint64_t context_tokens = usage["context_tokens"].get<uint64_t>();
+    if (context_tokens > 0) state.metadata["latest_context_tokens"] = context_tokens;
     nlohmann::json& usages = state.metadata["turn_usages"];
     while (usages.size() <= turn_index) usages.push_back(nlohmann::json::object());
     usages[turn_index] = std::move(usage);
@@ -90,6 +92,7 @@ void RecordCompaction(SessionState& state, const nlohmann::json& payload) {
 
 void ApplyContextCompaction(SessionState& state, const nlohmann::json& payload) {
     state.metadata["last_response_context"] = nullptr;
+    state.metadata["latest_context_tokens"] = payload.value("after_tokens", uint64_t{0});
     if (auto live = state.metadata.find("live_turn"); live != state.metadata.end() && live->is_object() &&
         live->value("phase", std::string{}) == "compacting") {
         (*live)["phase"] = "waiting_model";
@@ -143,12 +146,14 @@ bool ApplyPauseEvent(SessionState& state, const std::string& type, const nlohman
 void RecordResponseContext(SessionState& state, const nlohmann::json& payload) {
     const auto input = payload.value("input_tokens", int64_t{0});
     if (input <= 0) return;
+    const uint64_t tokens = static_cast<uint64_t>(input) +
+                            static_cast<uint64_t>(std::max(int64_t{0}, payload.value("output_tokens", int64_t{0})));
     state.metadata["last_response_context"] = {
         {"provider", payload.value("provider", std::string{})},
         {"model", payload.value("model", std::string{})},
-        {"tokens", static_cast<uint64_t>(input) +
-                   static_cast<uint64_t>(std::max(int64_t{0}, payload.value("output_tokens", int64_t{0})))},
+        {"tokens", tokens},
     };
+    state.metadata["latest_context_tokens"] = tokens;
 }
 
 void RecordToolExecution(SessionState& state, const nlohmann::json& payload) {
@@ -435,6 +440,20 @@ const std::vector<ChatMessage>& ModelContextMessages(const SessionState& state) 
     return state.context_messages.empty() ? state.messages : state.context_messages;
 }
 
+uint64_t LastRecordedContextTokens(const SessionState& state) {
+    if (!state.metadata.is_object()) return 0;
+    const auto latest = state.metadata.find("latest_context_tokens");
+    if (latest != state.metadata.end() && latest->is_number_unsigned()) return latest->get<uint64_t>();
+    const auto usages = state.metadata.find("turn_usages");
+    if (usages == state.metadata.end() || !usages->is_array()) return 0;
+    for (auto it = usages->rbegin(); it != usages->rend(); ++it) {
+        if (!it->is_object()) continue;
+        const auto tokens = it->value("context_tokens", uint64_t{0});
+        if (tokens > 0) return tokens;
+    }
+    return 0;
+}
+
 SessionJournal::~SessionJournal() = default;
 
 SessionState& SessionJournal::MutableState() {
@@ -601,8 +620,10 @@ Result<void> SessionJournal::LoadEvents(std::istream& stream, const Cancellation
                 restore_metadata("turn_usages", nlohmann::json::array());
                 restore_metadata("tool_durations_ms", nlohmann::json::object());
                 restore_metadata("turn_errors", nlohmann::json::array());
-                if (snapshot.messages.size() == state_.messages.size())
+                if (snapshot.messages.size() == state_.messages.size()) {
                     restore_metadata("last_response_context", nullptr);
+                    restore_metadata("latest_context_tokens", nullptr);
+                }
                 if (snapshot.metadata["turn_errors"].is_array()) {
                     auto errors = std::move(snapshot.metadata["turn_errors"]);
                     snapshot.metadata["turn_errors"] = nlohmann::json::array();

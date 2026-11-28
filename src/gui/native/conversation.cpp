@@ -119,6 +119,7 @@ void NativeFrame::Send() {
         state.messages.resize(boundary);
         state.context_messages.clear();
         state.metadata["last_response_context"] = nullptr;
+        state.metadata["latest_context_tokens"] = nullptr;
         if (auto boundaries = state.metadata.find("resume_boundaries");
             boundaries != state.metadata.end() && boundaries->is_array()) {
             boundaries->erase(std::remove_if(boundaries->begin(), boundaries->end(), [&](const nlohmann::json& event) {
@@ -376,9 +377,10 @@ void NativeFrame::Tick(wxTimerEvent&) {
                     window.first_message = std::min(window.first_message, previous->second->transcript.HistoryFirstMessage());
                 pending_view_->replay = pending_view_->transcript.BeginReplay(pending_view_->journal.State(), Now(),
                                                                              {running, start}, window.first_message);
-                if (metadata.contains("turn_usages") && metadata["turn_usages"].is_array() && !metadata["turn_usages"].empty()) {
+                pending_view_->context = LastRecordedContextTokens(pending_view_->journal.State());
+                if (metadata.contains("turn_usages") && metadata["turn_usages"].is_array() &&
+                    !metadata["turn_usages"].empty() && metadata["turn_usages"].back().is_object()) {
                     const auto& usage = metadata["turn_usages"].back();
-                    pending_view_->context = usage.value("context_tokens", uint64_t{0});
                     pending_view_->limit = usage.value("context_limit_tokens", uint64_t{0});
                 }
             }

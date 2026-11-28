@@ -277,21 +277,6 @@ uint64_t ParseTokenCount(const std::string& text) {
     return value;
 }
 
-// Reads the context size recorded for the most recent turn of a session journal. Used when the
-// conversation is opened again (for example after a restart) before any new provider call
-// publishes a live number.
-uint64_t LastRecordedContextTokens(const SessionState& state) {
-    if (!state.metadata.is_object()) return 0;
-    const auto usages = state.metadata.find("turn_usages");
-    if (usages == state.metadata.end() || !usages->is_array()) return 0;
-    for (auto iterator = usages->rbegin(); iterator != usages->rend(); ++iterator) {
-        if (!iterator->is_object()) continue;
-        const uint64_t tokens = iterator->value("context_tokens", uint64_t{0});
-        if (tokens > 0) return tokens;
-    }
-    return 0;
-}
-
 void ApplyDarkMenuStyle(HMENU menu) {
     MENUINFO info{};
     info.cbSize = sizeof(info);
@@ -3660,6 +3645,7 @@ void AppWindow::StartTurn() {
                          errors.end());
         }
         session.metadata["last_response_context"] = nullptr;
+        session.metadata["latest_context_tokens"] = nullptr;
         if (auto boundaries = session.metadata.find("resume_boundaries");
             boundaries != session.metadata.end() && boundaries->is_array()) {
             boundaries->erase(std::remove_if(boundaries->begin(), boundaries->end(), [&](const nlohmann::json& event) {

@@ -33,6 +33,8 @@ int main() {
         Check(journal.Append("turn.error", {{"turn_index", 0}, {"message", "fixture old error"}}).ok &&
                   journal.Append("turn.error", {{"turn_index", 0}, {"message", "fixture latest error"}}).ok,
               "replace an error for a retried turn");
+        Check(journal.Append("turn.usage", {{"turn_index", 0}, {"context_tokens", 187000}}).ok,
+              "store an older completed turn's context size");
         Check(journal.Append("context.compacted", {{"summary", "fixture handoff"}, {"before_tokens", 300000},
                                                     {"after_tokens", 5000}, {"message_count", 1}}).ok,
               "append a context compaction event");
@@ -55,6 +57,10 @@ int main() {
               "duration and latest error survive restart");
         Check(resumed.State().metadata["context_compactions"].size() == 1,
               "compaction notification survives restart");
+        Check(LastRecordedContextTokens(resumed.State()) == 5000,
+              "reopened context uses compaction instead of stale completed-turn usage");
+        Check(resumed.Append("turn.response", {{"input_tokens", 25911}, {"output_tokens", 89}}).ok,
+              "record provider context before a turn finishes");
         SessionJournal worker = resumed;
         Check(&worker.State() == &resumed.State(), "starting a worker shares the loaded transcript");
         ChatMessage marker;
@@ -71,6 +77,8 @@ int main() {
                   reopened.State().metadata.value("paused_turn", nlohmann::json::object())
                       .value("elapsed_ms", uint64_t{0}) == 3'000,
               "restarting restores the paused turn and elapsed time");
+        Check(LastRecordedContextTokens(reopened.State()) == 26000,
+              "reopened context uses the latest provider usage even without a turn completion");
         Check(worker.DiscardPause().ok && reopened.Resume(worker.Path()).ok &&
                   !reopened.State().metadata.contains("paused_turn") &&
                   nlohmann::json(reopened.State().messages) == nlohmann::json(resumed.State().messages) &&

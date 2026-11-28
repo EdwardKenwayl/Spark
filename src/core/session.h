@@ -28,6 +28,7 @@ struct SessionState {
 };
 
 const std::vector<ChatMessage>& ModelContextMessages(const SessionState& state);
+uint64_t LastRecordedContextTokens(const SessionState& state);
 bool IsCanonicalSessionSnapshot(std::string_view line);
 
 class SessionJournal {

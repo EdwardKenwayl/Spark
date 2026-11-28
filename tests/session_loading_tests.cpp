@@ -372,6 +372,30 @@ struct ChatViewLoadTest {
         }
 
         view.Clear();
+        for (int index = 0; index < 24; ++index) view.AddUser("Earlier fixture message");
+        const size_t live_tool = view.AddTool("run_command", R"({"command":"echo hit-test"})");
+        view.FinishTool(live_tool, true, "fixture", 0, 12);
+        view.ScrollToBottom();
+        const HDC device = GetDC(view.hwnd());
+        const auto areas = view.CalculateHitAreas(device);
+        ReleaseDC(view.hwnd(), device);
+        const auto tool_header = std::find_if(areas.begin(), areas.end(), [live_tool](const auto& area) {
+            return area.item == live_tool && area.type == ChatView::HitArea::Type::ToolHeader;
+        });
+        Check(tool_header != areas.end(), "command header is visible at the live tail");
+        if (tool_header != areas.end()) {
+            const RECT rect = tool_header->rect;
+            const POINT point{(rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2};
+            view.scroll_y_ = std::max(0, view.scroll_y_ - 40);
+            view.Rebuild();
+            view.HitTest(point);  // Cache the pre-scroll rectangles.
+            view.ScrollToBottom();
+            const auto hit = view.HitTest(point);
+            Check(hit.type == ChatView::HitArea::Type::ToolHeader && hit.item == live_tool,
+                  "live auto-scroll moves the mouse target with the drawn command");
+        }
+
+        view.Clear();
         view.AddUser("activity fixture");
         const size_t command = view.AddTool("run_command", "{\"command\":\"echo fixture\"}");
         view.FinishTool(command, true, "fixture", 0, 12);

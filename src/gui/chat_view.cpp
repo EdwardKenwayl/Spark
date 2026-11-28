@@ -2320,7 +2320,9 @@ void ChatView::ScrollToBottom() {
     const int content_height = CalculateContentHeight(device);
     RECT client{};
     GetClientRect(window_, &client);
-    scroll_y_ = std::max(0, content_height - static_cast<int>(client.bottom - client.top));
+    const int bottom = std::max(0, content_height - static_cast<int>(client.bottom - client.top));
+    if (scroll_y_ != bottom) hit_areas_dirty_ = true;
+    scroll_y_ = bottom;
     if (rail_dirty_) {
         UpdateRail(device);
         rail_dirty_ = false;
@@ -2396,6 +2398,7 @@ void ChatView::ReleaseBackBuffer() {
 
 void ChatView::InvalidateItemHeight(size_t index) {
     heights_dirty_ = true;
+    hit_areas_dirty_ = true;
     if (layout_cache_ != nullptr) {
         if (index == static_cast<size_t>(-1) ||
             (index < items_.size() && (items_[index].kind == ChatItemKind::Tool ||

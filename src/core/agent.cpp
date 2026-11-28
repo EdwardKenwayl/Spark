@@ -187,7 +187,7 @@ Result<ToolExecutionResult> Agent::ExecuteReadSkill(const std::string& arguments
 Result<ToolExecutionResult> Agent::ExecuteTool(const ToolCall& call, const ApprovalCallback& approval,
                                                AgentCallbacks& callbacks, CancellationToken* cancellation,
                                                bool notify_callbacks) const {
-    NotifyPhase(callbacks, AgentPhase::RunningTool, ToolPhaseDetail(call));
+    if (notify_callbacks) NotifyPhase(callbacks, AgentPhase::RunningTool, ToolPhaseDetail(call));
     if (notify_callbacks && callbacks.on_tool_start) {
         callbacks.on_tool_start(call.id, call.name, ShortText(call.arguments_json));
     }
@@ -197,7 +197,7 @@ Result<ToolExecutionResult> Agent::ExecuteTool(const ToolCall& call, const Appro
             {false, false, ToolError("Plan Mode allows read-only investigation; this tool is disabled.")});
     }
     ApprovalCallback phased_approval = approval;
-    if (approval && callbacks.on_phase) {
+    if (notify_callbacks && approval && callbacks.on_phase) {
         phased_approval = [&](const ApprovalRequest& request) {
             callbacks.on_phase(AgentPhase::WaitingApproval, request.title);
             const bool approved = approval(request);
@@ -920,9 +920,10 @@ Result<void> Agent::RunTurn(const std::string& user_text, const ApprovalCallback
                 continue;
             }
 
+            // Live callbacks mutate the session journal and belong to the turn thread.
             for (size_t index = call_index; index < batch_end; ++index) {
+                NotifyPhase(callbacks, AgentPhase::RunningTool, ToolPhaseDetail(pending_calls[index]));
                 if (callbacks.on_tool_start) {
-                    NotifyPhase(callbacks, AgentPhase::RunningTool, ToolPhaseDetail(pending_calls[index]));
                     callbacks.on_tool_start(pending_calls[index].id, pending_calls[index].name,
                                             ShortText(pending_calls[index].arguments_json));
                 }
